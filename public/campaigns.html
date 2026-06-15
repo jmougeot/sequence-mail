@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sequence Mail — Campagnes</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="inline" style="justify-content:space-between;margin-bottom:16px">
+    <div class="inline" style="gap:8px">
+      <h1 style="margin:0">Campagnes</h1>
+      <select id="campSelect" style="width:220px" onchange="if(this.value) selectCampaign(+this.value)">
+        <option value="">— Sélectionner —</option>
+      </select>
+    </div>
+    <button onclick="newCampaign()">+ Nouvelle campagne</button>
+  </div>
+  <div id="campContent">
+      <!-- Onglets (cachés en mode création) -->
+      <div id="campTabs" hidden class="camp-tabs">
+        <button class="tab-btn active" id="tab-seq"      onclick="showTab('seq')">Séquence</button>
+        <button class="tab-btn"        id="tab-stats"    onclick="showTab('stats')">Stats</button>
+        <button class="tab-btn"        id="tab-contacts" onclick="showTab('contacts')">Contacts</button>
+        <button class="tab-btn"        id="tab-import"   onclick="showTab('import')">Import</button>
+      </div>
+
+      <!-- Onglet Séquence -->
+      <div id="paneSeq">
+        <div class="row" style="align-items:flex-start;gap:16px">
+          <div style="flex:1;min-width:0">
+            <div class="card" id="editorCard">
+              <div class="inline" style="justify-content:space-between">
+                <h2 id="editorTitle" style="margin:0">Nouvelle campagne</h2>
+                <span id="statusZone"></span>
+              </div>
+              <input id="campName" placeholder="Nom de la campagne">
+              <div id="steps"></div>
+              <p>
+                <button class="ghost" onclick="addStep()">+ Ajouter une étape</button>
+                <button onclick="saveCampaign()" id="saveBtn">Créer la campagne</button>
+                <span id="campMsg"></span>
+              </p>
+            </div>
+          </div>
+          <div class="card" id="previewCard" hidden style="flex:0 0 380px;position:sticky;top:24px;align-self:flex-start">
+            <div class="inline" style="justify-content:space-between">
+              <h2 style="margin:0">Aperçu</h2>
+              <div class="inline">
+                <span class="muted">Compte :</span>
+                <select id="previewAccount" style="width:auto" onchange="rerunPreview()"></select>
+                <button class="ghost" onclick="$('#previewCard').hidden = true">Fermer</button>
+              </div>
+            </div>
+            <div class="preview" id="previewBody" style="margin-top:10px"></div>
+            <p class="muted" id="previewNote"></p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Onglet Stats -->
+      <div id="paneStats" hidden>
+        <div class="card">
+          <div class="inline" style="justify-content:space-between;margin-bottom:16px">
+            <h2 style="margin:0">Statistiques</h2>
+            <span id="statsStatusZone"></span>
+          </div>
+          <div id="statsContent"></div>
+        </div>
+      </div>
+
+      <!-- Onglet Contacts -->
+      <div id="paneContacts" hidden>
+        <div class="row" style="align-items:flex-start;gap:16px">
+          <div style="flex:1;min-width:0">
+            <div class="card" style="overflow-x:auto">
+              <div class="inline" style="justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+                <h2 style="margin:0">Contacts</h2>
+                <div class="inline" style="gap:8px">
+                  <span class="muted"><span id="selCount">0</span> sélectionné(s)</span>
+                  <button id="launchBtn" onclick="launchSelected()" disabled style="background:var(--ok);color:#fff">▶ Lancer les envois</button>
+                  <button id="stopBtn" class="ghost" onclick="stopSelected()" disabled>⏸ Arrêter la séquence</button>
+                  <select id="statusSet" style="width:auto;margin:0" disabled onchange="setStatusSelected(this)">
+                    <option value="">Changer le statut…</option>
+                  </select>
+                  <button id="removeBtn" class="danger" onclick="removeSelected()" disabled>Retirer</button>
+                </div>
+              </div>
+              <div class="inline" style="gap:8px;margin-bottom:10px;flex-wrap:wrap">
+                <input id="contactSearch" placeholder="Rechercher (email, nom…)" style="width:230px;margin:0" oninput="renderContacts()">
+                <div id="statusChips" class="inline" style="gap:6px;flex-wrap:wrap"></div>
+              </div>
+              <table id="contacts"><thead><tr>
+                <th style="width:36px"><input type="checkbox" id="selectAll" title="Tout sélectionner" onchange="toggleSelectAll(this)"></th>
+                <th>Email</th><th>Nom</th><th>Statut</th><th>Étape</th><th>Variante</th><th>Compte d'envoi</th><th>Prochain envoi</th>
+              </tr></thead><tbody></tbody></table>
+            </div>
+          </div>
+          <div id="contactPreviewPanel" hidden style="flex:0 0 380px;position:sticky;top:24px;align-self:flex-start">
+            <div class="card">
+              <div class="inline" style="justify-content:space-between;margin-bottom:10px">
+                <h2 style="margin:0" id="contactPreviewTitle">Aperçu</h2>
+                <button class="ghost" onclick="$('#contactPreviewPanel').hidden=true">Fermer</button>
+              </div>
+              <div class="inline" style="margin-bottom:8px">
+                <span class="muted" style="white-space:nowrap">Compte :</span>
+                <select id="previewAccount2" style="width:auto" onchange="rerunContactPreview()"></select>
+              </div>
+              <details id="contactFields" style="margin-bottom:10px">
+                <summary class="muted" style="cursor:pointer;font-size:13px">✏️ Champs du contact (variables)</summary>
+                <div id="contactFieldsBody" style="margin-top:8px"></div>
+              </details>
+              <div class="preview" id="contactPreviewBody"></div>
+              <p class="muted" id="contactPreviewNote" style="margin-bottom:0"></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Onglet Import -->
+      <div id="paneImport" hidden>
+        <div class="card">
+          <h2>Ajouter des contacts à « <span id="importName"></span> »</h2>
+          <div class="row">
+            <div class="grow">
+              <h3 style="margin-top:0">Import CSV</h3>
+              <input id="csvFile" type="file" accept=".csv">
+              <p class="muted">Colonnes : email (obligatoire), first_name, last_name, company, …</p>
+              <button onclick="importCsv(this)">Importer</button> <span id="csvMsg" class="muted"></span>
+            </div>
+            <div class="grow">
+              <h3 style="margin-top:0">Synchroniser depuis Attio</h3>
+              <input id="attioAttr" placeholder="Slug de l'attribut statut (ex: stage)">
+              <input id="attioStatuses" placeholder="Statuts, séparés par des virgules">
+              <button onclick="attioSync(this)">Synchroniser</button> <span id="attioMsg" class="muted"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav("campaigns.html");
+
+let selectedId = null;   // null = création
+let accounts = [];
+let contactRows = [];
+
+async function loadList() {
+  const campaigns = await api("/api/campaigns");
+  const sel = $("#campSelect");
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">— Sélectionner —</option>` +
+    campaigns.map(c => `<option value="${c.id}" ${c.id === selectedId ? "selected" : ""}>${esc(c.name)} (${STATUS_LABELS[c.status] || c.status})</option>`).join("");
+  if (!sel.value && cur) sel.value = cur;
+  return campaigns;
+}
+
+function stepHtml(n, s) {
+  s = s || {};
+  return `<div class="step">
+    <div class="head">
+      <b>Étape ${n}</b>
+      <span>
+        ${n > 1 ? `<input class="wait" type="number" value="${s.wait_days ?? 3}" min="1" style="width:60px"> <span class="muted">jours après l’étape précédente</span>` : ""}
+        ${n > 1 ? `<button class="danger" onclick="this.closest('.step').remove(); renumberSteps()">✕</button>` : ""}
+      </span>
+    </div>
+    <input class="subject" placeholder="${n === 1 ? "Sujet A (obligatoire)" : "Sujet (vide = même fil, Re:)"}" value="${esc(s.subject)}">
+    ${n === 1 ? `<input class="subjectB" placeholder="Sujet B (optionnel — A/B test 50/50)" value="${esc(s.subject_b)}">` : ""}
+    <textarea class="body" placeholder="Bonjour {{first_name}},&#10;...">${esc(s.body)}</textarea>
+    <button class="ghost" onclick="previewStep(this.closest('.step'))">👁 Aperçu</button>
+  </div>`;
+}
+
+function renumberSteps() {
+  $$("#steps .step").forEach((div, i) => {
+    div.querySelector(".head b").textContent = `Étape ${i + 1}`;
+  });
+}
+
+function addStep(s) {
+  const n = $$("#steps .step").length + 1;
+  $("#steps").insertAdjacentHTML("beforeend", stepHtml(n, s));
+}
+
+function readSteps() {
+  return $$("#steps .step").map(div => ({
+    subject: div.querySelector(".subject").value,
+    subject_b: div.querySelector(".subjectB")?.value || undefined,
+    body: div.querySelector(".body").value,
+    wait_days: +(div.querySelector(".wait")?.value ?? 0),
+  }));
+}
+
+function newCampaign() {
+  selectedId = null;
+  location.hash = "new";
+  $("#editorTitle").textContent = "Nouvelle campagne";
+  $("#saveBtn").textContent = "Créer la campagne";
+  $("#statusZone").innerHTML = "";
+  $("#campName").value = "";
+  $("#campMsg").textContent = "";
+  $("#steps").innerHTML = "";
+  addStep();
+  $("#campTabs").hidden = true;
+  showPane("paneSeq");
+  $("#previewCard").hidden = true;
+  loadList();
+}
+
+function showTab(name) {
+  ["seq","stats","contacts","import"].forEach(t => {
+    $("#tab-" + t).classList.toggle("active", t === name);
+    $("#pane" + t.charAt(0).toUpperCase() + t.slice(1)).hidden = t !== name;
+  });
+  if (selectedId) history.replaceState(null, "", `#${selectedId}/${name}`);
+  if (name === "contacts") loadContacts();
+  if (name === "stats") loadStats();
+}
+
+function showPane(id) {
+  ["paneSeq","paneStats","paneContacts","paneImport"].forEach(p => {
+    const el = $("#" + p);
+    if (el) el.hidden = p !== id;
+  });
+}
+
+function renderStats(c) {
+  const launched = (c.contacts || 0) - (c.pending || 0) - (c.held || 0);
+  const reached  = (c.in_progress || 0) + (c.replied || 0) + (c.completed || 0);
+  const pct = (n, d) => d > 0 ? Math.round(n / d * 100) + "%" : "—";
+
+  const card = (value, pctVal, label) => `
+    <div class="stat-card">
+      ${pctVal ? `<div class="sp" style="margin-bottom:4px">${pctVal}</div>` : "<div style='height:20px'></div>"}
+      <div class="sv">${value}</div>
+      <div class="sl">${label}</div>
+    </div>`;
+
+  $("#statsContent").innerHTML = `
+    <div class="stat-section">Prospects</div>
+    <div class="stat-grid">
+      ${card(c.contacts, null, "Total dans la campagne")}
+      ${card(launched, pct(launched, c.contacts), "Lancés")}
+      ${card(reached, pct(reached, launched || 1), "Atteints")}
+      ${card(c.replied, pct(c.replied, reached || 1), "Ont répondu")}
+    </div>
+    <div class="stat-section">Délivrabilité</div>
+    <div class="stat-grid">
+      ${card(c.emails_sent, null, "Emails envoyés")}
+      ${card(c.bounced, pct(c.bounced, c.emails_sent || 1), "Bounces")}
+      ${card(c.opted_out, pct(c.opted_out, launched || 1), "Désinscrits")}
+      ${card(c.failed, pct(c.failed, c.emails_sent || 1), "Échecs")}
+    </div>
+    <div class="stat-section">Progression</div>
+    <div class="stat-grid">
+      ${card(c.pending, pct(c.pending, c.contacts || 1), "En attente d'envoi")}
+      ${card(c.in_progress, pct(c.in_progress, launched || 1), "Séquence en cours")}
+      ${card(c.completed, pct(c.completed, launched || 1), "Séquence terminée")}
+      ${c.ab_test ? card(`${c.reply_rate_a}% / ${c.reply_rate_b}%`, null, "Taux réponse A / B") : card(c.reply_rate + "%", null, "Taux de réponse global")}
+    </div>`;
+}
+
+async function loadStats() {
+  const campaigns = await api("/api/campaigns");
+  const c = campaigns.find(x => x.id === selectedId);
+  if (!c) return;
+  renderStats(c);
+  $("#statsStatusZone").innerHTML = `${pill(c.status)}
+    <button class="ghost" onclick="toggleStatus(${selectedId}, '${c.status}')">${c.status === "active" ? "⏸ Mettre en pause" : "▶ Lancer les envois"}</button>`;
+}
+
+async function selectCampaign(id, tab = "seq") {
+  selectedId = id;
+  const c = await api(`/api/campaigns/${id}`);
+  $("#editorTitle").textContent = `Modifier « ${c.name} »`;
+  $("#saveBtn").textContent = "Enregistrer les modifications";
+  $("#statusZone").innerHTML = `${pill(c.status)}
+    <button class="ghost" onclick="toggleStatus(${id}, '${c.status}')">${c.status === "active" ? "⏸ Mettre en pause" : "▶ Lancer les envois"}</button>
+    <button class="danger" onclick="deleteCampaign()">🗑 Supprimer</button>`;
+  $("#campName").value = c.name;
+  $("#campMsg").textContent = "";
+  $("#steps").innerHTML = "";
+  c.steps.forEach(s => addStep(s));
+  $("#importName").textContent = c.name;
+  $("#campTabs").hidden = false;
+  $("#tab-contacts").textContent = "Contacts";
+  statusFilter = "";
+  $("#contactSearch").value = "";
+  $("#contactPreviewPanel").hidden = true;
+  showTab(tab);
+  if (tab !== "contacts") loadContacts(); // alimente aussi l'autocomplétion des variables
+  $("#previewCard").hidden = true;
+  loadList();
+}
+
+async function toggleStatus(id, status) {
+  await api(`/api/campaigns/${id}/${status === "active" ? "pause" : "resume"}`, { method: "POST" });
+  selectCampaign(id);
+}
+
+async function deleteCampaign() {
+  const name = $("#campName").value;
+  if (!confirm(`Supprimer définitivement la campagne « ${name} » ?\n\nLes envois en cours seront arrêtés et tout l'historique de la campagne sera perdu. Les contacts restent dans le carnet global.`)) return;
+  try {
+    await api(`/api/campaigns/${selectedId}`, { method: "DELETE" });
+    selectedId = null;
+    location.hash = "";
+    const campaigns = await loadList();
+    if (campaigns.length) selectCampaign(campaigns[0].id);
+    else newCampaign();
+  } catch (e) { alert(e.message); }
+}
+
+async function saveCampaign() {
+  const payload = { name: $("#campName").value, steps: readSteps() };
+  const msg = $("#campMsg");
+  const btn = $("#saveBtn");
+  btn.disabled = true;
+  try {
+    if (selectedId) {
+      await api(`/api/campaigns/${selectedId}`, { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+      msg.textContent = "Modifications enregistrées ✓";
+      notify("Modifications enregistrées — les prochains envois utiliseront le nouveau contenu");
+    } else {
+      const { id } = await api("/api/campaigns", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+      msg.textContent = `Campagne « ${payload.name} » créée ✓`;
+      notify("Campagne créée — ajoutez des contacts via l'onglet Import");
+      await selectCampaign(id, "import");
+    }
+    msg.className = "ok";
+    loadList();
+  } catch (e) { msg.textContent = e.message; msg.className = "err"; }
+  btn.disabled = false;
+}
+
+// --- Aperçu ---
+// Deux entrées : 👁 sur une étape (contact par défaut) ou clic sur un contact
+// (l'email exact que CE prospect recevra à sa prochaine étape).
+async function runPreview({ stepDiv, contact }) {
+  const steps = $$("#steps .step");
+  if (!steps.length) return;
+  let div = stepDiv, note = "";
+
+  if (contact) {
+    const total = steps.length;
+    const idx = Math.min(contact.current_step, total - 1); // prochaine étape (index 0 = étape 1)
+    div = steps[idx];
+    note = contact.current_step >= total
+      ? `${contact.email} a déjà reçu toute la séquence — aperçu de la dernière étape (${total}/${total}).`
+      : `Aperçu pour ${contact.email} — prochaine étape : ${idx + 1}/${total}${contact.variant ? ` (variante ${contact.variant})` : ""}.`;
+  }
+  if (!div) return;
+
+  // Sujet : étape 1 = A ou B selon la variante du contact ; relance sans sujet = Re: sujet reçu
+  const first = steps[0];
+  const subjA = first.querySelector(".subject").value || "";
+  const subjB = first.querySelector(".subjectB")?.value || "";
+  const firstSubject = contact?.variant === "B" && subjB ? subjB : subjA;
+  const ownSubject = div.querySelector(".subject")?.value || "";
+  const subject = div === first ? firstSubject : (ownSubject || `Re: ${firstSubject}`);
+
+  const r = await api("/api/preview", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      subject,
+      body: div.querySelector(".body").value,
+      campaign_id: selectedId || undefined,
+      contact_id: contact?.contact_id,
+      account_id: contact?.account_id || +$("#previewAccount").value || undefined,
+    }),
+  });
+  $("#previewBody").innerHTML = `
+    <div class="hline">De : ${esc(r.from)}</div>
+    <div class="hline">À : ${esc(r.to)}</div>
+    <div class="hline"><b style="color:var(--text)">Objet : ${esc(r.subject)}</b></div>
+    <pre>${fmtBody(r.body)}</pre>`;
+  $("#previewNote").textContent = note || (r.sample_contact
+    ? "Aperçu avec un contact d'exemple (la campagne n'a pas encore de contacts)."
+    : "Aperçu avec le premier contact de la campagne — cliquez sur un contact du tableau pour le personnaliser.");
+  $("#previewCard").hidden = false;
+}
+
+let lastPreview = null;
+let lastContactPreview = null;
+function previewStep(stepDiv) { lastPreview = { stepDiv }; runPreview(lastPreview); }
+function rerunPreview() { if (lastPreview) runPreview(lastPreview); }
+function rerunContactPreview() { if (lastContactPreview) runContactPreview(lastContactPreview); }
+function previewContact(contactId) {
+  const contact = contactRows.find(r => r.contact_id === contactId);
+  if (!contact) return;
+  lastContactPreview = contact;
+  // Présélectionne le compte réellement assigné au contact (fil en cours)
+  if (contact.account_id) $("#previewAccount2").value = contact.account_id;
+  renderContactFields(contact);
+  runContactPreview(contact);
+}
+
+// --- Champs du contact (standards + colonnes CSV personnalisées) ---
+function renderContactFields(contact) {
+  let extra = {};
+  try { extra = contact.extra ? JSON.parse(contact.extra) : {}; } catch {}
+  const row = (attr, key, val) => `
+    <div class="inline" style="gap:6px;margin-bottom:4px">
+      <span class="muted" style="flex:0 0 115px;font-size:12px;overflow:hidden;text-overflow:ellipsis" title="{{${esc(key)}}}">{{${esc(key)}}}</span>
+      <input ${attr}="${esc(key)}" value="${esc(val ?? "")}" style="margin:0">
+    </div>`;
+  $("#contactFieldsBody").innerHTML =
+    row("data-field", "first_name", contact.first_name) +
+    row("data-field", "last_name", contact.last_name) +
+    row("data-field", "company", contact.company) +
+    Object.entries(extra).map(([k, v]) => row("data-extra", k, v)).join("") + `
+    <div class="inline" style="gap:6px;margin:10px 0 6px">
+      <input id="newFieldName" placeholder="nouveau_champ" style="margin:0;flex:0 0 115px">
+      <input id="newFieldValue" placeholder="valeur" style="margin:0">
+    </div>
+    <button class="ghost" onclick="saveContactFields()" style="width:100%">Enregistrer les champs</button>
+   `;
+}
+
+async function saveContactFields() {
+  const c = lastContactPreview;
+  if (!c) return;
+  const body = { extra: {} };
+  $$("#contactFieldsBody [data-field]").forEach(i => body[i.getAttribute("data-field")] = i.value);
+  $$("#contactFieldsBody [data-extra]").forEach(i => body.extra[i.getAttribute("data-extra")] = i.value);
+  const nk = $("#newFieldName").value.trim(), nv = $("#newFieldValue").value;
+  if (nk) body.extra[nk] = nv;
+  try {
+    await api(`/api/contacts/${c.contact_id}`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    notify("Champs enregistrés — aperçu mis à jour");
+    await loadContacts();
+    const updated = contactRows.find(r => r.contact_id === c.contact_id);
+    if (updated) {
+      lastContactPreview = updated;
+      renderContactFields(updated);
+      $("#contactFields").open = true;
+      runContactPreview(updated);
+    }
+  } catch (e) { notify(e.message, false); }
+}
+
+async function runContactPreview(contact) {
+  const steps = $$("#steps .step");
+  if (!steps.length) return;
+  $("#contactPreviewTitle").textContent = contact.email;
+  $("#contactPreviewBody").innerHTML = '<p class="muted" style="margin:0">Chargement de l\'aperçu…</p>';
+  $("#contactPreviewNote").textContent = "";
+  $("#contactPreviewPanel").hidden = false;
+  const total = steps.length;
+  const accountId = +$("#previewAccount2").value || contact.account_id || undefined;
+
+  const first = steps[0];
+  const subjA = first.querySelector(".subject").value || "";
+  const subjB = first.querySelector(".subjectB")?.value || "";
+  const firstSubject = contact?.variant === "B" && subjB ? subjB : subjA;
+
+  // Render all steps in parallel
+  const renders = await Promise.all(steps.map(async (div, i) => {
+    const ownSubject = div.querySelector(".subject")?.value || "";
+    const subject = i === 0 ? firstSubject : (ownSubject || `Re: ${firstSubject}`);
+    const r = await api("/api/preview", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ subject, body: div.querySelector(".body").value, campaign_id: selectedId, contact_id: contact.contact_id, account_id: accountId }),
+    });
+    const isCurrent = i === Math.min(contact.current_step, total - 1);
+    const waitDays = div.querySelector(".wait")?.value;
+    const waitLabel = i === 0 ? "" : `<div class="muted" style="text-align:center;padding:6px 0;font-size:12px">↓ J+${waitDays || "?"}</div>`;
+    return `${waitLabel}<div class="preview" style="margin-bottom:0;${isCurrent ? "border-color:var(--accent)" : "opacity:0.6"}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <span class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.05em">Étape ${i + 1}/${total}</span>
+        ${isCurrent ? `<span class="pill active" style="font-size:10px">prochaine</span>` : ""}
+      </div>
+      <div class="hline">De : ${esc(r.from)}</div>
+      <div class="hline"><b style="color:var(--text)">Objet : ${esc(r.subject)}</b></div>
+      <pre style="max-height:180px;overflow-y:auto">${fmtBody(r.body)}</pre>
+    </div>`;
+  }));
+
+  $("#contactPreviewTitle").textContent = contact.email;
+  $("#contactPreviewBody").innerHTML = renders.join("");
+  $("#contactPreviewNote").textContent = contact.current_step >= total ? "Séquence terminée." : "";
+  $("#contactPreviewPanel").hidden = false;
+}
+
+// --- Contacts & import ---
+let statusFilter = "";
+
+function setStatusFilter(s) { statusFilter = s; renderContacts(); }
+
+function renderContacts() {
+  const q = $("#contactSearch").value.trim().toLowerCase();
+  const rows = contactRows.filter(r =>
+    (!statusFilter || r.status === statusFilter) &&
+    (!q || [r.email, r.first_name, r.last_name].filter(Boolean).join(" ").toLowerCase().includes(q))
+  );
+
+  const counts = {};
+  contactRows.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
+  $("#statusChips").innerHTML = contactRows.length ? `
+    <button class="chip ${!statusFilter ? "active" : ""}" onclick="setStatusFilter('')">Tous (${contactRows.length})</button>` +
+    Object.entries(counts).map(([s, n]) =>
+      `<button class="chip ${statusFilter === s ? "active" : ""}" onclick="setStatusFilter('${s}')">${STATUS_LABELS[s] || s} (${n})</button>`
+    ).join("") : "";
+
+  $("#contacts tbody").innerHTML = rows.map(r => `
+    <tr style="cursor:pointer" title="Voir l'aperçu personnalisé pour ce contact" onclick="previewContact(${r.contact_id})">
+      <td onclick="event.stopPropagation()"><input type="checkbox" class="contactChk" data-id="${r.cc_id}" data-status="${r.status}" onchange="updateSelection()"></td>
+      <td>${esc(r.email)}</td>
+      <td>${esc([r.first_name, r.last_name].filter(Boolean).join(" "))}</td>
+      <td>${pill(r.status)}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
+      <td>${r.current_step || "—"}</td>
+      <td>${r.variant || "—"}</td>
+      <td class="muted">${esc(r.sender || "—")}</td>
+      <td class="muted">${r.next_send_at ? new Date(r.next_send_at).toLocaleString("fr-FR") : "—"}</td>
+    </tr>
+  `).join("") || `<tr><td colspan="8" class="muted">${contactRows.length
+    ? "Aucun contact ne correspond à la recherche."
+    : `Aucun contact — <a href="#" onclick="showTab('import');return false">ajoutez-en via l'onglet Import</a>.`}</td></tr>`;
+  updateSelection();
+}
+
+async function loadContacts() {
+  contactRows = await api(`/api/campaigns/${selectedId}/contacts`);
+  $("#tab-contacts").textContent = contactRows.length ? `Contacts (${contactRows.length})` : "Contacts";
+  renderContacts();
+}
+
+function updateSelection() {
+  const all = $$("#contacts .contactChk");
+  const checked = $$("#contacts .contactChk:checked");
+  $("#selCount").textContent = checked.length;
+  // Lancer : uniquement des contacts non lancés ; arrêter : au moins une séquence active
+  $("#launchBtn").disabled = !checked.some(c => c.dataset.status === "held");
+  $("#stopBtn").disabled = !checked.some(c => ["held", "pending", "in_progress"].includes(c.dataset.status));
+  $("#removeBtn").disabled = checked.length === 0;
+  $("#statusSet").disabled = checked.length === 0;
+  if (all.length > 0) {
+    $("#selectAll").indeterminate = checked.length > 0 && checked.length < all.length;
+    $("#selectAll").checked = checked.length === all.length;
+  } else {
+    $("#selectAll").indeterminate = false;
+    $("#selectAll").checked = false;
+  }
+}
+
+function toggleSelectAll(cb) {
+  $$("#contacts .contactChk").forEach(c => c.checked = cb.checked);
+  updateSelection();
+}
+
+async function bulkContacts(action, confirmMsg, toastOf) {
+  const ids = $$("#contacts .contactChk:checked").map(c => +c.dataset.id);
+  if (!ids.length) return;
+  if (confirmMsg && !confirm(confirmMsg.replace("{n}", ids.length))) return;
+  try {
+    const r = await api(`/api/campaigns/${selectedId}/${action}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ ids })
+    });
+    const [msg, ok] = toastOf(r);
+    notify(msg, ok);
+    loadContacts(); loadList();
+  } catch (e) { notify(e.message, false); }
+}
+
+function launchSelected() {
+  bulkContacts("launch-contacts", null, r => r.launched
+    ? [`▶ ${r.launched} contact(s) lancé(s) — la campagne est active`, true]
+    : ["Aucun contact « non lancé » dans la sélection", false]);
+}
+function stopSelected() {
+  bulkContacts("stop-contacts", "Arrêter la séquence pour {n} contact(s) ? Plus aucun email ne leur sera envoyé dans cette campagne.",
+    r => [`⏸ ${r.stopped} séquence(s) arrêtée(s)`, true]);
+}
+function removeSelected() {
+  bulkContacts("remove-contacts", "Retirer {n} contact(s) de la campagne ? Leur historique d'envoi dans cette campagne sera supprimé (le contact reste dans le carnet global).",
+    r => [`${r.removed} contact(s) retiré(s) de la campagne`, true]);
+}
+
+// Statuts assignables à la main (les autres entrées de STATUS_LABELS concernent les campagnes)
+const SETTABLE_STATUSES = ["held", "pending", "in_progress", "replied", "opted_out", "bounced", "completed", "stopped", "failed"];
+
+async function setStatusSelected(sel) {
+  const status = sel.value;
+  sel.value = "";
+  if (!status) return;
+  const ids = $$("#contacts .contactChk:checked").map(c => +c.dataset.id);
+  if (!ids.length) return;
+  const warn =
+    status === "opted_out" ? "\n\n⚠️ Ils seront aussi ajoutés à la liste globale do_not_contact (plus jamais contactés, toutes campagnes)." :
+    status === "pending" ? "\n\nIls repartiront au prochain créneau d'envoi si la campagne est active." :
+    status === "in_progress" ? "\n\nLa séquence reprendra à leur prochaine étape dès le prochain créneau d'envoi." : "";
+  if (!confirm(`Passer ${ids.length} contact(s) au statut « ${STATUS_LABELS[status]} » ?${warn}`)) return;
+  try {
+    const r = await api(`/api/campaigns/${selectedId}/set-status`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ ids, status })
+    });
+    notify(`${r.changed} contact(s) passé(s) en « ${STATUS_LABELS[status]} »`);
+    loadContacts(); loadList();
+  } catch (e) { notify(e.message, false); }
+}
+
+async function importCsv(btn) {
+  const file = $("#csvFile").files[0];
+  if (!file) { $("#csvMsg").textContent = "Choisissez un fichier"; return; }
+  btn.disabled = true; btn.textContent = "Import en cours…";
+  try {
+    const r = await api(`/api/campaigns/${selectedId}/import`, { method: "POST", headers: {"Content-Type":"text/csv"}, body: await file.text() });
+    $("#csvMsg").textContent = `${r.imported} importé(s), ${r.updated || 0} mis à jour, ${r.skipped} ignoré(s)` +
+      (r.errors?.length ? ` — ${r.errors.length} rejeté(s) : ${r.errors.slice(0, 3).join(" · ")}${r.errors.length > 3 ? "…" : ""}` : "");
+    loadList();
+    if (r.imported || r.updated) {
+      notify(`${r.imported} contact(s) importé(s)${r.updated ? `, ${r.updated} mis à jour` : ""}`);
+      showTab("contacts");
+    }
+    else notify("Aucun contact importé" + (r.errors?.length ? ` (${r.errors.length} rejeté(s))` : ""), false);
+  } catch (e) { $("#csvMsg").textContent = e.message; notify(e.message, false); }
+  btn.disabled = false; btn.textContent = "Importer";
+}
+
+async function attioSync(btn) {
+  btn.disabled = true; btn.textContent = "Synchronisation…";
+  try {
+    const r = await api(`/api/campaigns/${selectedId}/attio-sync`, {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        status_attribute: $("#attioAttr").value,
+        statuses: $("#attioStatuses").value.split(",").map(s => s.trim()).filter(Boolean),
+      })});
+    $("#attioMsg").textContent = `${r.fetched} récupéré(s), ${r.imported} inscrit(s), ${r.updated || 0} mis à jour` +
+      (r.errors?.length ? ` — ${r.errors.length} rejeté(s)` : "");
+    loadList();
+    if (r.imported || r.updated) {
+      notify(`Attio : ${r.imported} contact(s) importé(s)${r.updated ? `, ${r.updated} mis à jour` : ""}`);
+      showTab("contacts");
+    }
+    else notify(`Attio : ${r.fetched} trouvé(s), aucun nouveau contact inscrit`, false);
+  } catch (e) { $("#attioMsg").textContent = e.message; notify(e.message, false); }
+  btn.disabled = false; btn.textContent = "Synchroniser";
+}
+
+// --- Init ---
+(async function init() {
+  api("/api/settings").then(s => {
+    if (s.attio_import_attribute && !$("#attioAttr").value) $("#attioAttr").value = s.attio_import_attribute;
+  });
+  $("#statusSet").innerHTML = `<option value="">Changer le statut…</option>` +
+    SETTABLE_STATUSES.map(s => `<option value="${s}">→ ${STATUS_LABELS[s]}</option>`).join("");
+  accounts = await api("/api/accounts");
+  const accountOpts = `<option value="">(1er compte actif)</option>` +
+    accounts.map(a => `<option value="${a.id}">${esc(a.email)}</option>`).join("");
+  $("#previewAccount").innerHTML = accountOpts;
+  $("#previewAccount2").innerHTML = accountOpts;
+  const campaigns = await loadList();
+  const [hid, htab] = location.hash.slice(1).split("/");
+  const tab = ["seq","stats","contacts","import"].includes(htab) ? htab : "seq";
+  if (hid && hid !== "new" && campaigns.some(c => c.id === +hid)) {
+    selectCampaign(+hid, tab);
+  } else if (hid !== "new" && campaigns.length) {
+    selectCampaign(campaigns[0].id);
+  } else {
+    newCampaign();
+  }
+})();
+
+// Échap ferme les panneaux d'aperçu
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    $("#contactPreviewPanel").hidden = true;
+    $("#previewCard").hidden = true;
+  }
+});
+
+// --- Autocomplétion des variables : taper {{ propose les choix disponibles ---
+const BASE_VARS = ["first_name", "last_name", "company", "email", "sender_name", "signature"];
+let acBox = null, acItems = [], acIndex = 0, acField = null;
+
+function availableVars() {
+  const extras = new Set();
+  contactRows.forEach(r => {
+    if (r.extra) { try { Object.keys(JSON.parse(r.extra)).forEach(k => extras.add(k)); } catch {} }
+  });
+  return [...BASE_VARS, ...extras];
+}
+
+function closeAc() { if (acBox) acBox.remove(); acBox = null; acField = null; }
+
+function openAc(field) {
+  const before = field.value.slice(0, field.selectionStart);
+  const m = before.match(/\{\{\s*([\p{L}\p{N}_]*)$/u);
+  if (!m) return closeAc();
+  const prefix = m[1].toLowerCase();
+  acItems = availableVars().filter(v => v.toLowerCase().startsWith(prefix));
+  if (!acItems.length) return closeAc();
+  acIndex = 0; acField = field;
+  if (!acBox) {
+    acBox = document.createElement("div");
+    acBox.className = "autocomplete";
+    document.body.appendChild(acBox);
+  }
+  const r = field.getBoundingClientRect();
+  acBox.style.left = (r.left + window.scrollX) + "px";
+  acBox.style.top = (r.bottom + window.scrollY + 2) + "px";
+  renderAc();
+}
+
+function renderAc() {
+  acBox.innerHTML = acItems.map((v, i) =>
+    `<div class="${i === acIndex ? "sel" : ""}" onmousedown="event.preventDefault(); pickAc(${i})">{{${esc(v)}}}</div>`
+  ).join("");
+}
+
+function pickAc(i) {
+  const field = acField, v = acItems[i];
+  if (!field || v == null) return;
+  const pos = field.selectionStart;
+  const before = field.value.slice(0, pos).replace(/\{\{\s*[\p{L}\p{N}_]*$/u, `{{${v}}}`);
+  const after = field.value.slice(pos).replace(/^\s*\}\}/, ""); // pas de }} en double
+  field.value = before + after;
+  closeAc();
+  field.focus();
+  field.setSelectionRange(before.length, before.length);
+}
+
+document.addEventListener("input", e => {
+  if (e.target.matches?.("#steps .subject, #steps .subjectB, #steps .body")) openAc(e.target);
+});
+document.addEventListener("keydown", e => {
+  if (!acBox || !acField) return;
+  if (e.key === "ArrowDown") { e.preventDefault(); acIndex = (acIndex + 1) % acItems.length; renderAc(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); acIndex = (acIndex - 1 + acItems.length) % acItems.length; renderAc(); }
+  else if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pickAc(acIndex); }
+  else if (e.key === "Escape") { e.stopPropagation(); closeAc(); }
+}, true);
+document.addEventListener("mousedown", e => {
+  if (acBox && !acBox.contains(e.target) && e.target !== acField) closeAc();
+});
+</script>
+</body>
+</html>

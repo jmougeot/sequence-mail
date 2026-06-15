@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sequence Mail — Tableau de bord</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>Tableau de bord</h1>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="card">
+    <h2>Comparaison des campagnes</h2>
+    <table id="campaigns"><thead><tr>
+      <th>Campagne</th><th>Statut</th><th>Contacts</th><th>Emails envoyés</th><th>Réponses</th><th>Taux de réponse</th><th>Progression</th><th></th>
+    </tr></thead><tbody></tbody></table>
+    <p><a class="btn" href="campaigns.html#new">+ Nouvelle campagne</a></p>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav("index.html");
+
+async function refresh() {
+  const [accounts, campaigns] = await Promise.all([api("/api/accounts"), api("/api/campaigns")]);
+  const today = new Date().toISOString().slice(0, 10);
+  const sentToday = accounts.reduce((n, a) => n + (a.sent_today_date === today ? a.sent_today : 0), 0);
+  const quota = accounts.filter(a => a.active).reduce((n, a) => n + a.daily_limit, 0);
+  const inProgress = campaigns.reduce((n, c) => n + c.in_progress + c.pending, 0);
+  const replied = campaigns.reduce((n, c) => n + c.replied, 0);
+
+  $("#kpis").innerHTML = [
+    [accounts.filter(a => a.active).length + " / " + accounts.length, "comptes actifs"],
+    [sentToday + " / " + quota, "envoyés aujourd'hui"],
+    [inProgress, "contacts dans le workflow"],
+    [replied, "réponses obtenues"],
+  ].map(([v, l]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join("");
+
+  $("#campaigns tbody").innerHTML = campaigns.map(c => `
+    <tr>
+      <td><a href="campaigns.html#${c.id}" style="color:var(--text)"><b>${esc(c.name)}</b></a> <span class="muted">#${c.id} · ${c.steps} étape(s)</span></td>
+      <td>${pill(c.status)}</td>
+      <td>${c.contacts}${c.bounced ? ` <span class="muted" title="bounces">(${c.bounced} ⚠️)</span>` : ""}</td>
+      <td>${c.emails_sent}</td>
+      <td>${c.replied}${c.opted_out ? ` <span class="muted" title="désinscrits">(${c.opted_out} 🚫)</span>` : ""}</td>
+      <td><b>${c.reply_rate}%</b>${c.ab_test ? `<div class="muted">A ${c.reply_rate_a}% · B ${c.reply_rate_b}%</div>` : ""}</td>
+      <td style="min-width:120px"><div class="bar"><div style="width:${c.progress}%"></div></div><span class="muted">${c.progress}%</span></td>
+      <td><a class="btn ghost" href="campaigns.html#${c.id}">Gérer</a></td>
+    </tr>
+  `).join("") || '<tr><td colspan="8" class="muted">Aucune campagne — créez-en une depuis la page Campagnes.</td></tr>';
+}
+
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
