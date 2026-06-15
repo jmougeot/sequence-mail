@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sequence Mail — Paramètres</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+  <h1>Paramètres</h1>
+
+  <div class="card">
+    <h2>Comptes d'envoi (Google Workspace)</h2>
+    <p id="connectedMsg" class="ok" hidden></p>
+    <table id="accounts"><thead><tr>
+      <th>Email</th><th>Nom d'expéditeur</th><th>Signature</th><th>Envoyés aujourd'hui</th><th>Quota / jour</th><th>Warm-up</th><th>Actif</th>
+    </tr></thead><tbody></tbody></table>
+    <p><a class="btn" href="/auth/google">+ Connecter un compte Google</a></p>
+    <p class="muted">Le nom apparaît dans le champ « De » des emails du compte ; la signature (variables acceptées) s'insère à l'emplacement de {{signature}} dans les étapes de vos campagnes.
+    <b>Warm-up</b> : montée en charge automatique — un compte démarre à 10 emails/jour puis gagne +5/semaine jusqu'à son quota (recommandé pour les boîtes récentes ; décochez pour une boîte déjà rodée).
+    Si un compte se décoche tout seul (colonne Actif), son accès Google a été révoqué : reconnectez la même adresse pour le réactiver.</p>
+  </div>
+
+  <div class="card">
+    <h2>Délivrabilité &amp; intégrations</h2>
+    <table id="settings"><tbody></tbody></table>
+    <p class="muted">Ces réglages se modifient dans le fichier <code>.env</code> (puis redémarrer le serveur). Voir <code>.env.example</code>.</p>
+  </div>
+</div>
+
+<script src="app.js"></script>
+<script>
+renderNav("settings.html");
+
+const connected = new URLSearchParams(location.search).get("connected");
+if (connected) {
+  $("#connectedMsg").textContent = `Compte ${connected} connecté ✓`;
+  $("#connectedMsg").hidden = false;
+}
+
+async function updateAccount(id, patch) {
+  await api(`/api/accounts/${id}`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify(patch) });
+  refresh();
+}
+
+async function refresh() {
+  // Ne pas réécrire le tableau pendant une saisie
+  if (document.activeElement && $("#accounts").contains(document.activeElement)) return;
+  const accounts = await api("/api/accounts");
+  const today = new Date().toISOString().slice(0, 10);
+  $("#accounts tbody").innerHTML = accounts.map(a => `
+    <tr><td>${esc(a.email)}</td>
+    <td><input value="${esc(a.from_name)}" placeholder="ex: Jacques M." style="width:130px" onchange="updateAccount(${a.id}, {from_name: this.value})"></td>
+    <td><textarea style="min-height:40px; width:220px" placeholder="Cordialement,&#10;Jacques" onchange="updateAccount(${a.id}, {signature: this.value})">${esc(a.signature)}</textarea></td>
+    <td>${a.sent_today_date === today ? a.sent_today : 0} / ${a.effective_limit}</td>
+    <td><input type="number" value="${a.daily_limit}" style="width:70px" onchange="updateAccount(${a.id}, {daily_limit: +this.value})">
+      ${a.warmup && a.effective_limit < a.daily_limit ? `<div class="muted">effectif : ${a.effective_limit}/j (warm-up)</div>` : ""}</td>
+    <td><input type="checkbox" ${a.warmup ? "checked" : ""} title="Montée en charge progressive" onchange="updateAccount(${a.id}, {warmup: this.checked})"></td>
+    <td><input type="checkbox" ${a.active ? "checked" : ""} onchange="updateAccount(${a.id}, {active: this.checked})"></td></tr>
+  `).join("") || '<tr><td colspan="7" class="muted">Aucun compte connecté</td></tr>';
+}
+
+async function loadSettings() {
+  const s = await api("/api/settings");
+  const d = s.deliverability;
+  const rows = [
+    ["Fenêtre d'envoi", `${d.sendWindowStart}h – ${d.sendWindowEnd}h ${d.weekdaysOnly ? "(lundi–vendredi)" : "(7j/7)"}`],
+    ["Délai entre 2 envois d'un même compte", `${d.minGapSeconds} à ${d.maxGapSeconds} secondes (aléatoire)`],
+    ["Quota quotidien par défaut", `${d.defaultDailyLimit} emails / compte (modifiable ci-dessus par compte)`],
+    ["Google OAuth", s.google_configured ? "✅ configuré" : "❌ GOOGLE_CLIENT_ID/SECRET manquants dans .env"],
+    ["Attio (import)", s.attio_configured ? "✅ configuré" : "— ATTIO_API_KEY non renseigné (optionnel)"],
+    ["Attio (suivi d'avancement)", s.attio_stage_attribute ? `✅ écrit dans l'attribut « ${esc(s.attio_stage_attribute)} »` : "— ATTIO_STAGE_ATTRIBUTE non renseigné (optionnel)"],
+  ];
+  $("#settings tbody").innerHTML = rows.map(([k, v]) => `<tr><th style="width:280px">${k}</th><td>${v}</td></tr>`).join("");
+}
+
+refresh();
+loadSettings();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
