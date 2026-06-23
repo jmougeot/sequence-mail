@@ -13,16 +13,6 @@ export const config = {
     clientId: process.env.GOOGLE_CLIENT_ID ?? "",
     clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   },
-  // Suivi des emails. Le pixel d'ouverture et les liens cliquables pointent vers
-  // BASE_URL : ils ne marchent que si BASE_URL est une URL PUBLIQUE atteignable par
-  // le destinataire (pas localhost). NB : l'ouverture est peu fiable (Apple Mail
-  // Privacy Protection et Gmail préchargent/masquent les images) — le clic est le
-  // signal solide.
-  tracking: {
-    enabled: (process.env.TRACK_ENABLED ?? "true") !== "false",
-    opens: (process.env.TRACK_OPENS ?? "true") !== "false",
-    clicks: (process.env.TRACK_CLICKS ?? "true") !== "false",
-  },
   // Lien personnalisé par prospect, à placer dans l'email via {{link}}. Il pointe
   // vers VISIT_BASE_URL (idéalement un sous-domaine type sequence.example.com qui sert
   // cette app), journalise la visite côté serveur (fiable), puis redirige 302 vers
@@ -44,6 +34,10 @@ export const config = {
     weekdaysOnly: (process.env.WEEKDAYS_ONLY ?? "true") !== "false",
     minGapSeconds: int("MIN_GAP_SECONDS", 90),
     maxGapSeconds: int("MAX_GAP_SECONDS", 420),
+    // Warm-up email : on démarre bas et on monte par palier hebdomadaire jusqu'au
+    // quota du compte. Indispensable sur un domaine neuf (réputation à construire).
+    warmupStart: int("WARMUP_START", 5),
+    warmupRamp: int("WARMUP_RAMP", 5),
   },
   // Étapes LinkedIn (invitations/messages via l'extension Chrome). Ces garde-fous
   // sont LE rempart anti-ban : plafonds du jour, journée ouvrée, délais aléatoires

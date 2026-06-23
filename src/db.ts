@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   last_sent_at INTEGER,                 -- epoch ms du dernier envoi
   next_allowed_at INTEGER,              -- epoch ms avant lequel ce compte ne doit pas renvoyer
   active INTEGER NOT NULL DEFAULT 1,
-  warmup INTEGER NOT NULL DEFAULT 1,    -- montée en charge auto : 10/j puis +5/semaine jusqu'au quota
+  warmup INTEGER NOT NULL DEFAULT 1,    -- montée en charge auto (WARMUP_START/j puis +WARMUP_RAMP/sem. jusqu'au quota)
   created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
 );
 
@@ -139,37 +139,32 @@ addColumnIfMissing("accounts", "warmup", "warmup INTEGER NOT NULL DEFAULT 1");
 addColumnIfMissing("steps", "channel", "channel TEXT NOT NULL DEFAULT 'email'");
 addColumnIfMissing("steps", "li_action", "li_action TEXT");
 addColumnIfMissing("contacts", "linkedin", "linkedin TEXT");
-addColumnIfMissing("messages", "track_id", "track_id TEXT");
 addColumnIfMissing("campaign_contacts", "visit_token", "visit_token TEXT");
+// Warm-up : la montée en charge repart de cette date (et non de la création du
+// compte), pour qu'activer le warm-up sur un compte ancien recommence vraiment bas.
+addColumnIfMissing("accounts", "warmup_started_at", "warmup_started_at INTEGER");
+// Jeton de désinscription stable par contact de campagne (en-tête List-Unsubscribe).
+addColumnIfMissing("campaign_contacts", "unsub_token", "unsub_token TEXT");
+db.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_unsub_token ON campaign_contacts (unsub_token) WHERE unsub_token IS NOT NULL"
+);
 
-// --- Suivi ouverture/clic des emails ---
-// Chaque email envoyé reçoit un track_id aléatoire (colonne messages.track_id).
-// Le pixel d'ouverture et les liens réécrits portent ce jeton ; les events sont
-// rattachés au message (donc au contact) via track_id. tracked_links mémorise
-// l'URL d'origine de chaque lien réécrit pour la redirection.
+// Nettoyage de l'ancien suivi ouverture/clic (pixel + liens réécrits), retiré au
+// profit du seul lien {{link}} : on supprime tables, index et colonne devenus inutiles.
 db.exec(`
-CREATE TABLE IF NOT EXISTS tracked_links (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  track_id TEXT NOT NULL,
-  ordinal INTEGER NOT NULL,             -- n° du lien dans l'email (1, 2, 3…)
-  url TEXT NOT NULL,                    -- URL d'origine vers laquelle rediriger
-  UNIQUE (track_id, ordinal)
-);
+DROP INDEX IF EXISTS idx_messages_track;
+DROP INDEX IF EXISTS idx_email_events_track;
+DROP INDEX IF EXISTS idx_tracked_links_track;
+DROP TABLE IF EXISTS email_events;
+DROP TABLE IF EXISTS tracked_links;
+`);
+try {
+  db.exec("ALTER TABLE messages DROP COLUMN track_id");
+} catch {
+  // colonne déjà absente (base récente) : rien à faire
+}
 
-CREATE TABLE IF NOT EXISTS email_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  track_id TEXT NOT NULL,
-  type TEXT NOT NULL,                   -- 'open' | 'click'
-  ordinal INTEGER,                      -- lien cliqué (NULL pour une ouverture)
-  at INTEGER NOT NULL,
-  user_agent TEXT,
-  ip TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_email_events_track ON email_events (track_id, type);
-CREATE INDEX IF NOT EXISTS idx_tracked_links_track ON tracked_links (track_id);
-CREATE INDEX IF NOT EXISTS idx_messages_track ON messages (track_id);
-
+db.exec(`
 -- Visites du lien personnalisé {{link}} : un jeton stable par campaign_contact
 -- (campaign_contacts.visit_token) ; chaque ouverture du lien crée une ligne ici.
 CREATE TABLE IF NOT EXISTS visits (

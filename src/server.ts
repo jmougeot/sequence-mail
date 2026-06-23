@@ -7,7 +7,8 @@ import { importContacts, parseCsv, renderTemplate } from "./services/contacts.js
 import { syncFromAttio } from "./services/attio.js";
 import { effectiveDailyLimit } from "./services/scheduler.js";
 import { registerOutreachRoutes } from "./services/outreach-routes.js";
-import { registerTrackingRoutes } from "./services/tracking.js";
+import { registerVisitRoutes } from "./services/visits.js";
+import { registerUnsubscribeRoutes } from "./services/unsubscribe.js";
 
 export function createServer(): express.Express {
   const app = express();
@@ -21,8 +22,11 @@ export function createServer(): express.Express {
   // --- Étapes LinkedIn (consommées par l'extension Chrome) ---
   registerOutreachRoutes(app);
 
-  // --- Suivi ouverture/clic des emails (pixel + redirection de liens) ---
-  registerTrackingRoutes(app);
+  // --- Lien personnalisé {{link}} + suivi des visites ---
+  registerVisitRoutes(app);
+
+  // --- Désinscription un-clic (List-Unsubscribe) ---
+  registerUnsubscribeRoutes(app);
 
   // --- Comptes Google ---
   app.get("/auth/google", (_req, res) => res.redirect(authUrl()));
@@ -39,9 +43,9 @@ export function createServer(): express.Express {
   app.get("/api/accounts", (_req, res) => {
     const rows = db
       .prepare(
-        "SELECT id, email, from_name, signature, daily_limit, sent_today, sent_today_date, active, warmup, created_at FROM accounts ORDER BY email"
+        "SELECT id, email, from_name, signature, daily_limit, sent_today, sent_today_date, active, warmup, warmup_started_at, created_at FROM accounts ORDER BY email"
       )
-      .all() as Array<{ daily_limit: number; warmup: number; created_at: number }>;
+      .all() as Array<{ daily_limit: number; warmup: number; warmup_started_at: number | null; created_at: number }>;
     res.json(rows.map((r) => ({ ...r, effective_limit: effectiveDailyLimit(r) })));
   });
 
@@ -147,17 +151,6 @@ export function createServer(): express.Express {
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'awaiting_li') AS awaiting_li,
            (SELECT COUNT(*) FROM messages m JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
               WHERE cc.campaign_id = cp.id) AS emails_sent,
-           (SELECT COUNT(DISTINCT m.campaign_contact_id) FROM messages m
-              JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
-              WHERE cc.campaign_id = cp.id AND m.track_id IS NOT NULL) AS emailed,
-           (SELECT COUNT(DISTINCT m.campaign_contact_id) FROM messages m
-              JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
-              JOIN email_events ev ON ev.track_id = m.track_id AND ev.type = 'open'
-              WHERE cc.campaign_id = cp.id) AS opened,
-           (SELECT COUNT(DISTINCT m.campaign_contact_id) FROM messages m
-              JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
-              JOIN email_events ev ON ev.track_id = m.track_id AND ev.type = 'click'
-              WHERE cc.campaign_id = cp.id) AS clicked,
            (SELECT COUNT(DISTINCT v.cc_id) FROM visits v
               JOIN campaign_contacts cc ON cc.id = v.cc_id
               WHERE cc.campaign_id = cp.id) AS visited,
@@ -472,14 +465,6 @@ export function createServer(): express.Express {
         `SELECT c.id AS contact_id, c.email, c.first_name, c.last_name, c.company, c.linkedin, c.extra,
                 cc.id AS cc_id, cc.status, cc.current_step, cc.variant, cc.account_id,
                 cc.next_send_at, cc.replied_at, cc.error, a.email AS sender,
-                (SELECT COUNT(*) FROM messages m JOIN email_events ev ON ev.track_id = m.track_id
-                   WHERE m.campaign_contact_id = cc.id AND ev.type = 'open') AS open_count,
-                (SELECT MIN(ev.at) FROM messages m JOIN email_events ev ON ev.track_id = m.track_id
-                   WHERE m.campaign_contact_id = cc.id AND ev.type = 'open') AS opened_at,
-                (SELECT COUNT(*) FROM messages m JOIN email_events ev ON ev.track_id = m.track_id
-                   WHERE m.campaign_contact_id = cc.id AND ev.type = 'click') AS click_count,
-                (SELECT MIN(ev.at) FROM messages m JOIN email_events ev ON ev.track_id = m.track_id
-                   WHERE m.campaign_contact_id = cc.id AND ev.type = 'click') AS clicked_at,
                 (SELECT COUNT(*) FROM visits v WHERE v.cc_id = cc.id) AS visit_count,
                 (SELECT MAX(v.at) FROM visits v WHERE v.cc_id = cc.id) AS last_visit_at
          FROM campaign_contacts cc

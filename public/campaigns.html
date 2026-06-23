@@ -106,7 +106,7 @@
               </div>
               <table id="contacts"><thead><tr>
                 <th style="width:36px"><input type="checkbox" id="selectAll" title="Tout sélectionner" onchange="toggleSelectAll(this)"></th>
-                <th>Email</th><th>Nom</th><th>Statut</th><th>Étape</th><th title="A ouvert l'email (pixel) — peu fiable : préchargement Apple/Gmail">Ouvert</th><th title="A cliqué sur un lien — signal fiable">Cliqué</th><th title="A ouvert son lien personnalisé {{link}} — signal le plus fiable">Visite</th><th>Variante</th><th>Compte d'envoi</th><th>Prochain envoi</th>
+                <th>Email</th><th>Nom</th><th>Statut</th><th>Étape</th><th title="A ouvert son lien personnalisé {{link}}">Visite</th><th>Variante</th><th>Compte d'envoi</th><th>Prochain envoi</th>
               </tr></thead><tbody></tbody></table>
             </div>
           </div>
@@ -331,11 +331,9 @@ function renderStats(c) {
       ${card(c.opted_out, pct(c.opted_out, launched || 1), "Désinscrits")}
       ${card(c.failed, pct(c.failed, c.emails_sent || 1), "Échecs")}
     </div>
-    <div class="stat-section">Engagement <span class="muted" style="font-weight:normal;font-size:11px">(sur ${c.emailed || 0} email(s) suivi(s))</span></div>
+    <div class="stat-section">Engagement</div>
     <div class="stat-grid">
-      ${card(c.opened || 0, pct(c.opened, c.emailed || 1), "Ont ouvert 👁️")}
-      ${card(c.clicked || 0, pct(c.clicked, c.emailed || 1), "Ont cliqué 🔗")}
-      ${card(c.visited || 0, pct(c.visited, c.emailed || 1), "Ont visité 🌐")}
+      ${card(c.visited || 0, pct(c.visited, reached || 1), "Ont visité 🌐")}
     </div>
     ${c.li_steps ? `
     <div class="stat-section">LinkedIn</div>
@@ -619,14 +617,12 @@ function renderContacts() {
       <td>${esc([r.first_name, r.last_name].filter(Boolean).join(" "))}</td>
       <td>${pill(r.status)}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
       <td>${r.current_step || "—"}</td>
-      <td>${r.open_count ? `<span title="${new Date(r.opened_at).toLocaleString("fr-FR")} — ${r.open_count} ouverture(s)">👁️ ${r.open_count}</span>` : "—"}</td>
-      <td>${r.click_count ? `<span title="${new Date(r.clicked_at).toLocaleString("fr-FR")} — ${r.click_count} clic(s)">🔗 ${r.click_count}</span>` : "—"}</td>
       <td>${r.visit_count ? `<span title="${new Date(r.last_visit_at).toLocaleString("fr-FR")} — ${r.visit_count} visite(s)">🌐 ${r.visit_count}</span>` : "—"}</td>
       <td>${r.variant || "—"}</td>
       <td class="muted">${esc(r.sender || "—")}</td>
       <td class="muted">${r.next_send_at ? new Date(r.next_send_at).toLocaleString("fr-FR") : "—"}</td>
     </tr>
-  `).join("") || `<tr><td colspan="11" class="muted">${contactRows.length
+  `).join("") || `<tr><td colspan="9" class="muted">${contactRows.length
     ? "Aucun contact ne correspond à la recherche."
     : `Aucun contact — <a href="#" onclick="showTab('import');return false">ajoutez-en via l'onglet Import</a>.`}</td></tr>`;
   updateSelection();

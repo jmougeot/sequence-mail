@@ -4,7 +4,8 @@ import { pushSequenceStatus } from "./attio.js";
 import { renderTemplate } from "./contacts.js";
 import { getForeignMessages, sendEmail, type AccountRow, type ForeignMessage } from "./google.js";
 import { enqueueStep } from "./outreach.js";
-import { buildTrackedHtml, newTrackId, trackingActive, visitLink } from "./tracking.js";
+import { visitLink } from "./visits.js";
+import { unsubLink } from "./unsubscribe.js";
 
 const OPT_OUT_PATTERNS = [
   "pas interesse",
@@ -139,10 +140,17 @@ export function stripQuoted(text: string): string {
  * Warm-up automatique : un compte démarre à 10 emails/jour puis gagne
  * +5/semaine depuis sa connexion, jusqu'à atteindre son quota configuré.
  */
-export function effectiveDailyLimit(a: Pick<AccountRow, "daily_limit" | "warmup" | "created_at">): number {
+export function effectiveDailyLimit(
+  a: Pick<AccountRow, "daily_limit" | "warmup" | "created_at" | "warmup_started_at">
+): number {
   if (!a.warmup) return a.daily_limit;
-  const weeks = Math.max(0, Math.floor((Date.now() - a.created_at) / (7 * 24 * 3600 * 1000)));
-  return Math.min(a.daily_limit, 10 + 5 * weeks);
+  // Le palier monte depuis le démarrage du warm-up (ou, à défaut, la création).
+  const base = a.warmup_started_at ?? a.created_at;
+  const weeks = Math.max(0, Math.floor((Date.now() - base) / (7 * 24 * 3600 * 1000)));
+  return Math.min(
+    a.daily_limit,
+    config.deliverability.warmupStart + config.deliverability.warmupRamp * weeks
+  );
 }
 
 /**
@@ -334,9 +342,6 @@ async function processOne(row: DueRow): Promise<void> {
 
   const body = renderTemplate(step.body, contact, senderVars);
 
-  // Suivi ouverture/clic : un jeton par email, injecté dans le HTML (pixel + liens).
-  const trackId = trackingActive() ? newTrackId() : null;
-
   try {
     const result = await sendEmail(account, {
       to: row.email,
@@ -344,7 +349,7 @@ async function processOne(row: DueRow): Promise<void> {
       body,
       threadId: isFollowUp ? row.thread_id : null,
       inReplyTo: isFollowUp ? row.last_gmail_message_id : null,
-      htmlBody: trackId ? buildTrackedHtml(body, trackId) : null,
+      listUnsubscribeUrl: unsubLink(row.cc_id),
     });
 
     const gap = Math.round(randBetween(d.minGapSeconds, d.maxGapSeconds) * 1000);
@@ -358,9 +363,9 @@ async function processOne(row: DueRow): Promise<void> {
          last_gmail_message_id = ?, variant = ?, error = NULL WHERE id = ?`
       ).run(step.step_number, account.id, result.threadId, result.rfc822MessageId, variant, row.cc_id);
       db.prepare(
-        `INSERT INTO messages (campaign_contact_id, account_id, step_number, gmail_message_id, gmail_thread_id, track_id)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      ).run(row.cc_id, account.id, step.step_number, result.gmailMessageId, result.threadId, trackId);
+        `INSERT INTO messages (campaign_contact_id, account_id, step_number, gmail_message_id, gmail_thread_id)
+         VALUES (?, ?, ?, ?, ?)`
+      ).run(row.cc_id, account.id, step.step_number, result.gmailMessageId, result.threadId);
     })();
 
     const next = steps.find((s) => s.step_number === step.step_number + 1);
