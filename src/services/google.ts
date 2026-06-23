@@ -20,6 +20,7 @@ export interface AccountRow {
   next_allowed_at: number | null;
   active: number;
   warmup: number;
+  warmup_started_at: number | null;
   created_at: number;
   from_name: string | null;
   signature: string | null;
@@ -41,13 +42,56 @@ export function authUrl(): string {
   });
 }
 
+// Échange du code OAuth via fetch direct plutôt que client.getToken() : le transport
+// interne de googleapis (gaxios) échoue de façon systématique sur ce VPS avec
+// « Premature close ». fetch natif vers le même endpoint est fiable.
+async function exchangeCodeForTokens(code: string): Promise<Credentials> {
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id: config.google.clientId,
+      client_secret: config.google.clientSecret,
+      redirect_uri: googleRedirectUri(),
+      grant_type: "authorization_code",
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Échange du code OAuth échoué (${res.status}) : ${await res.text()}`);
+  }
+  const t = (await res.json()) as {
+    access_token: string;
+    refresh_token?: string;
+    scope?: string;
+    token_type?: string;
+    id_token?: string;
+    expires_in?: number;
+  };
+  return {
+    access_token: t.access_token,
+    refresh_token: t.refresh_token,
+    scope: t.scope,
+    token_type: t.token_type,
+    id_token: t.id_token,
+    expiry_date: t.expires_in ? Date.now() + t.expires_in * 1000 : undefined,
+  };
+}
+
+async function fetchUserEmail(accessToken: string): Promise<string | undefined> {
+  const res = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!res.ok) return undefined;
+  const data = (await res.json()) as { email?: string };
+  return data.email;
+}
+
 export async function handleOAuthCallback(code: string): Promise<string> {
   const client = newOAuthClient();
-  const { tokens } = await client.getToken(code);
+  const tokens = await exchangeCodeForTokens(code);
   client.setCredentials(tokens);
-  const oauth2 = google.oauth2({ version: "v2", auth: client });
-  const { data } = await oauth2.userinfo.get();
-  const email = data.email;
+  const email = await fetchUserEmail(tokens.access_token!);
   if (!email) throw new Error("Impossible de récupérer l'adresse email du compte Google");
 
   const existing = db.prepare("SELECT id, oauth_tokens FROM accounts WHERE email = ?").get(email) as
@@ -74,6 +118,12 @@ export async function handleOAuthCallback(code: string): Promise<string> {
 export function clientForAccount(account: AccountRow): OAuth2Client {
   const client = newOAuthClient();
   client.setCredentials(JSON.parse(account.oauth_tokens) as Credentials);
+  // Le transport HTTP par défaut de googleapis (gaxios) échoue systématiquement
+  // sur ce VPS avec « Premature close » ; le fetch natif de Node est fiable. Le
+  // client OAuth fait passer par ce transporter aussi bien le rafraîchissement de
+  // token que les appels API Gmail : on le force donc à utiliser fetch.
+  (client.transporter as unknown as { defaults: Record<string, unknown> }).defaults.fetchImplementation =
+    globalThis.fetch;
   // Persiste les tokens rafraîchis automatiquement par googleapis
   client.on("tokens", (tokens) => {
     const current = JSON.parse(
@@ -104,29 +154,17 @@ export interface SendResult {
 
 /**
  * Convertit le corps texte en HTML minimal : **texte** gras, *texte* italique,
- * sauts de ligne préservés. Si `onLink` est fourni, chaque URL http(s) est
- * transformée en lien cliquable dont le href est renvoyé par `onLink(urlRéelle)`
- * (utilisé pour le suivi des clics : le href pointe vers le redirecteur, le texte
- * affiché reste l'URL d'origine).
+ * sauts de ligne préservés. Les URLs restent en clair (Gmail les rend cliquables
+ * à l'affichage).
  */
-export function bodyToHtml(text: string, onLink?: (url: string) => string): string {
-  let escaped = text
+export function bodyToHtml(text: string): string {
+  const escaped = text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>") // gras avant italique
-    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
-  if (onLink) {
-    escaped = escaped.replace(/https?:\/\/[^\s<]+/g, (match) => {
-      // Sépare la ponctuation finale (« …site.com. ») sans casser une entité (&amp;)
-      const m = /^(.*?)([).,!?]*)$/s.exec(match);
-      const core = m ? m[1] : match;
-      const trail = m ? m[2] : "";
-      const realUrl = core.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
-      return `<a href="${onLink(realUrl)}">${core}</a>${trail}`;
-    });
-  }
-  escaped = escaped.replace(/\r?\n/g, "<br>\n");
+    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+    .replace(/\r?\n/g, "<br>\n");
   return `<div dir="ltr">${escaped}</div>`;
 }
 
@@ -138,7 +176,7 @@ export async function sendEmail(
     body: string;
     threadId?: string | null;
     inReplyTo?: string | null; // Message-ID RFC822 du message précédent
-    htmlBody?: string | null; // HTML pré-construit (ex. avec pixel/liens trackés) ; sinon dérivé de body
+    listUnsubscribeUrl?: string | null; // lien de désinscription un-clic (List-Unsubscribe)
   }
 ): Promise<SendResult> {
   const gmail = google.gmail({ version: "v1", auth: clientForAccount(account) });
@@ -162,6 +200,13 @@ export async function sendEmail(
   if (opts.inReplyTo) {
     headers.push(`In-Reply-To: ${opts.inReplyTo}`, `References: ${opts.inReplyTo}`);
   }
+  // Désinscription un-clic (RFC 8058) : exigée par Gmail/Yahoo et bon signal de réputation.
+  if (opts.listUnsubscribeUrl) {
+    headers.push(
+      `List-Unsubscribe: <${opts.listUnsubscribeUrl}>`,
+      "List-Unsubscribe-Post: List-Unsubscribe=One-Click"
+    );
+  }
   const mime =
     headers.join("\r\n") +
     "\r\n\r\n" +
@@ -170,7 +215,7 @@ export async function sendEmail(
     b64(opts.body) +
     `\r\n--${boundary}\r\n` +
     'Content-Type: text/html; charset="UTF-8"\r\nContent-Transfer-Encoding: base64\r\n\r\n' +
-    b64(opts.htmlBody ?? bodyToHtml(opts.body)) +
+    b64(bodyToHtml(opts.body)) +
     `\r\n--${boundary}--`;
   const raw = Buffer.from(mime, "utf8")
     .toString("base64")
