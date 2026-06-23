@@ -13,6 +13,25 @@ export const config = {
     clientId: process.env.GOOGLE_CLIENT_ID ?? "",
     clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   },
+  // Suivi des emails. Le pixel d'ouverture et les liens cliquables pointent vers
+  // BASE_URL : ils ne marchent que si BASE_URL est une URL PUBLIQUE atteignable par
+  // le destinataire (pas localhost). NB : l'ouverture est peu fiable (Apple Mail
+  // Privacy Protection et Gmail préchargent/masquent les images) — le clic est le
+  // signal solide.
+  tracking: {
+    enabled: (process.env.TRACK_ENABLED ?? "true") !== "false",
+    opens: (process.env.TRACK_OPENS ?? "true") !== "false",
+    clicks: (process.env.TRACK_CLICKS ?? "true") !== "false",
+  },
+  // Lien personnalisé par prospect, à placer dans l'email via {{link}}. Il pointe
+  // vers VISIT_BASE_URL (idéalement un sous-domaine type sequence.example.com qui sert
+  // cette app), journalise la visite côté serveur (fiable), puis redirige 302 vers
+  // VISIT_DEST_URL (ta page publique). VISIT_BASE_URL doit être PUBLIC.
+  visit: {
+    enabled: (process.env.VISIT_ENABLED ?? "true") !== "false",
+    baseUrl: (process.env.VISIT_BASE_URL || process.env.BASE_URL || "http://localhost:3000").replace(/\/+$/, ""),
+    destUrl: (process.env.VISIT_DEST_URL || "https://www.example.com").replace(/\/+$/, ""),
+  },
   attioApiKey: process.env.ATTIO_API_KEY ?? "",
   // Slug d'un attribut texte sur l'objet "people" d'Attio où écrire l'avancement de séquence
   attioStageAttribute: process.env.ATTIO_STAGE_ATTRIBUTE ?? "",
@@ -25,6 +44,24 @@ export const config = {
     weekdaysOnly: (process.env.WEEKDAYS_ONLY ?? "true") !== "false",
     minGapSeconds: int("MIN_GAP_SECONDS", 90),
     maxGapSeconds: int("MAX_GAP_SECONDS", 420),
+  },
+  // Étapes LinkedIn (invitations/messages via l'extension Chrome). Ces garde-fous
+  // sont LE rempart anti-ban : plafonds du jour, journée ouvrée, délais aléatoires
+  // et warm-up progressif. Les baisser est sûr ; les gonfler augmente le risque de
+  // restriction du compte. Voir .env.example (préfixe LI_).
+  linkedin: {
+    invitesPerDay: int("LI_INVITES_PER_DAY", 20),
+    messagesPerDay: int("LI_MESSAGES_PER_DAY", 40),
+    warmupStart: int("LI_WARMUP_START", 5),
+    warmupRamp: int("LI_WARMUP_RAMP", 2),
+    hourStart: int("LI_HOUR_START", 9),
+    hourEnd: int("LI_HOUR_END", 18),
+    workdaysOnly: (process.env.LI_WORKDAYS_ONLY ?? "1") !== "0",
+    minGapSec: int("LI_MIN_GAP_SEC", 90),
+    maxGapSec: int("LI_MAX_GAP_SEC", 240),
+    pauseAfterErrorMin: int("LI_PAUSE_AFTER_ERROR_MIN", 60),
+    // Report quand un message vise un contact pas encore connecté (invitation non acceptée)
+    messageRetryHours: int("LI_MESSAGE_RETRY_HOURS", 12),
   },
 };
 

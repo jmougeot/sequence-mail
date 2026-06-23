@@ -1,0 +1,34 @@
+# Déploiement VPS : l'app Node + Caddy (HTTPS automatique via Let's Encrypt).
+# Caddy laisse les routes publiques de suivi (/p/, /t/) ouvertes et protège tout
+# le reste (dashboard, API, OAuth) par mot de passe.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    # Variables lues depuis .env (BASE_URL, VISIT_*, GOOGLE_*, quotas…)
+    env_file: .env
+    environment:
+      - DATA_DIR=/data
+      - PORT=3000
+    volumes:
+      - sequence-data:/data # base SQLite persistée
+    expose:
+      - "3000" # accessible seulement depuis Caddy, pas exposé publiquement
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # certificats TLS
+      - caddy-config:/config
+    depends_on:
+      - app
+
+volumes:
+  sequence-data:
+  caddy-data:
+  caddy-config:

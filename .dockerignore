@@ -1,0 +1,8 @@
+node_modules
+data
+_tmpdata
+.git
+.env
+*.log
+extension
+scripts/macos-create-launcher.sh

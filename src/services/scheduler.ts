@@ -3,6 +3,8 @@ import { db } from "../db.js";
 import { pushSequenceStatus } from "./attio.js";
 import { renderTemplate } from "./contacts.js";
 import { getForeignMessages, sendEmail, type AccountRow, type ForeignMessage } from "./google.js";
+import { enqueueStep } from "./outreach.js";
+import { buildTrackedHtml, newTrackId, trackingActive, visitLink } from "./tracking.js";
 
 const OPT_OUT_PATTERNS = [
   "pas interesse",
@@ -197,6 +199,7 @@ interface DueRow {
   first_name: string | null;
   last_name: string | null;
   company: string | null;
+  linkedin: string | null;
   extra: string | null;
   attio_record_id: string | null;
   variant: string | null;
@@ -208,6 +211,8 @@ interface StepRow {
   subject_b: string | null;
   body: string;
   wait_days: number;
+  channel: string;
+  li_action: string | null;
 }
 
 /** Remet à zéro les compteurs quotidiens si la date a changé. */
@@ -243,13 +248,51 @@ function scheduleNext(ccId: number, nextStep: StepRow): void {
   ).run(Math.round(at), ccId);
 }
 
+/**
+ * Étape LinkedIn (invitation / message) : met l'action en file pour l'extension
+ * Chrome. Le contact passe en 'awaiting_li' (le scheduler email le laisse) ; au
+ * succès, outreach.ts le fait avancer à l'étape suivante. Sans URL de profil, on
+ * ne peut rien faire : le contact est marqué en échec.
+ */
+function dispatchLinkedIn(row: DueRow, step: StepRow, totalSteps: number): void {
+  if (!row.linkedin) {
+    db.prepare(
+      "UPDATE campaign_contacts SET status = 'failed', error = ?, next_send_at = NULL WHERE id = ?"
+    ).run("LinkedIn : aucune URL de profil pour ce contact", row.cc_id);
+    syncAttio(row.attio_record_id, "LinkedIn : profil manquant ⚠️");
+    console.warn(`[linkedin] ${row.email} : pas d'URL de profil — étape ${step.step_number} en échec`);
+    return;
+  }
+  const type = step.li_action === "message" ? "message" : "invite";
+  const contact = {
+    email: row.email,
+    first_name: row.first_name,
+    last_name: row.last_name,
+    company: row.company,
+    extra: row.extra,
+  };
+  // Une note d'invitation vide est légitime (invitation sans message) ; un message
+  // vide ne devrait pas arriver (validé à la création), on tombe sur null par sûreté.
+  const body = step.body?.trim() ? renderTemplate(step.body, contact, { sender_name: "", signature: "" }) : null;
+  enqueueStep(row.cc_id, step.step_number, row.linkedin, type, body);
+  syncAttio(row.attio_record_id, `Étape ${step.step_number}/${totalSteps} — ${type === "invite" ? "invitation" : "message"} LinkedIn en file`);
+  console.log(`[linkedin] étape ${step.step_number} (${type}) -> ${row.email} mise en file`);
+}
+
 async function processOne(row: DueRow): Promise<void> {
   const steps = db
-    .prepare("SELECT step_number, subject, subject_b, body, wait_days FROM steps WHERE campaign_id = ? ORDER BY step_number")
+    .prepare("SELECT step_number, subject, subject_b, body, wait_days, channel, li_action FROM steps WHERE campaign_id = ? ORDER BY step_number")
     .all(row.campaign_id) as StepRow[];
   const step = steps.find((s) => s.step_number === row.current_step + 1);
   if (!step) {
     db.prepare("UPDATE campaign_contacts SET status = 'completed', next_send_at = NULL WHERE id = ?").run(row.cc_id);
+    return;
+  }
+
+  // Étape LinkedIn : pas d'email. On dépose une action en file ; l'extension la
+  // jouera à un rythme « humain » (outreach.ts) et fera avancer le contact au succès.
+  if (step.channel === "linkedin") {
+    dispatchLinkedIn(row, step, steps.length);
     return;
   }
 
@@ -268,10 +311,13 @@ async function processOne(row: DueRow): Promise<void> {
     extra: row.extra,
   };
   const senderName = account.from_name ?? account.email;
+  // {{link}} : lien personnalisé et stable du prospect (suivi de visite côté serveur)
+  const link = config.visit.enabled ? visitLink(row.cc_id) : "";
   const senderVars = {
     sender_name: senderName,
+    link,
     // {{signature}} : signature du compte, placée librement dans le template
-    signature: account.signature ? renderTemplate(account.signature, contact, { sender_name: senderName }) : "",
+    signature: account.signature ? renderTemplate(account.signature, contact, { sender_name: senderName, link }) : "",
   };
   const isFollowUp = row.current_step > 0 && !!row.thread_id;
 
@@ -288,6 +334,9 @@ async function processOne(row: DueRow): Promise<void> {
 
   const body = renderTemplate(step.body, contact, senderVars);
 
+  // Suivi ouverture/clic : un jeton par email, injecté dans le HTML (pixel + liens).
+  const trackId = trackingActive() ? newTrackId() : null;
+
   try {
     const result = await sendEmail(account, {
       to: row.email,
@@ -295,6 +344,7 @@ async function processOne(row: DueRow): Promise<void> {
       body,
       threadId: isFollowUp ? row.thread_id : null,
       inReplyTo: isFollowUp ? row.last_gmail_message_id : null,
+      htmlBody: trackId ? buildTrackedHtml(body, trackId) : null,
     });
 
     const gap = Math.round(randBetween(d.minGapSeconds, d.maxGapSeconds) * 1000);
@@ -308,9 +358,9 @@ async function processOne(row: DueRow): Promise<void> {
          last_gmail_message_id = ?, variant = ?, error = NULL WHERE id = ?`
       ).run(step.step_number, account.id, result.threadId, result.rfc822MessageId, variant, row.cc_id);
       db.prepare(
-        `INSERT INTO messages (campaign_contact_id, account_id, step_number, gmail_message_id, gmail_thread_id)
-         VALUES (?, ?, ?, ?, ?)`
-      ).run(row.cc_id, account.id, step.step_number, result.gmailMessageId, result.threadId);
+        `INSERT INTO messages (campaign_contact_id, account_id, step_number, gmail_message_id, gmail_thread_id, track_id)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(row.cc_id, account.id, step.step_number, result.gmailMessageId, result.threadId, trackId);
     })();
 
     const next = steps.find((s) => s.step_number === step.step_number + 1);
@@ -362,7 +412,7 @@ export async function sendTick(): Promise<void> {
     .prepare(
       `SELECT cc.id AS cc_id, cc.campaign_id, cc.contact_id, cc.status, cc.current_step,
               cc.account_id, cc.thread_id, cc.last_gmail_message_id, cc.variant,
-              c.email, c.first_name, c.last_name, c.company, c.extra, c.attio_record_id
+              c.email, c.first_name, c.last_name, c.company, c.linkedin, c.extra, c.attio_record_id
        FROM campaign_contacts cc
        JOIN contacts c ON c.id = cc.contact_id
        JOIN campaigns cp ON cp.id = cc.campaign_id

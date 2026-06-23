@@ -102,14 +102,31 @@ export interface SendResult {
   rfc822MessageId: string;
 }
 
-/** Convertit le corps texte en HTML minimal : *texte* devient italique, sauts de ligne préservés. */
-export function bodyToHtml(text: string): string {
-  const escaped = text
+/**
+ * Convertit le corps texte en HTML minimal : **texte** gras, *texte* italique,
+ * sauts de ligne préservés. Si `onLink` est fourni, chaque URL http(s) est
+ * transformée en lien cliquable dont le href est renvoyé par `onLink(urlRéelle)`
+ * (utilisé pour le suivi des clics : le href pointe vers le redirecteur, le texte
+ * affiché reste l'URL d'origine).
+ */
+export function bodyToHtml(text: string, onLink?: (url: string) => string): string {
+  let escaped = text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
-    .replace(/\r?\n/g, "<br>\n");
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>") // gras avant italique
+    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+  if (onLink) {
+    escaped = escaped.replace(/https?:\/\/[^\s<]+/g, (match) => {
+      // Sépare la ponctuation finale (« …site.com. ») sans casser une entité (&amp;)
+      const m = /^(.*?)([).,!?]*)$/s.exec(match);
+      const core = m ? m[1] : match;
+      const trail = m ? m[2] : "";
+      const realUrl = core.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+      return `<a href="${onLink(realUrl)}">${core}</a>${trail}`;
+    });
+  }
+  escaped = escaped.replace(/\r?\n/g, "<br>\n");
   return `<div dir="ltr">${escaped}</div>`;
 }
 
@@ -121,6 +138,7 @@ export async function sendEmail(
     body: string;
     threadId?: string | null;
     inReplyTo?: string | null; // Message-ID RFC822 du message précédent
+    htmlBody?: string | null; // HTML pré-construit (ex. avec pixel/liens trackés) ; sinon dérivé de body
   }
 ): Promise<SendResult> {
   const gmail = google.gmail({ version: "v1", auth: clientForAccount(account) });
@@ -152,7 +170,7 @@ export async function sendEmail(
     b64(opts.body) +
     `\r\n--${boundary}\r\n` +
     'Content-Type: text/html; charset="UTF-8"\r\nContent-Transfer-Encoding: base64\r\n\r\n' +
-    b64(bodyToHtml(opts.body)) +
+    b64(opts.htmlBody ?? bodyToHtml(opts.body)) +
     `\r\n--${boundary}--`;
   const raw = Buffer.from(mime, "utf8")
     .toString("base64")

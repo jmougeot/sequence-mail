@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS steps (
   subject_b TEXT,                        -- variante B du sujet (A/B test, étape 1 uniquement)
   body TEXT NOT NULL,                    -- texte avec variables {{first_name}} etc.
   wait_days INTEGER NOT NULL DEFAULT 0,  -- délai après l'étape précédente
+  channel TEXT NOT NULL DEFAULT 'email', -- 'email' | 'linkedin'
+  li_action TEXT,                        -- si channel='linkedin' : 'invite' | 'message'
   UNIQUE (campaign_id, step_number)
 );
 
@@ -50,6 +52,7 @@ CREATE TABLE IF NOT EXISTS contacts (
   first_name TEXT,
   last_name TEXT,
   company TEXT,
+  linkedin TEXT,                         -- URL du profil LinkedIn (pour les étapes LinkedIn)
   extra TEXT,                            -- JSON : colonnes CSV supplémentaires
   attio_record_id TEXT,
   do_not_contact INTEGER NOT NULL DEFAULT 0, -- désinscrit : exclu de toutes les campagnes
@@ -86,6 +89,37 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_cc_due ON campaign_contacts (status, next_send_at);
 CREATE INDEX IF NOT EXISTS idx_cc_campaign ON campaign_contacts (campaign_id);
 CREATE INDEX IF NOT EXISTS idx_messages_cc ON messages (campaign_contact_id);
+
+-- File des actions LinkedIn d'une séquence (invitation / message). Quand une
+-- étape LinkedIn devient due, le scheduler y dépose une ligne ; l'extension
+-- Chrome la consomme à un rythme « humain » imposé par outreach.ts (quotas du
+-- jour, plage horaire, délais aléatoires, warm-up) — c'est le rempart anti-ban.
+-- Le succès fait avancer le campaign_contact à l'étape suivante.
+CREATE TABLE IF NOT EXISTS li_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign_contact_id INTEGER NOT NULL REFERENCES campaign_contacts(id) ON DELETE CASCADE,
+  step_number INTEGER NOT NULL,          -- étape de séquence à valider au succès
+  linkedin TEXT NOT NULL,                -- URL du profil cible
+  type TEXT NOT NULL,                    -- 'invite' | 'message'
+  body TEXT,                             -- note d'invitation / corps du message (variables rendues)
+  status TEXT NOT NULL DEFAULT 'pending',-- pending | sending | sent | failed
+  attempts INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  lease_at INTEGER,                      -- bail 'sending' (anti double-envoi)
+  not_before INTEGER,                    -- ne pas tenter avant (report : message à un non-connecté)
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+  sent_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_li_actions_status ON li_actions (status);
+CREATE INDEX IF NOT EXISTS idx_li_actions_cc ON li_actions (campaign_contact_id);
+
+-- Journal des actions LinkedIn réellement effectuées : base des quotas du jour et du warm-up.
+CREATE TABLE IF NOT EXISTS li_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL,                    -- invite | message
+  sent_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_li_log_sent ON li_log (sent_at);
 `);
 
 // Migrations additives sur les bases existantes
@@ -102,6 +136,52 @@ addColumnIfMissing("steps", "subject_b", "subject_b TEXT");
 addColumnIfMissing("campaign_contacts", "variant", "variant TEXT");
 addColumnIfMissing("campaign_contacts", "handled_msgs", "handled_msgs TEXT");
 addColumnIfMissing("accounts", "warmup", "warmup INTEGER NOT NULL DEFAULT 1");
+addColumnIfMissing("steps", "channel", "channel TEXT NOT NULL DEFAULT 'email'");
+addColumnIfMissing("steps", "li_action", "li_action TEXT");
+addColumnIfMissing("contacts", "linkedin", "linkedin TEXT");
+addColumnIfMissing("messages", "track_id", "track_id TEXT");
+addColumnIfMissing("campaign_contacts", "visit_token", "visit_token TEXT");
+
+// --- Suivi ouverture/clic des emails ---
+// Chaque email envoyé reçoit un track_id aléatoire (colonne messages.track_id).
+// Le pixel d'ouverture et les liens réécrits portent ce jeton ; les events sont
+// rattachés au message (donc au contact) via track_id. tracked_links mémorise
+// l'URL d'origine de chaque lien réécrit pour la redirection.
+db.exec(`
+CREATE TABLE IF NOT EXISTS tracked_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  track_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,             -- n° du lien dans l'email (1, 2, 3…)
+  url TEXT NOT NULL,                    -- URL d'origine vers laquelle rediriger
+  UNIQUE (track_id, ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS email_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  track_id TEXT NOT NULL,
+  type TEXT NOT NULL,                   -- 'open' | 'click'
+  ordinal INTEGER,                      -- lien cliqué (NULL pour une ouverture)
+  at INTEGER NOT NULL,
+  user_agent TEXT,
+  ip TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_events_track ON email_events (track_id, type);
+CREATE INDEX IF NOT EXISTS idx_tracked_links_track ON tracked_links (track_id);
+CREATE INDEX IF NOT EXISTS idx_messages_track ON messages (track_id);
+
+-- Visites du lien personnalisé {{link}} : un jeton stable par campaign_contact
+-- (campaign_contacts.visit_token) ; chaque ouverture du lien crée une ligne ici.
+CREATE TABLE IF NOT EXISTS visits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cc_id INTEGER NOT NULL REFERENCES campaign_contacts(id) ON DELETE CASCADE,
+  at INTEGER NOT NULL,
+  user_agent TEXT,
+  ip TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_visits_cc ON visits (cc_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_visit_token ON campaign_contacts (visit_token) WHERE visit_token IS NOT NULL;
+`);
 
 // v1 : la signature n'est plus ajoutée automatiquement en fin d'email mais placée
 // via {{signature}} — les étapes existantes la reçoivent en fin de corps pour

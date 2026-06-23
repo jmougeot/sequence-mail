@@ -6,13 +6,23 @@ import { authUrl, handleOAuthCallback } from "./services/google.js";
 import { importContacts, parseCsv, renderTemplate } from "./services/contacts.js";
 import { syncFromAttio } from "./services/attio.js";
 import { effectiveDailyLimit } from "./services/scheduler.js";
+import { registerOutreachRoutes } from "./services/outreach-routes.js";
+import { registerTrackingRoutes } from "./services/tracking.js";
 
 export function createServer(): express.Express {
   const app = express();
+  // Derrière un reverse proxy / tunnel (ngrok, Cloudflare…) : req.ip = vraie IP du destinataire
+  app.set("trust proxy", true);
   app.use(express.json({ limit: "10mb" }));
   app.use(express.text({ type: ["text/csv", "text/plain"], limit: "20mb" }));
   // Relatif au projet, pas au répertoire de lancement
   app.use(express.static(fileURLToPath(new URL("../public", import.meta.url))));
+
+  // --- Étapes LinkedIn (consommées par l'extension Chrome) ---
+  registerOutreachRoutes(app);
+
+  // --- Suivi ouverture/clic des emails (pixel + redirection de liens) ---
+  registerTrackingRoutes(app);
 
   // --- Comptes Google ---
   app.get("/auth/google", (_req, res) => res.redirect(authUrl()));
@@ -62,32 +72,59 @@ export function createServer(): express.Express {
   });
 
   // --- Campagnes ---
+  // Une étape est soit un email (sujet + corps), soit une action LinkedIn
+  // (channel='linkedin', li_action='invite'|'message', le corps = note/message).
+  type StepInput = {
+    subject?: string;
+    subject_b?: string;
+    body?: string;
+    wait_days?: number;
+    channel?: string;
+    li_action?: string;
+  };
+
+  /** Valide une séquence ; renvoie un message d'erreur ou null si tout est bon. */
+  function validateSteps(name: string, steps: StepInput[]): string | null {
+    if (!name || !steps?.length) return "name et steps[] sont requis";
+    const first = steps[0];
+    if ((first.channel ?? "email") !== "linkedin" && !first.subject) {
+      return "La première étape (email) doit avoir un sujet";
+    }
+    for (const s of steps) {
+      const isInvite = s.channel === "linkedin" && (s.li_action ?? "invite") === "invite";
+      if (!isInvite && !s.body?.trim()) return "Chaque étape doit avoir un contenu (la note d'invitation seule est facultative)";
+    }
+    return null;
+  }
+
+  /** Insère les étapes d'une campagne (canal + action LinkedIn pris en charge). */
+  function insertSteps(campaignId: number | bigint, steps: StepInput[]): void {
+    const insert = db.prepare(
+      "INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days, channel, li_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    );
+    steps.forEach((s, i) => {
+      const channel = s.channel === "linkedin" ? "linkedin" : "email";
+      const li = channel === "linkedin" ? (s.li_action === "message" ? "message" : "invite") : null;
+      insert.run(
+        campaignId,
+        i + 1,
+        channel === "linkedin" ? "" : (s.subject ?? ""),
+        i === 0 && channel === "email" ? s.subject_b?.trim() || null : null, // A/B test : étape 1 email uniquement
+        s.body ?? "",
+        i === 0 ? 0 : (s.wait_days ?? 3),
+        channel,
+        li
+      );
+    });
+  }
+
   app.post("/api/campaigns", (req, res) => {
-    const { name, steps } = req.body as {
-      name: string;
-      steps: Array<{ subject?: string; subject_b?: string; body: string; wait_days?: number }>;
-    };
-    if (!name || !steps?.length) {
-      return res.status(400).json({ error: "name et steps[] sont requis" });
-    }
-    if (!steps[0].subject) {
-      return res.status(400).json({ error: "La première étape doit avoir un sujet" });
-    }
+    const { name, steps } = req.body as { name: string; steps: StepInput[] };
+    const err = validateSteps(name, steps);
+    if (err) return res.status(400).json({ error: err });
     const result = db.transaction(() => {
       const { lastInsertRowid } = db.prepare("INSERT INTO campaigns (name, status) VALUES (?, 'paused')").run(name);
-      const insert = db.prepare(
-        "INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days) VALUES (?, ?, ?, ?, ?, ?)"
-      );
-      steps.forEach((s, i) =>
-        insert.run(
-          lastInsertRowid,
-          i + 1,
-          s.subject ?? "",
-          i === 0 ? s.subject_b?.trim() || null : null, // A/B test : étape 1 uniquement
-          s.body,
-          i === 0 ? 0 : (s.wait_days ?? 3)
-        )
-      );
+      insertSteps(lastInsertRowid, steps);
       return lastInsertRowid;
     })();
     res.json({ id: result });
@@ -107,8 +144,28 @@ export function createServer(): express.Express {
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'bounced') AS bounced,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'completed') AS completed,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'failed') AS failed,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'awaiting_li') AS awaiting_li,
            (SELECT COUNT(*) FROM messages m JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
               WHERE cc.campaign_id = cp.id) AS emails_sent,
+           (SELECT COUNT(DISTINCT m.campaign_contact_id) FROM messages m
+              JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
+              WHERE cc.campaign_id = cp.id AND m.track_id IS NOT NULL) AS emailed,
+           (SELECT COUNT(DISTINCT m.campaign_contact_id) FROM messages m
+              JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
+              JOIN email_events ev ON ev.track_id = m.track_id AND ev.type = 'open'
+              WHERE cc.campaign_id = cp.id) AS opened,
+           (SELECT COUNT(DISTINCT m.campaign_contact_id) FROM messages m
+              JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
+              JOIN email_events ev ON ev.track_id = m.track_id AND ev.type = 'click'
+              WHERE cc.campaign_id = cp.id) AS clicked,
+           (SELECT COUNT(DISTINCT v.cc_id) FROM visits v
+              JOIN campaign_contacts cc ON cc.id = v.cc_id
+              WHERE cc.campaign_id = cp.id) AS visited,
+           (SELECT COUNT(*) FROM steps s WHERE s.campaign_id = cp.id AND s.channel = 'linkedin') AS li_steps,
+           (SELECT COUNT(*) FROM li_actions la JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
+              WHERE cc.campaign_id = cp.id AND la.type = 'invite' AND la.status = 'sent') AS li_invites_sent,
+           (SELECT COUNT(*) FROM li_actions la JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
+              WHERE cc.campaign_id = cp.id AND la.type = 'message' AND la.status = 'sent') AS li_messages_sent,
            (SELECT s.subject_b FROM steps s WHERE s.campaign_id = cp.id AND s.step_number = 1) AS subject_b,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.variant = 'A' AND cc.current_step > 0) AS contacted_a,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.variant = 'A' AND cc.status = 'replied') AS replied_a,
@@ -126,8 +183,9 @@ export function createServer(): express.Express {
       const contacted = Number(c.contacts) - Number(c.held) - Number(c.pending) - Number(c.bounced);
       c.reply_rate = rate(Number(c.replied), contacted);
       const launched = Number(c.contacts) - Number(c.held);
-      c.progress =
-        launched > 0 ? Math.round(((launched - Number(c.pending) - Number(c.in_progress)) / launched) * 100) : 0;
+      // awaiting_li : action LinkedIn en file, séquence non terminée — encore « en cours »
+      const stillRunning = Number(c.pending) + Number(c.in_progress) + Number(c.awaiting_li);
+      c.progress = launched > 0 ? Math.round(((launched - stillRunning) / launched) * 100) : 0;
       c.ab_test = c.subject_b ? 1 : 0;
       c.reply_rate_a = rate(Number(c.replied_a), Number(c.contacted_a));
       c.reply_rate_b = rate(Number(c.replied_b), Number(c.contacted_b));
@@ -143,7 +201,7 @@ export function createServer(): express.Express {
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
     const steps = db
       .prepare(
-        "SELECT step_number, subject, subject_b, body, wait_days FROM steps WHERE campaign_id = ? ORDER BY step_number"
+        "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action FROM steps WHERE campaign_id = ? ORDER BY step_number"
       )
       .all(req.params.id);
     res.json({ ...campaign, steps });
@@ -156,32 +214,13 @@ export function createServer(): express.Express {
   app.put("/api/campaigns/:id", (req, res) => {
     const exists = db.prepare("SELECT id FROM campaigns WHERE id = ?").get(req.params.id);
     if (!exists) return res.status(404).json({ error: "Campagne introuvable" });
-    const { name, steps } = req.body as {
-      name: string;
-      steps: Array<{ subject?: string; subject_b?: string; body: string; wait_days?: number }>;
-    };
-    if (!name || !steps?.length) {
-      return res.status(400).json({ error: "name et steps[] sont requis" });
-    }
-    if (!steps[0].subject) {
-      return res.status(400).json({ error: "La première étape doit avoir un sujet" });
-    }
+    const { name, steps } = req.body as { name: string; steps: StepInput[] };
+    const err = validateSteps(name, steps);
+    if (err) return res.status(400).json({ error: err });
     db.transaction(() => {
       db.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run(name, req.params.id);
       db.prepare("DELETE FROM steps WHERE campaign_id = ?").run(req.params.id);
-      const insert = db.prepare(
-        "INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days) VALUES (?, ?, ?, ?, ?, ?)"
-      );
-      steps.forEach((s, i) =>
-        insert.run(
-          req.params.id,
-          i + 1,
-          s.subject ?? "",
-          i === 0 ? s.subject_b?.trim() || null : null,
-          s.body,
-          i === 0 ? 0 : (s.wait_days ?? 3)
-        )
-      );
+      insertSteps(Number(req.params.id), steps);
     })();
     res.json({ ok: true });
   });
@@ -224,9 +263,11 @@ export function createServer(): express.Express {
       | { email: string; from_name: string | null; signature: string | null }
       | undefined;
     const senderName = account?.from_name ?? account?.email ?? "Votre nom";
+    const link = `${config.visit.baseUrl}/p/exemple`;
     const senderVars = {
       sender_name: senderName,
-      signature: account?.signature ? renderTemplate(account.signature, sample, { sender_name: senderName }) : "",
+      link,
+      signature: account?.signature ? renderTemplate(account.signature, sample, { sender_name: senderName, link }) : "",
     };
     const renderedBody = renderTemplate(body ?? "", sample, senderVars);
     res.json({
@@ -345,10 +386,11 @@ export function createServer(): express.Express {
       | { id: number; extra: string | null }
       | undefined;
     if (!contact) return res.status(404).json({ error: "Contact introuvable" });
-    const { first_name, last_name, company, extra } = req.body as {
+    const { first_name, last_name, company, linkedin, extra } = req.body as {
       first_name?: string;
       last_name?: string;
       company?: string;
+      linkedin?: string;
       extra?: Record<string, string>;
     };
     // Les champs personnalisés sont fusionnés ; une valeur vide supprime le champ
@@ -369,9 +411,17 @@ export function createServer(): express.Express {
          first_name = COALESCE(?, first_name),
          last_name  = COALESCE(?, last_name),
          company    = COALESCE(?, company),
+         linkedin   = COALESCE(?, linkedin),
          extra      = COALESCE(?, extra)
        WHERE id = ?`
-    ).run(first_name ?? null, last_name ?? null, company ?? null, merged ? JSON.stringify(merged) : null, req.params.id);
+    ).run(
+      first_name ?? null,
+      last_name ?? null,
+      company ?? null,
+      linkedin === undefined ? null : linkedin.trim() || null,
+      merged ? JSON.stringify(merged) : null,
+      req.params.id
+    );
     res.json({ ok: true });
   });
 
@@ -419,9 +469,19 @@ export function createServer(): express.Express {
   app.get("/api/campaigns/:id/contacts", (req, res) => {
     const rows = db
       .prepare(
-        `SELECT c.id AS contact_id, c.email, c.first_name, c.last_name, c.company, c.extra,
+        `SELECT c.id AS contact_id, c.email, c.first_name, c.last_name, c.company, c.linkedin, c.extra,
                 cc.id AS cc_id, cc.status, cc.current_step, cc.variant, cc.account_id,
-                cc.next_send_at, cc.replied_at, cc.error, a.email AS sender
+                cc.next_send_at, cc.replied_at, cc.error, a.email AS sender,
+                (SELECT COUNT(*) FROM messages m JOIN email_events ev ON ev.track_id = m.track_id
+                   WHERE m.campaign_contact_id = cc.id AND ev.type = 'open') AS open_count,
+                (SELECT MIN(ev.at) FROM messages m JOIN email_events ev ON ev.track_id = m.track_id
+                   WHERE m.campaign_contact_id = cc.id AND ev.type = 'open') AS opened_at,
+                (SELECT COUNT(*) FROM messages m JOIN email_events ev ON ev.track_id = m.track_id
+                   WHERE m.campaign_contact_id = cc.id AND ev.type = 'click') AS click_count,
+                (SELECT MIN(ev.at) FROM messages m JOIN email_events ev ON ev.track_id = m.track_id
+                   WHERE m.campaign_contact_id = cc.id AND ev.type = 'click') AS clicked_at,
+                (SELECT COUNT(*) FROM visits v WHERE v.cc_id = cc.id) AS visit_count,
+                (SELECT MAX(v.at) FROM visits v WHERE v.cc_id = cc.id) AS last_visit_at
          FROM campaign_contacts cc
          JOIN contacts c ON c.id = cc.contact_id
          LEFT JOIN accounts a ON a.id = cc.account_id

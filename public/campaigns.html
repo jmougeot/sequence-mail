@@ -30,15 +30,28 @@
       <div id="paneSeq">
         <div class="row" style="align-items:flex-start;gap:16px">
           <div style="flex:1;min-width:0">
-            <div class="card" id="editorCard">
+            <div id="editorCard" class="editor">
               <div class="inline" style="justify-content:space-between">
                 <h2 id="editorTitle" style="margin:0">Nouvelle campagne</h2>
                 <span id="statusZone"></span>
               </div>
-              <input id="campName" placeholder="Nom de la campagne">
+              <input id="campName" class="camp-name-input" placeholder="Nom de la campagne">
               <div id="steps"></div>
-              <p>
-                <button class="ghost" onclick="addStep()">+ Ajouter une étape</button>
+              <p class="inline" style="gap:10px;flex-wrap:wrap">
+                <span class="add-step">
+                  <button class="ghost" onclick="toggleAddMenu(event)">+ Ajouter une étape</button>
+                  <span class="add-menu" id="addMenu" hidden>
+                    <button type="button" onclick="addStepOfType('email')">
+                      <span class="mic">✉️</span><span class="ml">Email<small>Message ou relance par email</small></span>
+                    </button>
+                    <button type="button" onclick="addStepOfType('invite')">
+                      <span class="mic">🔗</span><span class="ml">Invitation LinkedIn<small>Demande de connexion (note optionnelle)</small></span>
+                    </button>
+                    <button type="button" onclick="addStepOfType('message')">
+                      <span class="mic">💬</span><span class="ml">Message LinkedIn<small>Message à un contact déjà connecté</small></span>
+                    </button>
+                  </span>
+                </span>
                 <button onclick="saveCampaign()" id="saveBtn">Créer la campagne</button>
                 <span id="campMsg"></span>
               </p>
@@ -93,7 +106,7 @@
               </div>
               <table id="contacts"><thead><tr>
                 <th style="width:36px"><input type="checkbox" id="selectAll" title="Tout sélectionner" onchange="toggleSelectAll(this)"></th>
-                <th>Email</th><th>Nom</th><th>Statut</th><th>Étape</th><th>Variante</th><th>Compte d'envoi</th><th>Prochain envoi</th>
+                <th>Email</th><th>Nom</th><th>Statut</th><th>Étape</th><th title="A ouvert l'email (pixel) — peu fiable : préchargement Apple/Gmail">Ouvert</th><th title="A cliqué sur un lien — signal fiable">Cliqué</th><th title="A ouvert son lien personnalisé {{link}} — signal le plus fiable">Visite</th><th>Variante</th><th>Compte d'envoi</th><th>Prochain envoi</th>
               </tr></thead><tbody></tbody></table>
             </div>
           </div>
@@ -159,41 +172,101 @@ async function loadList() {
   return campaigns;
 }
 
+// Type d'étape encodé en une valeur : email | invite | message
+const STEP_TYPES = {
+  email:   { icon: "✉️", label: "Email",                tag: "Email" },
+  invite:  { icon: "🔗", label: "Invitation LinkedIn",  tag: "LinkedIn" },
+  message: { icon: "💬", label: "Message LinkedIn",     tag: "LinkedIn" },
+};
+
+function stepChannel(s) {
+  return s.channel === "linkedin" ? (s.li_action === "message" ? "message" : "invite") : "email";
+}
+
+function bodyPlaceholder(chan) {
+  return chan === "invite" ? "Note d’invitation (optionnelle, ~300 caractères) — Bonjour {{first_name}}…"
+    : chan === "message" ? "Message LinkedIn — Bonjour {{first_name}}…"
+    : "Bonjour {{first_name}},\n...";
+}
+
 function stepHtml(n, s) {
   s = s || {};
-  return `<div class="step">
-    <div class="head">
-      <b>Étape ${n}</b>
-      <span>
-        ${n > 1 ? `<input class="wait" type="number" value="${s.wait_days ?? 3}" min="1" style="width:60px"> <span class="muted">jours après l’étape précédente</span>` : ""}
-        ${n > 1 ? `<button class="danger" onclick="this.closest('.step').remove(); renumberSteps()">✕</button>` : ""}
-      </span>
+  const chan = stepChannel(s);
+  const t = STEP_TYPES[chan];
+  const isEmail = chan === "email";
+  return `<div class="step" data-chan="${chan}">
+    ${n > 1 ? `<div class="step-delay">
+      <span class="muted">⏱ Attendre</span>
+      <input class="wait" type="number" value="${s.wait_days ?? 3}" min="1">
+      <span class="muted">jour(s) après l’étape précédente</span>
+    </div>` : ""}
+    <div class="step-card">
+      <div class="step-head">
+        <span class="step-type">
+          <span class="step-ic">${t.icon}</span>
+          <b>Étape ${n}</b>
+          <span class="step-tag">${t.tag}</span>
+        </span>
+        <span class="inline" style="gap:4px">
+          <button class="icon-btn" title="Aperçu" onclick="previewStep(this.closest('.step'))">👁</button>
+          ${n > 1 ? `<button class="icon-btn danger" title="Supprimer l’étape" onclick="this.closest('.step').remove(); renumberSteps()">✕</button>` : ""}
+        </span>
+      </div>
+      ${isEmail ? `<input class="subject" placeholder="${n === 1 ? "Objet (obligatoire)" : "Objet (vide = même fil, Re:)"}" value="${esc(s.subject)}">` : ""}
+      ${isEmail && n === 1 ? `<input class="subjectB" placeholder="Objet B (optionnel — A/B test 50/50)" value="${esc(s.subject_b)}">` : ""}
+      <textarea class="body" rows="1" placeholder="${esc(bodyPlaceholder(chan))}">${esc(s.body)}</textarea>
     </div>
-    <input class="subject" placeholder="${n === 1 ? "Sujet A (obligatoire)" : "Sujet (vide = même fil, Re:)"}" value="${esc(s.subject)}">
-    ${n === 1 ? `<input class="subjectB" placeholder="Sujet B (optionnel — A/B test 50/50)" value="${esc(s.subject_b)}">` : ""}
-    <textarea class="body" placeholder="Bonjour {{first_name}},&#10;...">${esc(s.body)}</textarea>
-    <button class="ghost" onclick="previewStep(this.closest('.step'))">👁 Aperçu</button>
   </div>`;
 }
 
 function renumberSteps() {
   $$("#steps .step").forEach((div, i) => {
-    div.querySelector(".head b").textContent = `Étape ${i + 1}`;
+    div.querySelector(".step-type b").textContent = `Étape ${i + 1}`;
   });
+}
+
+// Le corps grandit tout seul avec le texte (pas de redimensionnement manuel).
+function autosize(el) {
+  el.style.height = "auto";
+  el.style.height = Math.max(el.scrollHeight, 96) + "px";
 }
 
 function addStep(s) {
   const n = $$("#steps .step").length + 1;
   $("#steps").insertAdjacentHTML("beforeend", stepHtml(n, s));
+  autosize($("#steps .step:last-child .body"));
 }
 
+// --- Menu « + » : choix du type d'étape à ajouter (façon builder) ---
+function toggleAddMenu(e) {
+  e.stopPropagation();
+  $("#addMenu").hidden = !$("#addMenu").hidden;
+}
+function closeAddMenu() { const m = $("#addMenu"); if (m) m.hidden = true; }
+
+function addStepOfType(chan) { // email | invite | message
+  closeAddMenu();
+  addStep(chan === "email" ? { channel: "email" } : { channel: "linkedin", li_action: chan });
+  $("#steps .step:last-child")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+document.addEventListener("click", e => {
+  if (!e.target.closest(".add-step")) closeAddMenu();
+});
+
 function readSteps() {
-  return $$("#steps .step").map(div => ({
-    subject: div.querySelector(".subject").value,
-    subject_b: div.querySelector(".subjectB")?.value || undefined,
-    body: div.querySelector(".body").value,
-    wait_days: +(div.querySelector(".wait")?.value ?? 0),
-  }));
+  return $$("#steps .step").map(div => {
+    const chan = div.dataset.chan; // email | invite | message
+    const channel = chan === "email" ? "email" : "linkedin";
+    return {
+      channel,
+      li_action: channel === "linkedin" ? chan : undefined,
+      subject: div.querySelector(".subject")?.value ?? "",
+      subject_b: div.querySelector(".subjectB")?.value || undefined,
+      body: div.querySelector(".body")?.value ?? "",
+      wait_days: +(div.querySelector(".wait")?.value ?? 0),
+    };
+  });
 }
 
 function newCampaign() {
@@ -220,6 +293,8 @@ function showTab(name) {
   if (selectedId) history.replaceState(null, "", `#${selectedId}/${name}`);
   if (name === "contacts") loadContacts();
   if (name === "stats") loadStats();
+  // Réajuste la hauteur des corps une fois le pane visible (scrollHeight = 0 si caché)
+  if (name === "seq") $$("#steps .body").forEach(autosize);
 }
 
 function showPane(id) {
@@ -231,7 +306,7 @@ function showPane(id) {
 
 function renderStats(c) {
   const launched = (c.contacts || 0) - (c.pending || 0) - (c.held || 0);
-  const reached  = (c.in_progress || 0) + (c.replied || 0) + (c.completed || 0);
+  const reached  = (c.in_progress || 0) + (c.awaiting_li || 0) + (c.replied || 0) + (c.completed || 0);
   const pct = (n, d) => d > 0 ? Math.round(n / d * 100) + "%" : "—";
 
   const card = (value, pctVal, label) => `
@@ -256,6 +331,19 @@ function renderStats(c) {
       ${card(c.opted_out, pct(c.opted_out, launched || 1), "Désinscrits")}
       ${card(c.failed, pct(c.failed, c.emails_sent || 1), "Échecs")}
     </div>
+    <div class="stat-section">Engagement <span class="muted" style="font-weight:normal;font-size:11px">(sur ${c.emailed || 0} email(s) suivi(s))</span></div>
+    <div class="stat-grid">
+      ${card(c.opened || 0, pct(c.opened, c.emailed || 1), "Ont ouvert 👁️")}
+      ${card(c.clicked || 0, pct(c.clicked, c.emailed || 1), "Ont cliqué 🔗")}
+      ${card(c.visited || 0, pct(c.visited, c.emailed || 1), "Ont visité 🌐")}
+    </div>
+    ${c.li_steps ? `
+    <div class="stat-section">LinkedIn</div>
+    <div class="stat-grid">
+      ${card(c.li_invites_sent, null, "Invitations envoyées")}
+      ${card(c.li_messages_sent, null, "Messages envoyés")}
+      ${card(c.awaiting_li, null, "En file (à jouer)")}
+    </div>` : ""}
     <div class="stat-section">Progression</div>
     <div class="stat-grid">
       ${card(c.pending, pct(c.pending, c.contacts || 1), "En attente d'envoi")}
@@ -356,6 +444,8 @@ async function runPreview({ stepDiv, contact }) {
   }
   if (!div) return;
 
+  const chan = div.dataset.chan || "email"; // email | invite | message
+
   // Sujet : étape 1 = A ou B selon la variante du contact ; relance sans sujet = Re: sujet reçu
   const first = steps[0];
   const subjA = first.querySelector(".subject").value || "";
@@ -367,18 +457,20 @@ async function runPreview({ stepDiv, contact }) {
   const r = await api("/api/preview", {
     method: "POST", headers: {"Content-Type":"application/json"},
     body: JSON.stringify({
-      subject,
+      subject: chan === "email" ? subject : "",
       body: div.querySelector(".body").value,
       campaign_id: selectedId || undefined,
       contact_id: contact?.contact_id,
       account_id: contact?.account_id || +$("#previewAccount").value || undefined,
     }),
   });
-  $("#previewBody").innerHTML = `
+  $("#previewBody").innerHTML = chan === "email" ? `
     <div class="hline">De : ${esc(r.from)}</div>
     <div class="hline">À : ${esc(r.to)}</div>
     <div class="hline"><b style="color:var(--text)">Objet : ${esc(r.subject)}</b></div>
-    <pre>${fmtBody(r.body)}</pre>`;
+    <pre>${fmtBody(r.body)}</pre>` : `
+    <div class="hline"><b style="color:var(--text)">${chan === "invite" ? "🔗 Invitation LinkedIn" : "💬 Message LinkedIn"}</b></div>
+    <pre>${fmtBody(r.body) || '<span class="muted">(invitation sans note)</span>'}</pre>`;
   $("#previewNote").textContent = note || (r.sample_contact
     ? "Aperçu avec un contact d'exemple (la campagne n'a pas encore de contacts)."
     : "Aperçu avec le premier contact de la campagne — cliquez sur un contact du tableau pour le personnaliser.");
@@ -413,6 +505,7 @@ function renderContactFields(contact) {
     row("data-field", "first_name", contact.first_name) +
     row("data-field", "last_name", contact.last_name) +
     row("data-field", "company", contact.company) +
+    row("data-field", "linkedin", contact.linkedin) +
     Object.entries(extra).map(([k, v]) => row("data-extra", k, v)).join("") + `
     <div class="inline" style="gap:6px;margin:10px 0 6px">
       <input id="newFieldName" placeholder="nouveau_champ" style="margin:0;flex:0 0 115px">
@@ -461,23 +554,30 @@ async function runContactPreview(contact) {
 
   // Render all steps in parallel
   const renders = await Promise.all(steps.map(async (div, i) => {
+    const chan = div.dataset.chan || "email"; // email | invite | message
     const ownSubject = div.querySelector(".subject")?.value || "";
     const subject = i === 0 ? firstSubject : (ownSubject || `Re: ${firstSubject}`);
     const r = await api("/api/preview", {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ subject, body: div.querySelector(".body").value, campaign_id: selectedId, contact_id: contact.contact_id, account_id: accountId }),
+      body: JSON.stringify({ subject: chan === "email" ? subject : "", body: div.querySelector(".body").value, campaign_id: selectedId, contact_id: contact.contact_id, account_id: accountId }),
     });
     const isCurrent = i === Math.min(contact.current_step, total - 1);
     const waitDays = div.querySelector(".wait")?.value;
     const waitLabel = i === 0 ? "" : `<div class="muted" style="text-align:center;padding:6px 0;font-size:12px">↓ J+${waitDays || "?"}</div>`;
+    const header = chan === "email"
+      ? `<div class="hline">De : ${esc(r.from)}</div>
+         <div class="hline"><b style="color:var(--text)">Objet : ${esc(r.subject)}</b></div>`
+      : `<div class="hline"><b style="color:var(--text)">${chan === "invite" ? "🔗 Invitation LinkedIn" : "💬 Message LinkedIn"}</b></div>`;
+    const bodyHtml = chan === "invite" && !r.body
+      ? '<span class="muted">(invitation sans note)</span>'
+      : fmtBody(r.body);
     return `${waitLabel}<div class="preview" style="margin-bottom:0;${isCurrent ? "border-color:var(--accent)" : "opacity:0.6"}">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
         <span class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.05em">Étape ${i + 1}/${total}</span>
         ${isCurrent ? `<span class="pill active" style="font-size:10px">prochaine</span>` : ""}
       </div>
-      <div class="hline">De : ${esc(r.from)}</div>
-      <div class="hline"><b style="color:var(--text)">Objet : ${esc(r.subject)}</b></div>
-      <pre style="max-height:180px;overflow-y:auto">${fmtBody(r.body)}</pre>
+      ${header}
+      <pre style="max-height:180px;overflow-y:auto">${bodyHtml}</pre>
     </div>`;
   }));
 
@@ -499,6 +599,9 @@ function renderContacts() {
     (!q || [r.email, r.first_name, r.last_name].filter(Boolean).join(" ").toLowerCase().includes(q))
   );
 
+  // La campagne utilise-t-elle des étapes LinkedIn ? (alors une URL de profil est requise)
+  const hasLiSteps = $$("#steps .step").some(d => d.dataset.chan !== "email");
+
   const counts = {};
   contactRows.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
   $("#statusChips").innerHTML = contactRows.length ? `
@@ -510,15 +613,20 @@ function renderContacts() {
   $("#contacts tbody").innerHTML = rows.map(r => `
     <tr style="cursor:pointer" title="Voir l'aperçu personnalisé pour ce contact" onclick="previewContact(${r.contact_id})">
       <td onclick="event.stopPropagation()"><input type="checkbox" class="contactChk" data-id="${r.cc_id}" data-status="${r.status}" onchange="updateSelection()"></td>
-      <td>${esc(r.email)}</td>
+      <td>${esc(r.email)}${hasLiSteps ? (r.linkedin
+        ? ` <span title="Profil LinkedIn : ${esc(r.linkedin)}">🔗</span>`
+        : ` <span class="err" title="Aucune URL LinkedIn — les étapes LinkedIn échoueront">⚠️</span>`) : ""}</td>
       <td>${esc([r.first_name, r.last_name].filter(Boolean).join(" "))}</td>
       <td>${pill(r.status)}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
       <td>${r.current_step || "—"}</td>
+      <td>${r.open_count ? `<span title="${new Date(r.opened_at).toLocaleString("fr-FR")} — ${r.open_count} ouverture(s)">👁️ ${r.open_count}</span>` : "—"}</td>
+      <td>${r.click_count ? `<span title="${new Date(r.clicked_at).toLocaleString("fr-FR")} — ${r.click_count} clic(s)">🔗 ${r.click_count}</span>` : "—"}</td>
+      <td>${r.visit_count ? `<span title="${new Date(r.last_visit_at).toLocaleString("fr-FR")} — ${r.visit_count} visite(s)">🌐 ${r.visit_count}</span>` : "—"}</td>
       <td>${r.variant || "—"}</td>
       <td class="muted">${esc(r.sender || "—")}</td>
       <td class="muted">${r.next_send_at ? new Date(r.next_send_at).toLocaleString("fr-FR") : "—"}</td>
     </tr>
-  `).join("") || `<tr><td colspan="8" class="muted">${contactRows.length
+  `).join("") || `<tr><td colspan="11" class="muted">${contactRows.length
     ? "Aucun contact ne correspond à la recherche."
     : `Aucun contact — <a href="#" onclick="showTab('import');return false">ajoutez-en via l'onglet Import</a>.`}</td></tr>`;
   updateSelection();
@@ -679,7 +787,7 @@ document.addEventListener("keydown", e => {
 });
 
 // --- Autocomplétion des variables : taper {{ propose les choix disponibles ---
-const BASE_VARS = ["first_name", "last_name", "company", "email", "sender_name", "signature"];
+const BASE_VARS = ["first_name", "last_name", "company", "email", "sender_name", "signature", "link"];
 let acBox = null, acItems = [], acIndex = 0, acField = null;
 
 function availableVars() {
@@ -731,6 +839,7 @@ function pickAc(i) {
 
 document.addEventListener("input", e => {
   if (e.target.matches?.("#steps .subject, #steps .subjectB, #steps .body")) openAc(e.target);
+  if (e.target.matches?.("#steps .body")) autosize(e.target);
 });
 document.addEventListener("keydown", e => {
   if (!acBox || !acField) return;
