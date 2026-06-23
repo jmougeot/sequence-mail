@@ -2,7 +2,7 @@ import { parse } from "csv-parse/sync";
 import { resolveMx } from "node:dns/promises";
 import { db } from "../db.js";
 
-const KNOWN_COLUMNS = new Set(["email", "first_name", "last_name", "company"]);
+const KNOWN_COLUMNS = new Set(["email", "first_name", "last_name", "company", "linkedin"]);
 
 export interface ImportReport {
   imported: number;
@@ -50,12 +50,13 @@ export async function importContacts(
   for (const d of domains) domainOk.set(d, await domainAcceptsMail(d));
 
   const upsertContact = db.prepare(`
-    INSERT INTO contacts (email, first_name, last_name, company, extra, attio_record_id)
-    VALUES (@email, @first_name, @last_name, @company, @extra, @attio_record_id)
+    INSERT INTO contacts (email, first_name, last_name, company, linkedin, extra, attio_record_id)
+    VALUES (@email, @first_name, @last_name, @company, @linkedin, @extra, @attio_record_id)
     ON CONFLICT(email) DO UPDATE SET
       first_name = COALESCE(excluded.first_name, contacts.first_name),
       last_name  = COALESCE(excluded.last_name, contacts.last_name),
       company    = COALESCE(excluded.company, contacts.company),
+      linkedin   = COALESCE(excluded.linkedin, contacts.linkedin),
       -- Fusion des champs personnalisés : les nouvelles valeurs écrasent les
       -- anciennes, les champs absents du nouvel import sont conservés
       extra      = CASE
@@ -93,6 +94,7 @@ export async function importContacts(
         first_name: row.first_name?.trim() || null,
         last_name: row.last_name?.trim() || null,
         company: row.company?.trim() || null,
+        linkedin: row.linkedin?.trim() || null,
         extra: Object.keys(extra).length ? JSON.stringify(extra) : null,
         attio_record_id: source.attioRecordIds?.[email] ?? null,
       });
@@ -118,10 +120,26 @@ export function parseCsv(content: string): Array<Record<string, string>> {
   return parse(content, {
     columns: (header: string[]) =>
       header.map((h) => h.trim().toLowerCase().replace(/[\s-]+/g, "_")),
+    delimiter: detectDelimiter(content),
     skip_empty_lines: true,
     trim: true,
     bom: true,
   }) as Array<Record<string, string>>;
+}
+
+/**
+ * Détecte le séparateur depuis la 1re ligne. Les exports Excel FR utilisent
+ * souvent « ; » (ou tabulation), là où le CSV standard utilise « , ».
+ */
+function detectDelimiter(content: string): string {
+  const firstLine = content.replace(/^﻿/, "").split(/\r?\n/, 1)[0] ?? "";
+  const counts: Record<string, number> = {
+    ",": (firstLine.match(/,/g) ?? []).length,
+    ";": (firstLine.match(/;/g) ?? []).length,
+    "\t": (firstLine.match(/\t/g) ?? []).length,
+  };
+  const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return best[1] > 0 ? best[0] : ",";
 }
 
 /** Remplace les variables {{first_name}}, {{company}}, etc. */
