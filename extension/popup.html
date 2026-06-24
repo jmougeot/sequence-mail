@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 13px/1.4 system-ui, sans-serif; width: 280px; margin: 0; padding: 14px; color: #1d2733; }
+  h1 { font-size: 14px; margin: 0 0 10px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; background: #999; }
+  .ok { background: #1a9c52; } .err { background: #d23; } .run, .wait { background: #e0a400; } .off, .idle { background: #999; }
+  .muted { color: #667; }
+  button { font: inherit; cursor: pointer; border: 1px solid #c9d2dc; background: #f4f6f9; border-radius: 6px; padding: 5px 10px; }
+  .stat { display: flex; gap: 12px; margin-top: 10px; font-size: 12px; }
+  .stat b { font-size: 15px; display: block; }
+  .sub { font-size: 11px; color: #889; margin-top: 8px; }
+  .srv { margin-top: 12px; border-top: 1px solid #e6e9ef; padding-top: 10px; }
+  .srv label { display: block; font-size: 11px; color: #667; margin-bottom: 4px; }
+  .srv .line { display: flex; gap: 6px; }
+  .srv input { flex: 1; font: inherit; border: 1px solid #c9d2dc; border-radius: 6px; padding: 4px 8px; }
+</style>
+</head>
+<body>
+  <h1>Prospection LinkedIn</h1>
+  <div class="row">
+    <span><span class="dot" id="dot"></span><span id="statusText" class="muted">…</span></span>
+    <button id="toggle">…</button>
+  </div>
+  <div class="stat" id="stat"></div>
+  <div class="sub" id="sub"></div>
+  <div class="srv">
+    <label for="server">Adresse du serveur (port du mailer)</label>
+    <div class="line">
+      <input id="server" placeholder="http://localhost:3000">
+      <button id="saveServer">OK</button>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

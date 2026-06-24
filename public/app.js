@@ -13,9 +13,11 @@ function esc(s) {
   return String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 }
 
-/** Corps d'email pour l'aperçu : échappé + *texte* rendu en italique. */
+/** Corps d'email pour l'aperçu : échappé + **texte** gras et *texte* italique. */
 function fmtBody(s) {
-  return esc(s).replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+  return esc(s)
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>") // gras avant italique
+    .replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
 }
 
 function renderNav(active) {
@@ -37,6 +39,7 @@ function renderNav(active) {
 const STATUS_LABELS = {
   pending: "en attente",
   in_progress: "en cours",
+  awaiting_li: "action LinkedIn",
   replied: "a répondu",
   opted_out: "désinscrit",
   bounced: "bounce",

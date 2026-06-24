@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Prospection LinkedIn — Sequence Mail",
+  "version": "0.1.0",
+  "description": "Exécute en douceur, dans votre propre session LinkedIn, les invitations/messages mis en file par l'app Sequence Mail. La cadence (quotas, horaires, délais) est imposée par le serveur local.",
+  "permissions": ["storage", "alarms", "tabs", "scripting"],
+  "host_permissions": [
+    "https://www.linkedin.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Prospection LinkedIn"
+  }
+}

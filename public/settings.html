@@ -23,6 +23,15 @@
   </div>
 
   <div class="card">
+    <div class="inline" style="justify-content:space-between;margin-bottom:12px">
+      <h2 style="margin:0">Prospection LinkedIn (extension)</h2>
+      <button id="liToggle" class="ghost" hidden onclick="toggleLi()"></button>
+    </div>
+    <div id="liStatus"></div>
+    <p class="muted" id="liHint" style="margin-bottom:0"></p>
+  </div>
+
+  <div class="card">
     <h2>Délivrabilité &amp; intégrations</h2>
     <table id="settings"><tbody></tbody></table>
     <p class="muted">Ces réglages se modifient dans le fichier <code>.env</code> (puis redémarrer le serveur). Voir <code>.env.example</code>.</p>
@@ -75,9 +84,57 @@ async function loadSettings() {
   $("#settings tbody").innerHTML = rows.map(([k, v]) => `<tr><th style="width:280px">${k}</th><td>${v}</td></tr>`).join("");
 }
 
+// --- Connexion LinkedIn (extension Chrome) ---
+async function loadLi() {
+  let s;
+  try { s = await api("/api/li/status"); }
+  catch { $("#liStatus").innerHTML = `<span class="muted">Statut indisponible.</span>`; return; }
+
+  const color = s.connected ? "var(--ok)" : "var(--bad)";
+  const label = s.connected ? "Extension connectée" : "Extension non détectée";
+  const seen = s.last_seen_at ? `vue ${timeAgo(s.last_seen_at)}` : "jamais vue";
+
+  $("#liStatus").innerHTML = `
+    <div class="inline" style="gap:8px;margin-bottom:12px">
+      <span style="width:10px;height:10px;border-radius:50%;background:${color};display:inline-block"></span>
+      <b>${label}</b>
+      <span class="muted">· ${seen}${s.connected && !s.enabled ? " · en pause" : ""}</span>
+    </div>
+    <div class="stat-grid" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr))">
+      <div class="stat-card"><div class="sv">${s.today.invite.sent} / ${s.today.invite.cap}</div><div class="sl">Invitations aujourd'hui</div></div>
+      <div class="stat-card"><div class="sv">${s.today.message.sent} / ${s.today.message.cap}</div><div class="sl">Messages aujourd'hui</div></div>
+      <div class="stat-card"><div class="sv">${s.queue.pending}</div><div class="sl">Actions en file</div></div>
+      <div class="stat-card"><div class="sv">${s.queue.failed}</div><div class="sl">Échecs</div></div>
+    </div>`;
+
+  const btn = $("#liToggle");
+  btn.hidden = false;
+  btn.textContent = s.enabled ? "⏸ Mettre en pause" : "▶ Activer";
+
+  $("#liHint").textContent = s.connected
+    ? "L'extension interroge le serveur et joue les invitations/messages des étapes LinkedIn de vos campagnes."
+    : "Installez l'extension Chrome (dossier extension/) et restez connecté à LinkedIn dans Chrome. Vérifiez qu'elle pointe bien vers ce serveur.";
+}
+
+function timeAgo(ts) {
+  const s = Math.round((Date.now() - ts) / 1000);
+  if (s < 60) return "à l'instant";
+  if (s < 3600) return `il y a ${Math.round(s / 60)} min`;
+  if (s < 86400) return `il y a ${Math.round(s / 3600)} h`;
+  return new Date(ts).toLocaleString("fr-FR");
+}
+
+async function toggleLi() {
+  const s = await api("/api/li/status");
+  await api("/api/li/toggle", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ enabled: !s.enabled }) });
+  loadLi();
+}
+
 refresh();
 loadSettings();
+loadLi();
 setInterval(refresh, 30000);
+setInterval(loadLi, 5000);
 </script>
 </body>
 </html>
