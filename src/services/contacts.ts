@@ -142,7 +142,20 @@ function detectDelimiter(content: string): string {
   return best[1] > 0 ? best[0] : ",";
 }
 
-/** Remplace les variables {{first_name}}, {{company}}, etc. */
+/**
+ * Une valeur de genre est-elle féminine ? Reconnaît F, femme, féminin,
+ * female, Mme, Madame… Tout le reste (y compris vide) est traité au masculin.
+ */
+function isFeminine(value?: string): boolean {
+  const s = (value ?? "").trim().toLowerCase();
+  return s.startsWith("f") || s.startsWith("mme") || s.startsWith("mad") || s === "w" || s === "2";
+}
+
+/**
+ * Remplace les variables {{first_name}}, {{company}}, etc. et gère l'accord
+ * en genre via {{genre:masculin|féminin}} : la colonne `genre` du contact
+ * choisit la 1re forme (masculin) ou la 2e (féminin).
+ */
 export function renderTemplate(
   template: string,
   contact: { email: string; first_name: string | null; last_name: string | null; company: string | null; extra: string | null },
@@ -156,5 +169,13 @@ export function renderTemplate(
     ...(contact.extra ? (JSON.parse(contact.extra) as Record<string, string>) : {}),
     ...extraVars,
   };
-  return template.replace(/\{\{\s*([\p{L}\p{N}_]+)\s*\}\}/gu, (_, key: string) => vars[key] ?? "");
+  return template
+    // Accord en genre : {{genre:masculin|féminin}} — placé avant les variables
+    // simples car la clé est suivie de « : », exclue du motif générique ci-dessous.
+    .replace(
+      /\{\{\s*([\p{L}\p{N}_]+)\s*:\s*([^|{}]*)\|([^{}]*)\}\}/gu,
+      (_, key: string, masc: string, fem: string) => (isFeminine(vars[key]) ? fem : masc).trim()
+    )
+    // Variables simples : {{first_name}}
+    .replace(/\{\{\s*([\p{L}\p{N}_]+)\s*\}\}/gu, (_, key: string) => vars[key] ?? "");
 }
