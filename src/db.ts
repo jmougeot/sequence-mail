@@ -194,10 +194,10 @@ if ((db.pragma("user_version", { simple: true }) as number) < 1) {
   db.pragma("user_version = 1");
 }
 
-// v2 : classe rétroactivement les visites déjà enregistrées (bot/scanner vs humain)
-// pour que les compteurs « ont visité » ne reflètent que des humains, comme les
-// nouvelles visites désormais classées à l'enregistrement.
-if ((db.pragma("user_version", { simple: true }) as number) < 2) {
+// Reclasse toutes les visites existantes (bot/scanner vs humain) avec la logique
+// courante : à exécuter quand les heuristiques de botFilter évoluent, pour que les
+// compteurs « ont visité » restent cohérents avec les nouvelles visites.
+function reclassifyAllVisits(): void {
   const rows = db.prepare("SELECT id, cc_id, at, user_agent, ip FROM visits").all() as Array<{
     id: number;
     cc_id: number;
@@ -217,5 +217,17 @@ if ((db.pragma("user_version", { simple: true }) as number) < 2) {
       upd.run(v.bot ? 1 : 0, v.reason || null, r.id);
     }
   })();
+}
+
+// v2 : premier classement rétroactif (user-agent + IP datacenter + délai envoi→clic).
+if ((db.pragma("user_version", { simple: true }) as number) < 2) {
+  reclassifyAllVisits();
   db.pragma("user_version = 2");
+}
+
+// v3 : plages d'IP datacenter élargies (DigitalOcean, Hetzner, OVH, Linode, Vultr,
+// Scaleway, Oracle) → on reclasse pour absorber les scanners passés inaperçus.
+if ((db.pragma("user_version", { simple: true }) as number) < 3) {
+  reclassifyAllVisits();
+  db.pragma("user_version = 3");
 }
