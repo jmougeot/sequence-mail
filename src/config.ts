@@ -21,6 +21,9 @@ export const config = {
     enabled: (process.env.VISIT_ENABLED ?? "true") !== "false",
     baseUrl: (process.env.VISIT_BASE_URL || process.env.BASE_URL || "http://localhost:3000").replace(/\/+$/, ""),
     destUrl: (process.env.VISIT_DEST_URL || "https://www.example.com").replace(/\/+$/, ""),
+    // Filtrage bot : un clic moins de N secondes après l'envoi est un scanner de
+    // sécurité (Safe Links…), pas un humain. 0 désactive le critère temporel.
+    botMinDelaySeconds: int("VISIT_BOT_MIN_DELAY_SECONDS", 60),
   },
   attioApiKey: process.env.ATTIO_API_KEY ?? "",
   // Slug d'un attribut texte sur l'objet "people" d'Attio où écrire l'avancement de séquence

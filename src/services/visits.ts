@@ -10,6 +10,7 @@ import crypto from "node:crypto";
 import type { Express } from "express";
 import { config } from "../config.js";
 import { db } from "../db.js";
+import { classifyVisit } from "./botFilter.js";
 
 /**
  * Lien personnalisé et stable d'un prospect (campaign_contact) pour {{link}}.
@@ -38,12 +39,22 @@ export function registerVisitRoutes(app: Express): void {
       .get(req.params.token) as { id: number } | undefined;
     if (cc) {
       try {
-        db.prepare("INSERT INTO visits (cc_id, at, user_agent, ip) VALUES (?, ?, ?, ?)").run(
-          cc.id,
-          Date.now(),
-          req.get("user-agent") ?? null,
-          req.ip ?? null
-        );
+        const ua = req.get("user-agent") ?? null;
+        const ip = req.ip ?? null;
+        const now = Date.now();
+        // Délai depuis le dernier email envoyé à ce contact : un clic en quelques
+        // secondes trahit un scanner (Safe Links, Proofpoint…) qui ouvre le lien à la
+        // livraison. Classement bot/humain à l'enregistrement → exclu des compteurs.
+        const prevSend = db
+          .prepare(
+            "SELECT MAX(sent_at) AS t FROM messages WHERE campaign_contact_id = ? AND sent_at <= ?"
+          )
+          .get(cc.id, now) as { t: number | null };
+        const delaySeconds = prevSend?.t != null ? Math.round((now - prevSend.t) / 1000) : null;
+        const verdict = classifyVisit(ua, ip, delaySeconds);
+        db.prepare(
+          "INSERT INTO visits (cc_id, at, user_agent, ip, is_bot, bot_reason) VALUES (?, ?, ?, ?, ?, ?)"
+        ).run(cc.id, now, ua, ip, verdict.bot ? 1 : 0, verdict.reason || null);
       } catch (err) {
         console.error("[visit]", err instanceof Error ? err.message : err);
       }

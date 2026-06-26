@@ -153,7 +153,7 @@ export function createServer(): express.Express {
               WHERE cc.campaign_id = cp.id) AS emails_sent,
            (SELECT COUNT(DISTINCT v.cc_id) FROM visits v
               JOIN campaign_contacts cc ON cc.id = v.cc_id
-              WHERE cc.campaign_id = cp.id) AS visited,
+              WHERE cc.campaign_id = cp.id AND v.is_bot = 0) AS visited,
            (SELECT COUNT(*) FROM steps s WHERE s.campaign_id = cp.id AND s.channel = 'linkedin') AS li_steps,
            (SELECT COUNT(*) FROM li_actions la JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
               WHERE cc.campaign_id = cp.id AND la.type = 'invite' AND la.status = 'sent') AS li_invites_sent,
@@ -465,8 +465,9 @@ export function createServer(): express.Express {
         `SELECT c.id AS contact_id, c.email, c.first_name, c.last_name, c.company, c.linkedin, c.extra,
                 cc.id AS cc_id, cc.status, cc.current_step, cc.variant, cc.account_id,
                 cc.next_send_at, cc.replied_at, cc.error, a.email AS sender,
-                (SELECT COUNT(*) FROM visits v WHERE v.cc_id = cc.id) AS visit_count,
-                (SELECT MAX(v.at) FROM visits v WHERE v.cc_id = cc.id) AS last_visit_at
+                (SELECT COUNT(*) FROM visits v WHERE v.cc_id = cc.id AND v.is_bot = 0) AS visit_count,
+                (SELECT MAX(v.at) FROM visits v WHERE v.cc_id = cc.id AND v.is_bot = 0) AS last_visit_at,
+                (SELECT COUNT(*) FROM visits v WHERE v.cc_id = cc.id AND v.is_bot = 1) AS bot_visit_count
          FROM campaign_contacts cc
          JOIN contacts c ON c.id = cc.contact_id
          LEFT JOIN accounts a ON a.id = cc.account_id

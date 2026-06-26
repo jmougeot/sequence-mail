@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { classifyVisit } from "./services/botFilter.js";
 
 // Relatif au projet (src/../data), pas au répertoire de lancement ; surchargeable via DATA_DIR
 const DATA_DIR = process.env.DATA_DIR ?? fileURLToPath(new URL("../data", import.meta.url));
@@ -172,11 +173,16 @@ CREATE TABLE IF NOT EXISTS visits (
   cc_id INTEGER NOT NULL REFERENCES campaign_contacts(id) ON DELETE CASCADE,
   at INTEGER NOT NULL,
   user_agent TEXT,
-  ip TEXT
+  ip TEXT,
+  is_bot INTEGER NOT NULL DEFAULT 0,   -- 1 = visite d'un bot/scanner, exclue des compteurs
+  bot_reason TEXT                       -- motif du classement (cf. services/botFilter.ts)
 );
 CREATE INDEX IF NOT EXISTS idx_visits_cc ON visits (cc_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_visit_token ON campaign_contacts (visit_token) WHERE visit_token IS NOT NULL;
 `);
+// Bases déjà créées avant le filtrage bot : on ajoute les colonnes manquantes.
+addColumnIfMissing("visits", "is_bot", "is_bot INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("visits", "bot_reason", "bot_reason TEXT");
 
 // v1 : la signature n'est plus ajoutée automatiquement en fin d'email mais placée
 // via {{signature}} — les étapes existantes la reçoivent en fin de corps pour
@@ -186,4 +192,30 @@ if ((db.pragma("user_version", { simple: true }) as number) < 1) {
     "UPDATE steps SET body = body || char(10) || char(10) || '{{signature}}' WHERE body NOT LIKE '%{{signature}}%'"
   );
   db.pragma("user_version = 1");
+}
+
+// v2 : classe rétroactivement les visites déjà enregistrées (bot/scanner vs humain)
+// pour que les compteurs « ont visité » ne reflètent que des humains, comme les
+// nouvelles visites désormais classées à l'enregistrement.
+if ((db.pragma("user_version", { simple: true }) as number) < 2) {
+  const rows = db.prepare("SELECT id, cc_id, at, user_agent, ip FROM visits").all() as Array<{
+    id: number;
+    cc_id: number;
+    at: number;
+    user_agent: string | null;
+    ip: string | null;
+  }>;
+  const prevSend = db.prepare(
+    "SELECT MAX(sent_at) AS t FROM messages WHERE campaign_contact_id = ? AND sent_at <= ?"
+  );
+  const upd = db.prepare("UPDATE visits SET is_bot = ?, bot_reason = ? WHERE id = ?");
+  db.transaction(() => {
+    for (const r of rows) {
+      const sent = (prevSend.get(r.cc_id, r.at) as { t: number | null }).t;
+      const delaySeconds = sent != null ? Math.round((r.at - sent) / 1000) : null;
+      const v = classifyVisit(r.user_agent, r.ip, delaySeconds);
+      upd.run(v.bot ? 1 : 0, v.reason || null, r.id);
+    }
+  })();
+  db.pragma("user_version = 2");
 }
