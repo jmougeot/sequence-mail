@@ -6,6 +6,7 @@
   "permissions": ["storage", "alarms", "tabs", "scripting"],
   "host_permissions": [
     "https://www.linkedin.com/*",
+    "https://sequence.example.com/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],

@@ -28,10 +28,16 @@
   <div class="stat" id="stat"></div>
   <div class="sub" id="sub"></div>
   <div class="srv">
-    <label for="server">Adresse du serveur (port du mailer)</label>
+    <label for="server">Adresse du serveur</label>
     <div class="line">
-      <input id="server" placeholder="http://localhost:3000">
+      <input id="server" placeholder="https://sequence.example.com">
       <button id="saveServer">OK</button>
+    </div>
+    <label for="authPass" style="margin-top:10px">Mot de passe d'accès (prod protégée)</label>
+    <div class="line">
+      <input id="authUser" placeholder="admin" style="flex:0 0 64px">
+      <input id="authPass" type="password" placeholder="mot de passe">
+      <button id="saveAuth">OK</button>
     </div>
   </div>
   <script src="popup.js"></script>

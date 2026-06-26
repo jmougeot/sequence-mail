@@ -8,7 +8,7 @@
  * Sécurité : une seule action à la fois, et toute erreur remontée déclenche côté
  * serveur une longue pause. On n'insiste jamais.
  */
-const DEFAULT_SERVER = "http://localhost:3000"; // serveur Sequence Mail (port du mailer)
+const DEFAULT_SERVER = "https://sequence.example.com"; // prod partagée Sequence Mail (réglable dans le popup — ex. http://localhost:3000 en local)
 const ALARM = "li-tick";
 
 let busy = false; // garde-fou : jamais deux actions en parallèle
@@ -17,6 +17,16 @@ let busy = false; // garde-fou : jamais deux actions en parallèle
 async function getServer() {
   const { server } = await chrome.storage.local.get("server");
   return (server || DEFAULT_SERVER).replace(/\/+$/, "");
+}
+
+/**
+ * En-tête d'authentification pour la prod protégée par mot de passe (Caddy
+ * basic_auth). Réglé depuis le popup ; vide en local (pas de mot de passe).
+ */
+async function authHeaders() {
+  const { authUser, authPass } = await chrome.storage.local.get(["authUser", "authPass"]);
+  if (!authPass) return {};
+  return { Authorization: "Basic " + btoa(`${authUser || "admin"}:${authPass}`) };
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -47,13 +57,19 @@ async function tick() {
   busy = true;
   const SERVER = await getServer();
   try {
-    const res = await fetch(`${SERVER}/api/li/next`).then((r) => r.json());
+    const auth = await authHeaders();
+    const r = await fetch(`${SERVER}/api/li/next`, { headers: auth });
+    if (r.status === 401) {
+      await setStatus({ kind: "err", text: "Accès refusé (401) — renseignez le mot de passe d'accès dans le popup." });
+      return; // le finally remet busy = false
+    }
+    const res = await r.json();
     if (res.action) {
       await setStatus({ kind: "run", text: `${res.action.type === "invite" ? "Invitation" : "Message"} en cours…` });
       const verdict = await runAction(res.action);
       await fetch(`${SERVER}/api/li/result`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...auth },
         body: JSON.stringify({ id: res.action.id, ok: verdict.ok, error: verdict.error }),
       });
       await setStatus(
