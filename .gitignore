@@ -4,3 +4,7 @@ data/
 .env
 *.log
 .DS_Store
+# Caddyfile rendu par setup.sh (contient le hash du mot de passe) — jamais versionné.
+# Le modèle versionné est Caddyfile.template.
+Caddyfile
+*.bak

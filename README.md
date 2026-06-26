@@ -2,6 +2,32 @@
 
 Outil de séquences email (cold outreach) multi-comptes Google Workspace : campagnes indépendantes, import CSV / Attio, détection automatique des réponses, répartition de charge entre comptes, protection de la délivrabilité — et **moteur de recherche B2B intégré** (recherche d'entreprises françaises + emails des dirigeants, sans outil payant).
 
+## Déploiement clé en main (Docker + HTTPS auto)
+
+Pour héberger une instance en ligne (dashboard + suivi des liens) sur n'importe quel
+petit VPS avec Docker :
+
+```bash
+git clone <repo> && cd Sequence-mail
+./setup.sh                    # demande domaine + mot de passe dashboard → génère .env et Caddyfile
+nano .env                     # coller GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (cf. ci-dessous)
+docker compose up -d --build  # Caddy obtient le certificat HTTPS tout seul (~30 s)
+```
+
+`setup.sh` produit un `Caddyfile` local (domaine + hash bcrypt du mot de passe, non
+versionné) et renseigne `BASE_URL`/`VISIT_BASE_URL`. Le suivi (`/p/`, `/t/`) est
+public ; le dashboard est protégé (`admin` + le mot de passe choisi).
+
+**Deux pré-requis incompressibles, propres à chaque instance** (aucune image ne peut
+les fournir à ta place) :
+- un **domaine** pointant vers le serveur : enregistrement `A  go.mondomaine.com → IP`
+  (proxy/Cloudflare désactivé, sinon Caddy ne peut pas obtenir le certificat) ;
+- des **identifiants Google OAuth** à toi (console.cloud.google.com → client « Web »),
+  URI de redirection `https://<ton-domaine>/auth/google/callback`.
+
+Options avancées (prod partagée derrière un Caddy existant, sauvegardes, import d'une
+base SQLite existante) : voir **`DEPLOY.md`** / **`DEPLOY-SHARED.md`**.
+
 ## Démarrage
 
 ```bash
@@ -9,20 +35,6 @@ npm install
 cp .env.example .env   # puis renseigner GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
 npm start              # ouvre http://localhost:3000
 ```
-
-### Raccourci Desktop macOS (app)
-
-Pour creer une app sur le Bureau (double-clic pour lancer le projet avec une icone) :
-
-```bash
-npm run desktop:app
-```
-
-Cela cree `Sequence Mail.app` sur le Bureau. Au clic, l'app lance `npm start`
-dans ce projet en arriere-plan (sans ouvrir Terminal), puis ouvre l'interface dans une
-fenetre dediee via Firefox Developer Edition (prioritaire), puis Firefox.
-Sinon, fenetre app (sans barre d'adresse) via Google Chrome ou Microsoft Edge.
-Sinon, ouverture classique de l'URL dans le navigateur par defaut.
 
 ### Configuration Google (obligatoire)
 

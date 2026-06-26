@@ -1,0 +1,22 @@
+# MODÈLE de configuration Caddy (HTTPS auto via Let's Encrypt).
+# Ne pas éditer à la main pour déployer : `./setup.sh` génère le vrai `Caddyfile`
+# en y injectant le domaine et le hash du mot de passe. Le fichier rendu contient
+# le hash et n'est donc PAS versionné (cf. .gitignore).
+__DOMAIN__ {
+	encode gzip
+
+	# --- Routes PUBLIQUES de suivi : ouvertes (le prospect ne doit pas s'authentifier) ---
+	@public path /p/* /t/*
+	handle @public {
+		reverse_proxy app:3000
+	}
+
+	# --- Tout le reste (dashboard, /api, /auth) : protégé par mot de passe ---
+	# Le hash bcrypt est injecté par setup.sh (utilisateur "admin").
+	handle {
+		basic_auth {
+			admin __CADDY_HASH__
+		}
+		reverse_proxy app:3000
+	}
+}
