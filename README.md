@@ -36,6 +36,12 @@ cp .env.example .env   # puis renseigner GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
 npm start              # ouvre http://localhost:3000
 ```
 
+### Piloter depuis Claude (serveur MCP)
+
+Un serveur **MCP** (lecture + écriture) permet de gérer campagnes, contacts et
+comptes depuis Claude Desktop / Claude Code. Il appelle l'API HTTP de l'app (local
+ou prod) — voir **`mcp/README.md`** pour l'installation et le branchement.
+
 ### Configuration Google (obligatoire)
 
 1. Sur [console.cloud.google.com](https://console.cloud.google.com), créer un projet et activer l'**API Gmail**.

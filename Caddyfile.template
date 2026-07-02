@@ -19,4 +19,23 @@ __DOMAIN__ {
 		}
 		reverse_proxy app:3000
 	}
+
+	# /api/* est appelé en fetch par l'extension Chrome et la SPA. basic_auth
+	# RENVOIE le 401 via la voie « erreur » de Caddy (il ne l'écrit pas lui-même) :
+	# on ne peut donc PAS retirer WWW-Authenticate avec un simple `header`/`defer`
+	# (testé : le wrapper ne voit jamais l'écriture). On le fait dans handle_errors.
+	# Sinon Chrome ouvre sa boîte de login NATIVE à chaque requête (popups en
+	# boucle, l'extension pollant /api/li). On retire le défi sur le 401 de /api/* ;
+	# le 401 reste (l'extension envoie ses identifiants via son popup). Le
+	# dashboard, lui, garde le défi (login natif une seule fois à l'ouverture).
+	handle_errors {
+		@api path /api/*
+		handle @api {
+			header -WWW-Authenticate
+			respond {http.error.status_code}
+		}
+		handle {
+			respond {http.error.status_code}
+		}
+	}
 }

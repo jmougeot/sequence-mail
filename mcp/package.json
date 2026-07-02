@@ -1,0 +1,24 @@
+{
+  "name": "sequence-mail-mcp",
+  "version": "0.1.0",
+  "description": "Serveur MCP pour Sequence Mail : expose campagnes, contacts et comptes (lecture/écriture) aux clients MCP (Claude Desktop, Claude Code…).",
+  "type": "module",
+  "bin": {
+    "sequence-mail-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
