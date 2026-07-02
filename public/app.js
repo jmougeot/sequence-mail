@@ -64,3 +64,31 @@ function notify(msg, ok = true) {
   requestAnimationFrame(() => t.classList.add("show"));
   setTimeout(() => { t.classList.remove("show"); setTimeout(() => t.remove(), 300); }, 4000);
 }
+
+/** Copie du texte dans le presse-papiers, avec repli si l'API n'est pas disponible. */
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Repli pour les contextes non sécurisés (http) ou navigateurs anciens.
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch {}
+    ta.remove();
+    return ok;
+  }
+}
+
+/** Normalise une valeur « linkedin » (URL complète, domaine nu ou identifiant) en URL cliquable. */
+function liUrl(s) {
+  s = String(s ?? "").trim();
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) return s;
+  if (/^(www\.)?linkedin\.com/i.test(s)) return "https://" + s;
+  return "https://www.linkedin.com/in/" + s.replace(/^\/+/, "");
+}

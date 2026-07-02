@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="wrap">
+<div class="wrap wide">
   <div class="inline" style="justify-content:space-between;margin-bottom:16px">
     <div class="inline" style="gap:8px">
       <h1 style="margin:0">Campagnes</h1>
@@ -478,6 +478,13 @@ async function runPreview({ stepDiv, contact }) {
 
 let lastPreview = null;
 let lastContactPreview = null;
+let contactPreviewMsgs = []; // messages bruts (par étape) copiables pour un envoi manuel
+async function copyStepMsg(i) {
+  const msg = contactPreviewMsgs[i];
+  if (!msg) return;
+  const ok = await copyText(msg);
+  notify(ok ? "Message copié — prêt à coller" : "Impossible de copier le message", ok);
+}
 function previewStep(stepDiv) { lastPreview = { stepDiv }; runPreview(lastPreview); }
 function rerunPreview() { if (lastPreview) runPreview(lastPreview); }
 function rerunContactPreview() { if (lastContactPreview) runContactPreview(lastContactPreview); }
@@ -570,18 +577,28 @@ async function runContactPreview(contact) {
     const bodyHtml = chan === "invite" && !r.body
       ? '<span class="muted">(invitation sans note)</span>'
       : fmtBody(r.body);
-    return `${waitLabel}<div class="preview" style="margin-bottom:0;${isCurrent ? "border-color:var(--accent)" : "opacity:0.6"}">
+    // Message brut (tel qu'il sera envoyé) copié dans le presse-papiers pour un envoi manuel.
+    const msg = r.body || "";
+    const copyBtn = r.body
+      ? `<button class="ghost" style="font-size:11px;padding:2px 9px;margin:0" title="Copier le message" onclick="copyStepMsg(${i})">Copier</button>`
+      : "";
+    const html = `${waitLabel}<div class="preview" style="margin-bottom:0;${isCurrent ? "border-color:var(--accent)" : "opacity:0.6"}">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
         <span class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.05em">Étape ${i + 1}/${total}</span>
-        ${isCurrent ? `<span class="pill active" style="font-size:10px">prochaine</span>` : ""}
+        <span class="inline" style="gap:4px">
+          ${isCurrent ? `<span class="pill active" style="font-size:10px">prochaine</span>` : ""}
+          ${copyBtn}
+        </span>
       </div>
       ${header}
       <pre style="max-height:180px;overflow-y:auto">${bodyHtml}</pre>
     </div>`;
+    return { html, msg };
   }));
 
+  contactPreviewMsgs = renders.map(x => x.msg);
   $("#contactPreviewTitle").textContent = contact.email;
-  $("#contactPreviewBody").innerHTML = renders.join("");
+  $("#contactPreviewBody").innerHTML = renders.map(x => x.html).join("");
   $("#contactPreviewNote").textContent = contact.current_step >= total ? "Séquence terminée." : "";
   $("#contactPreviewPanel").hidden = false;
 }
@@ -612,9 +629,9 @@ function renderContacts() {
   $("#contacts tbody").innerHTML = rows.map(r => `
     <tr style="cursor:pointer" title="Voir l'aperçu personnalisé pour ce contact" onclick="previewContact(${r.contact_id})">
       <td onclick="event.stopPropagation()"><input type="checkbox" class="contactChk" data-id="${r.cc_id}" data-status="${r.status}" onchange="updateSelection()"></td>
-      <td>${esc(r.email)}${hasLiSteps ? (r.linkedin
-        ? ` <span title="Profil LinkedIn : ${esc(r.linkedin)}">🔗</span>`
-        : ` <span class="err" title="Aucune URL LinkedIn — les étapes LinkedIn échoueront">⚠️</span>`) : ""}</td>
+      <td>${esc(r.email)}${r.linkedin
+        ? ` <a class="li-link" href="${esc(liUrl(r.linkedin))}" target="_blank" rel="noopener" title="Profil LinkedIn : ${esc(r.linkedin)}" onclick="event.stopPropagation()">in</a>`
+        : (hasLiSteps ? ` <span class="err" title="Aucune URL LinkedIn — les étapes LinkedIn échoueront">⚠️</span>` : "")}</td>
       <td>${esc([r.first_name, r.last_name].filter(Boolean).join(" "))}</td>
       <td>${pill(r.status)}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
       <td>${r.current_step || "—"}</td>
