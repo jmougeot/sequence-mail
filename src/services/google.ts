@@ -240,13 +240,14 @@ interface GmailPart {
   parts?: GmailPart[] | null;
 }
 
-function extractPlainText(part: GmailPart | undefined | null): string {
+/** Décode la première partie MIME du type demandé (recherche en profondeur). */
+function extractPart(part: GmailPart | undefined | null, mimeType: string): string {
   if (!part) return "";
-  if (part.mimeType === "text/plain" && part.body?.data) {
+  if (part.mimeType === mimeType && part.body?.data) {
     return Buffer.from(part.body.data, "base64url").toString("utf8");
   }
   for (const p of part.parts ?? []) {
-    const text = extractPlainText(p);
+    const text = extractPart(p, mimeType);
     if (text) return text;
   }
   return "";
@@ -257,6 +258,10 @@ export interface ForeignMessage {
   from: string;
   subject: string;
   text: string;
+  /** En-tête Content-Type : "multipart/report; report-type=delivery-status" = NDR/bounce (RFC 3462) */
+  contentType: string;
+  /** Partie message/delivery-status d'un NDR (RFC 3464) : champs Action / Status / Diagnostic-Code */
+  deliveryStatus: string;
   /** En-tête Auto-Submitted (RFC 3834) : "auto-replied"/"auto-generated" = réponse machine */
   autoSubmitted: string;
   /** En-tête Precedence : "auto_reply"/"bulk" sur certaines réponses automatiques */
@@ -289,7 +294,9 @@ export async function getForeignMessages(
         id: msg.id ?? "",
         from,
         subject: header("subject"),
-        text: extractPlainText(msg.payload as GmailPart) || msg.snippet || "",
+        text: extractPart(msg.payload as GmailPart, "text/plain") || msg.snippet || "",
+        contentType: header("content-type"),
+        deliveryStatus: extractPart(msg.payload as GmailPart, "message/delivery-status"),
         autoSubmitted: header("auto-submitted"),
         precedence: header("precedence"),
         hasAutoReplyHeader: Boolean(header("x-autoreply") || header("x-autorespond")),

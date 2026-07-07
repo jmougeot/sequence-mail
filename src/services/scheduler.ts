@@ -59,14 +59,44 @@ const BOUNCE_FROM = [
   "microsoftexchange329e71ec88ae4615bbc36ab6ce41109e",
 ];
 
+// Sujets posés par les serveurs sur un rapport de non-remise (NDR). Filet de
+// sécurité quand le From du NDR ne matche aucun BOUNCE_FROM : Outlook envoie
+// « Undeliverable » / « Message non distribué », les MTA « Delivery Status
+// Notification (Failure) » / « Échec de la remise »…
+const BOUNCE_SUBJECT = [
+  "undeliverable",
+  "message non distribue",
+  "mail delivery failed",
+  "delivery status notification",
+  "echec de la remise",
+  "non remis",
+  "returned mail",
+  "delivery failure",
+];
+
 /**
- * Détecte un message de bounce. Volontairement restrictif : uniquement le champ
- * From des notifications serveur. Un bounce non détecté est traité comme une
+ * Détecte un message de bounce (rapport de non-remise). On s'appuie d'abord sur
+ * le signal machine le plus fiable — Content-Type: multipart/report;
+ * report-type=delivery-status (RFC 3462) — puis, en filet, sur le From et le
+ * sujet des notifications serveur. Un bounce non détecté est traité comme une
  * réponse => la séquence s'arrête quand même (échec côté sûr).
  */
-export function isBounce(m: Pick<ForeignMessage, "from">): boolean {
+export function isBounce(
+  m: Pick<ForeignMessage, "from" | "subject" | "contentType" | "deliveryStatus">
+): boolean {
+  // Un DSN de simple retard (Action: delayed, RFC 3464) n'est pas un échec
+  // définitif : le message peut encore être remis, on ne coupe pas la séquence.
+  const ds = m.deliveryStatus.toLowerCase();
+  if (/action:\s*delayed/.test(ds) && !/action:\s*failed/.test(ds)) return false;
+
+  const ct = m.contentType.toLowerCase();
+  if (ct.includes("multipart/report") && ct.includes("delivery-status")) return true;
   const f = normalize(m.from);
-  return BOUNCE_FROM.some((p) => f.includes(p));
+  // normalize() retire les tirets ("mailer-daemon" -> "mailer daemon") : on
+  // normalise aussi les motifs, sinon "mailer-daemon" ne matcherait jamais.
+  if (BOUNCE_FROM.some((p) => f.includes(normalize(p)))) return true;
+  const s = normalize(m.subject);
+  return BOUNCE_SUBJECT.some((p) => s.includes(normalize(p)));
 }
 
 // Codes d'erreur permanents (classe 5.X.X, RFC 3463) ou mentions explicites
@@ -507,7 +537,9 @@ export async function checkRepliesTick(): Promise<void> {
         if (isBounce(m)) {
           // Blackliste définitive uniquement sur bounce permanent (adresse morte) ;
           // un échec temporaire (boîte pleine…) arrête la séquence sans blacklister.
-          const hard = isHardBounce(m.text);
+          // La partie delivery-status porte le code faisant foi (Status: 5.x.x) ;
+          // le texte lisible ne le contient pas toujours.
+          const hard = isHardBounce(`${m.deliveryStatus}\n${m.text}`);
           terminate(row, "bounced", hard, hard ? "Email invalide (bounce) ⚠️" : "Email en erreur (bounce temporaire)");
           console.log(`[bounce] ${row.email} : ${hard ? "adresse morte — blacklistée" : "échec temporaire"} — séquence arrêtée`);
           terminal = true;
