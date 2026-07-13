@@ -204,6 +204,11 @@ server.registerTool(
     inputSchema: {
       name: z.string().describe("Nom de la campagne."),
       steps: z.array(stepSchema).min(1).describe("Séquence ordonnée d'étapes (au moins une)."),
+      account_ids: z
+        .array(z.number().int())
+        .min(1)
+        .optional()
+        .describe("Comptes d'envoi autorisés (ids de list_accounts). Omis = tous les comptes, y compris les futurs."),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
@@ -220,11 +225,18 @@ server.registerTool(
       campaign_id: z.number().int().describe("Identifiant de la campagne."),
       name: z.string().describe("Nom (potentiellement inchangé)."),
       steps: z.array(stepSchema).min(1).describe("Séquence complète qui remplace l'existante."),
+      account_ids: z
+        .union([z.array(z.number().int()).min(1), z.null()])
+        .optional()
+        .describe("Comptes d'envoi autorisés (ids de list_accounts). null = tous les comptes ; omis = sélection inchangée."),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
-  handler(({ campaign_id, name, steps }: { campaign_id: number; name: string; steps: unknown }) =>
-    api("PUT", `/api/campaigns/${campaign_id}`, { json: { name, steps } })
+  handler(
+    ({ campaign_id, name, steps, account_ids }: { campaign_id: number; name: string; steps: unknown; account_ids?: number[] | null }) =>
+      api("PUT", `/api/campaigns/${campaign_id}`, {
+        json: account_ids === undefined ? { name, steps } : { name, steps, account_ids },
+      })
   )
 );
 

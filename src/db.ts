@@ -146,6 +146,9 @@ addColumnIfMissing("campaign_contacts", "visit_token", "visit_token TEXT");
 addColumnIfMissing("accounts", "warmup_started_at", "warmup_started_at INTEGER");
 // Jeton de désinscription stable par contact de campagne (en-tête List-Unsubscribe).
 addColumnIfMissing("campaign_contacts", "unsub_token", "unsub_token TEXT");
+// Comptes d'envoi autorisés pour la campagne : JSON [ids] ; NULL = tous les comptes
+// (y compris ceux connectés après la création de la campagne).
+addColumnIfMissing("campaigns", "account_ids", "account_ids TEXT");
 db.exec(
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_unsub_token ON campaign_contacts (unsub_token) WHERE unsub_token IS NOT NULL"
 );

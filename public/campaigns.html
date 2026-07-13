@@ -36,6 +36,10 @@
                 <span id="statusZone"></span>
               </div>
               <input id="campName" class="camp-name-input" placeholder="Nom de la campagne">
+              <div class="inline" style="gap:10px;flex-wrap:wrap;margin:2px 0 12px" title="Les emails de cette campagne ne partiront que depuis les comptes cochés (tous par défaut)">
+                <span class="muted">Comptes d'envoi :</span>
+                <span id="senderList" class="inline" style="gap:12px;flex-wrap:wrap"></span>
+              </div>
               <div id="steps"></div>
               <p class="inline" style="gap:10px;flex-wrap:wrap">
                 <span class="add-step">
@@ -270,6 +274,23 @@ function readSteps() {
   });
 }
 
+// --- Comptes d'envoi de la campagne : tous cochés par défaut (null = tous) ---
+function renderSenders(selectedIds) {
+  $("#senderList").innerHTML = accounts.map(a => `
+    <label class="inline" style="gap:5px;cursor:pointer;font-size:13px;white-space:nowrap">
+      <input type="checkbox" class="senderChk" value="${a.id}" ${!selectedIds || selectedIds.includes(a.id) ? "checked" : ""}>
+      ${esc(a.email)}${a.active ? "" : ' <span class="muted">(inactif)</span>'}
+    </label>`).join("") || '<span class="muted">Aucun compte connecté — voir Réglages</span>';
+}
+
+// null = tous cochés (la campagne suivra aussi les comptes connectés plus tard)
+function readSenderIds() {
+  const checks = $$(".senderChk");
+  if (!checks.length) return null;
+  const sel = checks.filter(c => c.checked).map(c => +c.value);
+  return sel.length === checks.length ? null : sel;
+}
+
 function newCampaign() {
   selectedId = null;
   location.hash = "new";
@@ -278,6 +299,7 @@ function newCampaign() {
   $("#statusZone").innerHTML = "";
   $("#campName").value = "";
   $("#campMsg").textContent = "";
+  renderSenders(null);
   $("#steps").innerHTML = "";
   addStep();
   $("#campTabs").hidden = true;
@@ -371,6 +393,7 @@ async function selectCampaign(id, tab = "seq") {
     <button class="danger" onclick="deleteCampaign()">🗑 Supprimer</button>`;
   $("#campName").value = c.name;
   $("#campMsg").textContent = "";
+  renderSenders(c.account_ids);
   $("#steps").innerHTML = "";
   c.steps.forEach(s => addStep(s));
   $("#importName").textContent = c.name;
@@ -404,8 +427,14 @@ async function deleteCampaign() {
 }
 
 async function saveCampaign() {
-  const payload = { name: $("#campName").value, steps: readSteps() };
+  const account_ids = readSenderIds();
   const msg = $("#campMsg");
+  if (account_ids && !account_ids.length) {
+    msg.textContent = "Sélectionnez au moins un compte d'envoi";
+    msg.className = "err";
+    return;
+  }
+  const payload = { name: $("#campName").value, steps: readSteps(), account_ids };
   const btn = $("#saveBtn");
   btn.disabled = true;
   try {

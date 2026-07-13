@@ -241,6 +241,7 @@ interface DueRow {
   extra: string | null;
   attio_record_id: string | null;
   variant: string | null;
+  campaign_account_ids: string | null;
 }
 
 interface StepRow {
@@ -260,8 +261,19 @@ function resetDailyCounters(): void {
   ).run(today(), today());
 }
 
+/** Sélection de comptes de la campagne (campaigns.account_ids) ; null = tous. */
+function parseAccountIds(json: string | null): number[] | null {
+  if (!json) return null;
+  try {
+    const ids = JSON.parse(json);
+    return Array.isArray(ids) && ids.length ? ids.map(Number) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Choisit le compte le moins chargé, sous quota effectif (warm-up) et hors repos. */
-function pickAccount(now: number): AccountRow | undefined {
+function pickAccount(now: number, allowedIds: number[] | null): AccountRow | undefined {
   const candidates = db
     .prepare(
       `SELECT * FROM accounts
@@ -270,7 +282,9 @@ function pickAccount(now: number): AccountRow | undefined {
        ORDER BY sent_today ASC, COALESCE(last_sent_at, 0) ASC`
     )
     .all(now) as AccountRow[];
-  return candidates.find((a) => a.sent_today < effectiveDailyLimit(a));
+  return candidates.find(
+    (a) => (!allowedIds || allowedIds.includes(a.id)) && a.sent_today < effectiveDailyLimit(a)
+  );
 }
 
 function accountById(id: number): AccountRow | undefined {
@@ -336,7 +350,10 @@ async function processOne(row: DueRow): Promise<void> {
 
   const now = Date.now();
   // Continuité du fil : les relances partent toujours du compte du 1er envoi
-  const account = row.account_id ? accountById(row.account_id) : pickAccount(now);
+  // (même s'il a été décoché depuis) ; le 1er envoi respecte la sélection de la campagne.
+  const account = row.account_id
+    ? accountById(row.account_id)
+    : pickAccount(now, parseAccountIds(row.campaign_account_ids));
   if (!account || account.active !== 1) return; // aucun compte disponible, on retentera au prochain tick
   if (account.sent_today >= effectiveDailyLimit(account)) return;
   if (account.next_allowed_at && account.next_allowed_at > now) return;
@@ -447,6 +464,7 @@ export async function sendTick(): Promise<void> {
     .prepare(
       `SELECT cc.id AS cc_id, cc.campaign_id, cc.contact_id, cc.status, cc.current_step,
               cc.account_id, cc.thread_id, cc.last_gmail_message_id, cc.variant,
+              cp.account_ids AS campaign_account_ids,
               c.email, c.first_name, c.last_name, c.company, c.linkedin, c.extra, c.attio_record_id
        FROM campaign_contacts cc
        JOIN contacts c ON c.id = cc.contact_id
