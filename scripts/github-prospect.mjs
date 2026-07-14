@@ -34,6 +34,9 @@ function parseArgs(argv) {
     ecosystem: "npm",       // source ecosystems : npm, pypi, go, cargo, rubygems…
     includeIndirect: false, // source ecosystems : garder les dépendances transitives
     minStars: 0,
+    maxStars: Infinity,     // plafond d'étoiles : écarte les mégaprojets/grosses boîtes
+    orgCreatedAfter: null,  // org GitHub créée après cette date = boîte jeune
+    orgMaxRepos: Infinity,  // orgs avec trop de repos publics = grands groupes
     activeSince: null,      // ISO date : ne garder que les repos poussés après
     max: 200,               // nb max de repos candidats parcourus par dépendance
     emails: false,          // récolte d'emails via les commits publics
@@ -50,6 +53,9 @@ function parseArgs(argv) {
       case "--ecosystem": opts.ecosystem = next(); break;
       case "--include-indirect": opts.includeIndirect = true; break;
       case "--min-stars": opts.minStars = Number(next()) || 0; break;
+      case "--max-stars": opts.maxStars = Number(next()) || Infinity; break;
+      case "--org-created-after": opts.orgCreatedAfter = next(); break;
+      case "--org-max-repos": opts.orgMaxRepos = Number(next()) || Infinity; break;
       case "--active-since": opts.activeSince = next(); break;
       case "--max": opts.max = Number(next()) || 200; break;
       case "--emails": opts.emails = true; break;
@@ -77,6 +83,9 @@ const HELP = `Prospection GitHub par dépendance.
   --include-indirect    [ecosystems] Garde aussi les dépendances transitives
                         (défaut: directes seules, signal plus fort).
   --min-stars <n>       Ignore les repos sous ce nombre d'étoiles (défaut: 0).
+  --max-stars <n>       Ignore les repos au-dessus (écarte les mégaprojets).
+  --org-created-after <date>  Org GitHub créée après cette date (boîtes jeunes).
+  --org-max-repos <n>   Ignore les orgs avec plus de n repos publics (grands groupes).
   --active-since <date> Ne garde que les repos poussés après cette date (YYYY-MM-DD).
   --max <n>             Repos candidats max par dépendance (défaut: 200).
   --emails              Récolte des emails de devs (@domaine de l'org) dans les
@@ -306,12 +315,15 @@ async function main() {
       const repo = cand.repo ?? await fetchRepo(fullName, repoCache);
       if (!repo) continue;
       if (repo.fork) continue;                                   // on ignore les forks
-      if ((repo.stargazers_count || 0) < opts.minStars) continue;
+      const stars = repo.stargazers_count || 0;
+      if (stars < opts.minStars || stars > opts.maxStars) continue;
       if (opts.activeSince && repo.pushed_at && repo.pushed_at < opts.activeSince) continue;
 
       const org = await fetchOrg(cand.owner, orgCache);
       if (!org) continue;
       if (org.type !== "Organization" && !opts.includeUsers) continue; // startups = orgs
+      if (opts.orgCreatedAfter && org.created_at && org.created_at < opts.orgCreatedAfter) continue;
+      if ((org.public_repos || 0) > opts.orgMaxRepos) continue;   // grands groupes
 
       // Dédup par organisation : on garde le repo le plus étoilé comme représentant.
       const existing = rows.get(cand.owner);
