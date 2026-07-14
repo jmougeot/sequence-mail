@@ -278,7 +278,7 @@ function readSteps() {
 function renderSenders(selectedIds) {
   $("#senderList").innerHTML = accounts.map(a => `
     <label class="inline" style="gap:5px;cursor:pointer;font-size:13px;white-space:nowrap">
-      <input type="checkbox" class="senderChk" value="${a.id}" ${!selectedIds || selectedIds.includes(a.id) ? "checked" : ""}>
+      <input type="checkbox" class="senderChk" value="${a.id}" ${!selectedIds || selectedIds.includes(a.id) ? "checked" : ""} onchange="refreshPreviewAccounts()">
       ${esc(a.email)}${a.active ? "" : ' <span class="muted">(inactif)</span>'}
     </label>`).join("") || '<span class="muted">Aucun compte connecté — voir Réglages</span>';
 }
@@ -291,6 +291,21 @@ function readSenderIds() {
   return sel.length === checks.length ? null : sel;
 }
 
+// Les menus « Compte » d'aperçu ne proposent que les comptes d'envoi cochés de la
+// campagne — pas tous les comptes connectés. Conserve la sélection si toujours valide.
+function refreshPreviewAccounts() {
+  const ids = readSenderIds();                 // null = tous
+  const pool = ids ? accounts.filter(a => ids.includes(a.id)) : accounts;
+  const opts = `<option value="">(1er compte actif)</option>` +
+    pool.map(a => `<option value="${a.id}">${esc(a.email)}</option>`).join("");
+  for (const sel of ["#previewAccount", "#previewAccount2"]) {
+    const el = $(sel);
+    const prev = el.value;
+    el.innerHTML = opts;
+    el.value = [...el.options].some(o => o.value === prev) ? prev : "";
+  }
+}
+
 function newCampaign() {
   selectedId = null;
   location.hash = "new";
@@ -300,6 +315,7 @@ function newCampaign() {
   $("#campName").value = "";
   $("#campMsg").textContent = "";
   renderSenders(null);
+  refreshPreviewAccounts();
   $("#steps").innerHTML = "";
   addStep();
   $("#campTabs").hidden = true;
@@ -394,6 +410,7 @@ async function selectCampaign(id, tab = "seq") {
   $("#campName").value = c.name;
   $("#campMsg").textContent = "";
   renderSenders(c.account_ids);
+  refreshPreviewAccounts();
   $("#steps").innerHTML = "";
   c.steps.forEach(s => addStep(s));
   $("#importName").textContent = c.name;
@@ -805,10 +822,7 @@ async function attioSync(btn) {
   $("#statusSet").innerHTML = `<option value="">Changer le statut…</option>` +
     SETTABLE_STATUSES.map(s => `<option value="${s}">→ ${STATUS_LABELS[s]}</option>`).join("");
   accounts = await api("/api/accounts");
-  const accountOpts = `<option value="">(1er compte actif)</option>` +
-    accounts.map(a => `<option value="${a.id}">${esc(a.email)}</option>`).join("");
-  $("#previewAccount").innerHTML = accountOpts;
-  $("#previewAccount2").innerHTML = accountOpts;
+  refreshPreviewAccounts(); // rempli avec tous les comptes tant qu'aucune campagne n'est sélectionnée
   const campaigns = await loadList();
   const [hid, htab] = location.hash.slice(1).split("/");
   const tab = ["seq","stats","contacts","import"].includes(htab) ? htab : "seq";
