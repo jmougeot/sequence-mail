@@ -68,6 +68,38 @@ export function attioPersonToRow(person: AttioPerson): Record<string, string> {
 }
 
 /**
+ * Résout les noms des fiches sociétés référencées, par requêtes groupées
+ * (l'attribut `company` d'une personne ne contient qu'un record_id).
+ */
+async function fetchCompanyNames(recordIds: string[]): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  const chunkSize = 100;
+  for (let i = 0; i < recordIds.length; i += chunkSize) {
+    const chunk = recordIds.slice(i, i + chunkSize);
+    const res = await fetch(`${ATTIO_API}/objects/companies/records/query`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.attioApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        filter: { $or: chunk.map((id) => ({ record_id: { $eq: id } })) },
+        limit: chunkSize,
+      }),
+    });
+    if (!res.ok) {
+      throw new Error(`Attio API (companies) ${res.status} : ${await res.text()}`);
+    }
+    const { data } = (await res.json()) as { data: AttioPerson[] };
+    for (const companyRecord of data) {
+      const name = attioValueText(firstValue(companyRecord, "name") ?? {});
+      if (name) names.set(companyRecord.id.record_id, name);
+    }
+  }
+  return names;
+}
+
+/**
  * Écrit l'avancement de séquence sur la fiche Attio du contact
  * (attribut texte configuré via ATTIO_STAGE_ATTRIBUTE). Silencieux si non configuré.
  */
@@ -103,6 +135,7 @@ export async function syncFromAttio(
 
   const rows: Array<Record<string, string>> = [];
   const attioIds: Record<string, string> = {};
+  const companyIdByEmail: Record<string, string> = {};
   let offset = 0;
   const limit = 500;
 
@@ -140,10 +173,18 @@ export async function syncFromAttio(
         company: "",
       });
       attioIds[email] = person.id.record_id;
+      const companyId = firstValue(person, "company")?.target_record_id;
+      if (typeof companyId === "string") companyIdByEmail[email] = companyId;
     }
 
     if (data.length < limit) break;
     offset += limit;
+  }
+
+  const companyNames = await fetchCompanyNames([...new Set(Object.values(companyIdByEmail))]);
+  for (const row of rows) {
+    const companyId = companyIdByEmail[row.email];
+    if (companyId) row.company = companyNames.get(companyId) ?? "";
   }
 
   const report = await importContacts(campaignId, rows, { attioRecordIds: attioIds });
