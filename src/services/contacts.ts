@@ -1,6 +1,7 @@
 import { parse } from "csv-parse/sync";
 import { resolveMx } from "node:dns/promises";
 import { db } from "../db.js";
+import { normalizeLinkedin } from "./linkedin-url.js";
 
 const KNOWN_COLUMNS = new Set(["email", "first_name", "last_name", "company", "linkedin"]);
 
@@ -32,7 +33,13 @@ export async function domainAcceptsMail(domain: string): Promise<boolean> {
   return ok;
 }
 
-/** Insère/met à jour les contacts puis les inscrit à la campagne (statut pending). */
+/**
+ * Insère/met à jour les contacts puis les inscrit à la campagne (statut held).
+ * Un contact est joignable par email, par LinkedIn, ou les deux : une ligne
+ * sans email valide est gardée si elle a un profil LinkedIn. Dédoublonnage par
+ * email, sinon par profil LinkedIn (URL canonique) — un candidat importé d'abord
+ * sans email puis avec est donc complété, pas dupliqué.
+ */
 export async function importContacts(
   campaignId: number,
   rows: Array<Record<string, string>>,
@@ -49,24 +56,30 @@ export async function importContacts(
   const domainOk = new Map<string, boolean>();
   for (const d of domains) domainOk.set(d, await domainAcceptsMail(d));
 
-  const upsertContact = db.prepare(`
+  const byEmail = db.prepare("SELECT id FROM contacts WHERE email = ?");
+  const byLinkedin = db.prepare("SELECT id, email FROM contacts WHERE linkedin = ? ORDER BY email IS NULL, id LIMIT 1");
+  const insert = db.prepare(`
     INSERT INTO contacts (email, first_name, last_name, company, linkedin, extra, attio_record_id)
     VALUES (@email, @first_name, @last_name, @company, @linkedin, @extra, @attio_record_id)
-    ON CONFLICT(email) DO UPDATE SET
-      first_name = COALESCE(excluded.first_name, contacts.first_name),
-      last_name  = COALESCE(excluded.last_name, contacts.last_name),
-      company    = COALESCE(excluded.company, contacts.company),
-      linkedin   = COALESCE(excluded.linkedin, contacts.linkedin),
+  `);
+  const update = db.prepare(`
+    UPDATE contacts SET
+      email      = COALESCE(email, @email),
+      first_name = COALESCE(@first_name, first_name),
+      last_name  = COALESCE(@last_name, last_name),
+      company    = COALESCE(@company, company),
+      linkedin   = COALESCE(@linkedin, linkedin),
       -- Fusion des champs personnalisés : les nouvelles valeurs écrasent les
       -- anciennes, les champs absents du nouvel import sont conservés
       extra      = CASE
-        WHEN excluded.extra IS NULL THEN contacts.extra
-        WHEN contacts.extra IS NULL THEN excluded.extra
-        ELSE json_patch(contacts.extra, excluded.extra)
+        WHEN @extra IS NULL THEN extra
+        WHEN extra IS NULL THEN @extra
+        ELSE json_patch(extra, @extra)
       END,
-      attio_record_id = COALESCE(excluded.attio_record_id, contacts.attio_record_id)
+      attio_record_id = COALESCE(@attio_record_id, attio_record_id)
+    WHERE id = @id
   `);
-  const getContactId = db.prepare("SELECT id, do_not_contact FROM contacts WHERE email = ?");
+  const getContact = db.prepare("SELECT id, do_not_contact FROM contacts WHERE id = ?");
   const enroll = db.prepare(`
     INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, status)
     VALUES (?, ?, 'held')
@@ -74,34 +87,49 @@ export async function importContacts(
 
   const run = db.transaction(() => {
     for (const row of rows) {
-      const email = (row.email ?? "").trim().toLowerCase();
-      if (!email || !email.includes("@")) {
-        report.skipped++;
-        if (email) report.errors.push(`Email invalide : ${email}`);
-        continue;
+      let email: string | null = (row.email ?? "").trim().toLowerCase() || null;
+      const linkedin = normalizeLinkedin(row.linkedin);
+      const label = email ?? linkedin ?? "(ligne vide)";
+      if (email && !email.includes("@")) {
+        report.errors.push(`Email invalide : ${email}${linkedin ? " — gardé pour LinkedIn" : ""}`);
+        email = null;
+      } else if (email && domainOk.get(email.split("@")[1]) === false) {
+        report.errors.push(`${email} : domaine sans serveur mail (MX introuvable)${linkedin ? " — gardé pour LinkedIn" : ""}`);
+        email = null;
       }
-      if (domainOk.get(email.split("@")[1]) === false) {
+      if (!email && !linkedin) {
         report.skipped++;
-        report.errors.push(`${email} : domaine sans serveur mail (MX introuvable)`);
+        if (label === "(ligne vide)") report.errors.push("Ligne sans email ni profil LinkedIn ignorée");
         continue;
       }
       const extra: Record<string, string> = {};
       for (const [k, v] of Object.entries(row)) {
         if (!KNOWN_COLUMNS.has(k) && v) extra[k] = v;
       }
-      upsertContact.run({
+      const fields = {
         email,
         first_name: row.first_name?.trim() || null,
         last_name: row.last_name?.trim() || null,
         company: row.company?.trim() || null,
-        linkedin: row.linkedin?.trim() || null,
+        linkedin,
         extra: Object.keys(extra).length ? JSON.stringify(extra) : null,
-        attio_record_id: source.attioRecordIds?.[email] ?? null,
-      });
-      const { id, do_not_contact } = getContactId.get(email) as {
-        id: number;
-        do_not_contact: number;
+        attio_record_id: (email && source.attioRecordIds?.[email]) || null,
       };
+      // Contact existant : même email, sinon même profil LinkedIn (sans email
+      // différent — deux emails distincts sur un même profil restent deux fiches).
+      let existing = email ? (byEmail.get(email) as { id: number } | undefined) : undefined;
+      if (!existing && linkedin) {
+        const li = byLinkedin.get(linkedin) as { id: number; email: string | null } | undefined;
+        if (li && (!email || !li.email || li.email === email)) existing = li;
+      }
+      let id: number;
+      if (existing) {
+        update.run({ ...fields, id: existing.id });
+        id = existing.id;
+      } else {
+        id = Number(insert.run(fields).lastInsertRowid);
+      }
+      const { do_not_contact } = getContact.get(id) as { id: number; do_not_contact: number };
       if (do_not_contact) {
         report.skipped++; // désinscrit : ne jamais le réinscrire
         continue;
@@ -158,11 +186,11 @@ function isFeminine(value?: string): boolean {
  */
 export function renderTemplate(
   template: string,
-  contact: { email: string; first_name: string | null; last_name: string | null; company: string | null; extra: string | null },
+  contact: { email: string | null; first_name: string | null; last_name: string | null; company: string | null; extra: string | null },
   extraVars: Record<string, string> = {}
 ): string {
   const vars: Record<string, string> = {
-    email: contact.email,
+    email: contact.email ?? "",
     first_name: contact.first_name ?? "",
     last_name: contact.last_name ?? "",
     company: contact.company ?? "",

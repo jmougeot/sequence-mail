@@ -3,7 +3,7 @@ import { db } from "../db.js";
 import { pushSequenceStatus } from "./attio.js";
 import { renderTemplate } from "./contacts.js";
 import { getForeignMessages, sendEmail, type AccountRow, type ForeignMessage } from "./google.js";
-import { enqueueStep } from "./outreach.js";
+import { cancelLinkedInActions, enqueueStep } from "./outreach.js";
 import { visitLink } from "./visits.js";
 import { unsubLink } from "./unsubscribe.js";
 
@@ -233,7 +233,7 @@ interface DueRow {
   account_id: number | null;
   thread_id: string | null;
   last_gmail_message_id: string | null;
-  email: string;
+  email: string | null;
   first_name: string | null;
   last_name: string | null;
   company: string | null;
@@ -308,11 +308,7 @@ function scheduleNext(ccId: number, nextStep: StepRow): void {
  */
 function dispatchLinkedIn(row: DueRow, step: StepRow, totalSteps: number): void {
   if (!row.linkedin) {
-    db.prepare(
-      "UPDATE campaign_contacts SET status = 'failed', error = ?, next_send_at = NULL WHERE id = ?"
-    ).run("LinkedIn : aucune URL de profil pour ce contact", row.cc_id);
-    syncAttio(row.attio_record_id, "LinkedIn : profil manquant ⚠️");
-    console.warn(`[linkedin] ${row.email} : pas d'URL de profil — étape ${step.step_number} en échec`);
+    skipStep(row, step, totalSteps, "pas de profil LinkedIn");
     return;
   }
   const type = step.li_action === "message" ? "message" : "invite";
@@ -328,7 +324,27 @@ function dispatchLinkedIn(row: DueRow, step: StepRow, totalSteps: number): void 
   const body = step.body?.trim() ? renderTemplate(step.body, contact, { sender_name: "", signature: "" }) : null;
   enqueueStep(row.cc_id, step.step_number, row.linkedin, type, body);
   syncAttio(row.attio_record_id, `Étape ${step.step_number}/${totalSteps} — ${type === "invite" ? "invitation" : "message"} LinkedIn en file`);
-  console.log(`[linkedin] étape ${step.step_number} (${type}) -> ${row.email} mise en file`);
+  console.log(`[linkedin] étape ${step.step_number} (${type}) -> ${who(row)} mise en file`);
+}
+
+/** Libellé d'un contact pour les journaux (email, sinon profil LinkedIn). */
+function who(row: { email: string | null; linkedin?: string | null }): string {
+  return row.email ?? row.linkedin ?? "(contact sans coordonnées)";
+}
+
+/**
+ * Étape impossible pour ce contact (email sans adresse, LinkedIn sans profil) :
+ * on la saute et on passe tout de suite à la suivante — une campagne peut mêler
+ * candidats joignables par email, par LinkedIn, ou les deux. Le délai de
+ * l'étape suivante ne s'applique pas : il mesurait l'écart avec l'étape sautée.
+ */
+function skipStep(row: DueRow, step: StepRow, totalSteps: number, reason: string): void {
+  const last = step.step_number >= totalSteps;
+  db.prepare(
+    `UPDATE campaign_contacts SET current_step = ?, status = ?, next_send_at = ?, error = ? WHERE id = ?`
+  ).run(step.step_number, last ? "completed" : "in_progress", last ? null : Date.now(), `étape ${step.step_number} sautée : ${reason}`, row.cc_id);
+  if (last) syncAttio(row.attio_record_id, `Séquence terminée (${totalSteps} étapes, sans réponse)`);
+  console.log(`[séquence] ${who(row)} : étape ${step.step_number} sautée (${reason})`);
 }
 
 async function processOne(row: DueRow): Promise<void> {
@@ -347,6 +363,11 @@ async function processOne(row: DueRow): Promise<void> {
     dispatchLinkedIn(row, step, steps.length);
     return;
   }
+  if (!row.email) {
+    skipStep(row, step, steps.length, "pas d'email");
+    return;
+  }
+  const to = row.email;
 
   const now = Date.now();
   // Continuité du fil : les relances partent toujours du compte du 1er envoi
@@ -391,7 +412,7 @@ async function processOne(row: DueRow): Promise<void> {
 
   try {
     const result = await sendEmail(account, {
-      to: row.email,
+      to,
       subject,
       body,
       threadId: isFollowUp ? row.thread_id : null,
@@ -423,10 +444,10 @@ async function processOne(row: DueRow): Promise<void> {
       db.prepare("UPDATE campaign_contacts SET status = 'completed', next_send_at = NULL WHERE id = ?").run(row.cc_id);
       syncAttio(row.attio_record_id, `Séquence terminée (${steps.length} emails, sans réponse)`);
     }
-    console.log(`[envoi] étape ${step.step_number} -> ${row.email} via ${account.email}`);
+    console.log(`[envoi] étape ${step.step_number} -> ${to} via ${account.email}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[envoi] échec pour ${row.email} :`, msg);
+    console.error(`[envoi] échec pour ${to} :`, msg);
     if (handleAuthError(account, msg)) {
       // Problème de compte, pas de contact : on retentera (autre compte ou après reconnexion)
       db.prepare("UPDATE campaign_contacts SET next_send_at = ? WHERE id = ?").run(
@@ -485,8 +506,12 @@ export async function sendTick(): Promise<void> {
   }
 }
 
-/** Retire le contact du workflow (statut terminal) et, si demandé, de toutes les campagnes. */
-function terminate(
+/**
+ * Retire le contact du workflow (statut terminal) et, si demandé, de toutes les
+ * campagnes. Les actions LinkedIn encore en file pour lui sont annulées : une
+ * réponse (email ou LinkedIn) arrête tous les canaux.
+ */
+export function terminate(
   row: { cc_id: number; contact_id: number; attio_record_id: string | null },
   status: "replied" | "opted_out" | "bounced",
   blacklist: boolean,
@@ -496,12 +521,18 @@ function terminate(
     db.prepare(
       "UPDATE campaign_contacts SET status = ?, replied_at = ?, next_send_at = NULL WHERE id = ?"
     ).run(status, Date.now(), row.cc_id);
+    cancelLinkedInActions(`campaign_contact_id = ?`, row.cc_id, `séquence arrêtée (${status})`);
     if (blacklist) {
       db.prepare("UPDATE contacts SET do_not_contact = 1 WHERE id = ?").run(row.contact_id);
       db.prepare(
         `UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL
-         WHERE contact_id = ? AND status IN ('pending', 'in_progress')`
+         WHERE contact_id = ? AND status IN ('pending', 'in_progress', 'awaiting_li')`
       ).run(row.contact_id);
+      cancelLinkedInActions(
+        `campaign_contact_id IN (SELECT id FROM campaign_contacts WHERE contact_id = ?)`,
+        row.contact_id,
+        "contact désinscrit"
+      );
     }
   })();
   syncAttio(row.attio_record_id, attioLabel);
@@ -521,7 +552,7 @@ export async function checkRepliesTick(): Promise<void> {
               c.id AS contact_id, c.email, c.attio_record_id
        FROM campaign_contacts cc
        JOIN contacts c ON c.id = cc.contact_id
-       WHERE cc.status IN ('in_progress', 'completed')
+       WHERE cc.status IN ('in_progress', 'completed', 'awaiting_li')
          AND cc.thread_id IS NOT NULL
          AND cc.replied_at IS NULL
        LIMIT 100`

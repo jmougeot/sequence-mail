@@ -73,7 +73,17 @@ async function tick() {
       await setStatus({ kind: "err", text: res.error });
       return;
     }
-    if (res.action) {
+    if (res.action && res.action.type === "sync_inbox") {
+      // Lecture de la messagerie : le serveur y cherche les réponses des contacts.
+      await setStatus({ kind: "run", text: "Lecture de la messagerie…" });
+      const r = await runInbox(res.action);
+      await fetch(`${SERVER}/api/li/inbox`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...auth },
+        body: JSON.stringify({ ok: r.ok, conversations: r.data && r.data.conversations, error: r.error }),
+      });
+      await setStatus(r.ok ? { kind: "ok", text: "Messagerie lue" } : { kind: "err", text: `Messagerie : ${r.error || "illisible"}` });
+    } else if (res.action) {
       await setStatus({ kind: "run", text: `${res.action.type === "invite" ? "Invitation" : "Message"} en cours…` });
       const verdict = await runAction(res.action);
       await fetch(`${SERVER}/api/li/result`, {
@@ -146,6 +156,19 @@ async function runAction(action) {
     await waitForLoad(tab.id);
     await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500)); // laisse l'UI se stabiliser
     return await sendToTab(tab.id, { type: "li-action", action });
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+/** Ouvre la messagerie et en lit la liste des conversations récentes. */
+async function runInbox(action) {
+  try {
+    const tab = await ensureTab();
+    await chrome.tabs.update(tab.id, { url: "https://www.linkedin.com/messaging/" });
+    await waitForLoad(tab.id);
+    await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500));
+    return await sendToTab(tab.id, { type: "li-action", action: { type: "list_conversations", limit: action.limit || 40 } });
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }

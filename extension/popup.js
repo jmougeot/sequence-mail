@@ -91,6 +91,43 @@ document.getElementById("saveAuth").addEventListener("click", async () => {
   refresh();
 });
 
+// Confie le compte au serveur : envoie la session LinkedIn de ce navigateur
+// (cookies linkedin.com + user-agent). Le compte passe en mode serveur ; cette
+// extension n'exécute plus rien pour lui.
+const SAME_SITE = { no_restriction: "None", lax: "Lax", strict: "Strict" };
+document.getElementById("handover").addEventListener("click", async () => {
+  const msg = document.getElementById("handoverMsg");
+  const { liToken } = await chrome.storage.local.get("liToken");
+  if (!liToken) {
+    msg.textContent = "Renseignez d'abord le jeton du compte LinkedIn ci-dessous.";
+    return;
+  }
+  const cookies = (await chrome.cookies.getAll({ domain: "linkedin.com" })).map((c) => ({
+    name: c.name,
+    value: c.value,
+    domain: c.domain,
+    path: c.path,
+    expires: c.expirationDate,
+    httpOnly: c.httpOnly,
+    secure: c.secure,
+    sameSite: SAME_SITE[c.sameSite],
+  }));
+  try {
+    const r = await fetch(`${await getServer()}/api/li/session`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(await authHeaders()) },
+      body: JSON.stringify({ cookies, user_agent: navigator.userAgent }),
+    });
+    const d = await r.json().catch(() => ({}));
+    msg.textContent = r.ok
+      ? `✓ Session transmise : le serveur pilote désormais « ${d.account && d.account.name} ».`
+      : `Échec : ${d.error || r.status}`;
+  } catch {
+    msg.textContent = "Serveur injoignable.";
+  }
+  refresh();
+});
+
 // Enregistre le jeton du compte LinkedIn (Réglages de l'app → Comptes LinkedIn)
 document.getElementById("saveToken").addEventListener("click", async () => {
   await chrome.storage.local.set({ liToken: document.getElementById("liToken").value.trim() });

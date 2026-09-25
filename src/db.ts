@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { classifyVisit } from "./services/botFilter.js";
+import { normalizeLinkedin } from "./services/linkedin-url.js";
 
 // Relatif au projet (src/../data), pas au répertoire de lancement ; surchargeable via DATA_DIR
 const DATA_DIR = process.env.DATA_DIR ?? fileURLToPath(new URL("../data", import.meta.url));
@@ -50,7 +51,7 @@ CREATE TABLE IF NOT EXISTS steps (
 
 CREATE TABLE IF NOT EXISTS contacts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  email TEXT NOT NULL UNIQUE,
+  email TEXT UNIQUE,                     -- NULL = joignable seulement sur LinkedIn
   first_name TEXT,
   last_name TEXT,
   company TEXT,
@@ -285,3 +286,64 @@ if ((db.pragma("user_version", { simple: true }) as number) < 4) {
     db.pragma("user_version = 4");
   })();
 }
+
+// Navigateur serveur (façon lemlist) : un compte en mode 'server' est piloté par
+// le service runner (Chromium sur le VPS, derrière son propre proxy) avec la
+// session LinkedIn envoyée par l'extension. Proxy et session sont chiffrés
+// (LI_SECRET_KEY). last_inbox_at cadence la lecture de la messagerie qui
+// détecte les réponses.
+addColumnIfMissing("li_accounts", "mode", "mode TEXT NOT NULL DEFAULT 'extension'"); // extension | server
+addColumnIfMissing("li_accounts", "proxy_enc", "proxy_enc TEXT");
+addColumnIfMissing("li_accounts", "session_enc", "session_enc TEXT");
+addColumnIfMissing("li_accounts", "session_state", "session_state TEXT"); // NULL | ok | expired | checkpoint
+addColumnIfMissing("li_accounts", "session_error", "session_error TEXT");
+addColumnIfMissing("li_accounts", "session_updated_at", "session_updated_at INTEGER");
+addColumnIfMissing("li_accounts", "last_inbox_at", "last_inbox_at INTEGER");
+// Fil de messagerie LinkedIn où le contact a répondu (lien dans le tableau de bord).
+addColumnIfMissing("campaign_contacts", "li_thread_url", "li_thread_url TEXT");
+
+// v5 : un contact peut n'avoir que LinkedIn (candidats sans email connu).
+// SQLite ne sait pas retirer un NOT NULL : on reconstruit la table (procédure
+// officielle, clés étrangères suspendues le temps de l'échange).
+if ((db.pragma("user_version", { simple: true }) as number) < 5) {
+  const cols = db.prepare("PRAGMA table_info(contacts)").all() as Array<{ name: string; notnull: number }>;
+  if (cols.find((c) => c.name === "email")?.notnull) {
+    const names = cols.map((c) => c.name).join(", ");
+    db.pragma("foreign_keys = OFF");
+    try {
+      db.transaction(() => {
+        db.exec(`
+          CREATE TABLE contacts_v5 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE,
+            first_name TEXT,
+            last_name TEXT,
+            company TEXT,
+            linkedin TEXT,
+            extra TEXT,
+            attio_record_id TEXT,
+            do_not_contact INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+          );
+          INSERT INTO contacts_v5 (${names}) SELECT ${names} FROM contacts;
+          DROP TABLE contacts;
+          ALTER TABLE contacts_v5 RENAME TO contacts;
+        `);
+        const broken = db.pragma("foreign_key_check") as unknown[];
+        if (broken.length) throw new Error(`migration v5 : ${broken.length} clé(s) étrangère(s) cassée(s)`);
+      })();
+    } finally {
+      db.pragma("foreign_keys = ON");
+    }
+  }
+  // URLs LinkedIn sous forme canonique : clé de dédoublonnage et de rapprochement.
+  const upd = db.prepare("UPDATE contacts SET linkedin = ? WHERE id = ?");
+  db.transaction(() => {
+    for (const r of db.prepare("SELECT id, linkedin FROM contacts WHERE linkedin IS NOT NULL").all() as Array<{ id: number; linkedin: string }>) {
+      const n = normalizeLinkedin(r.linkedin);
+      if (n !== r.linkedin) upd.run(n, r.id);
+    }
+  })();
+  db.pragma("user_version = 5");
+}
+db.exec("CREATE INDEX IF NOT EXISTS idx_contacts_linkedin ON contacts (linkedin)");

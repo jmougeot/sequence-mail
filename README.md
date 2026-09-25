@@ -70,7 +70,7 @@ Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroni
 - **A/B test** : l'étape 1 peut avoir un « Sujet B ». Chaque contact reçoit alors aléatoirement (50/50) la variante A ou B, conservée pour toute sa séquence, et le tableau de bord affiche le taux de réponse de chaque variante.
 
 ### Import des contacts
-- **CSV** : colonnes `email` (obligatoire), `first_name`, `last_name`, `company` ; toute autre colonne devient une variable de template. Les doublons (même email déjà inscrit à la campagne) sont ignorés.
+- **CSV** : colonnes `email` et/ou `linkedin` (au moins l'une des deux par ligne), `first_name`, `last_name`, `company` ; toute autre colonne devient une variable de template. Dédoublonnage par email, sinon par profil LinkedIn. Un contact sans email saute les étapes email, un contact sans profil LinkedIn saute les étapes LinkedIn : une même campagne mêle candidats joignables par l'un, l'autre ou les deux.
 - **Attio** : import des personnes dont un attribut de statut CRM correspond aux valeurs choisies.
 - **Prospection intégrée** : depuis la page Prospection (voir ci-dessous), sans CSV.
 

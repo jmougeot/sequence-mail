@@ -144,7 +144,7 @@
             <div class="grow">
               <h3 style="margin-top:0">Import CSV</h3>
               <input id="csvFile" type="file" accept=".csv">
-              <p class="muted">Colonnes : email (obligatoire), first_name, last_name, company, …</p>
+              <p class="muted">Colonnes : email et/ou linkedin (au moins l'un des deux), first_name, last_name, company, … — un contact sans email saute les étapes email, un contact sans profil saute les étapes LinkedIn.</p>
               <button onclick="importCsv(this)">Importer</button> <span id="csvMsg" class="muted"></span>
             </div>
             <div class="grow">
@@ -484,8 +484,8 @@ async function runPreview({ stepDiv, contact }) {
     const idx = Math.min(contact.current_step, total - 1); // prochaine étape (index 0 = étape 1)
     div = steps[idx];
     note = contact.current_step >= total
-      ? `${contact.email} a déjà reçu toute la séquence — aperçu de la dernière étape (${total}/${total}).`
-      : `Aperçu pour ${contact.email} — prochaine étape : ${idx + 1}/${total}${contact.variant ? ` (variante ${contact.variant})` : ""}.`;
+      ? `${contact.email || contact.linkedin || "Ce contact"} a déjà reçu toute la séquence — aperçu de la dernière étape (${total}/${total}).`
+      : `Aperçu pour ${contact.email || contact.linkedin || "ce contact"} — prochaine étape : ${idx + 1}/${total}${contact.variant ? ` (variante ${contact.variant})` : ""}.`;
   }
   if (!div) return;
 
@@ -592,7 +592,7 @@ async function saveContactFields() {
 async function runContactPreview(contact) {
   const steps = $$("#steps .step");
   if (!steps.length) return;
-  $("#contactPreviewTitle").textContent = contact.email;
+  $("#contactPreviewTitle").textContent = contact.email || [contact.first_name, contact.last_name].filter(Boolean).join(" ") || contact.linkedin;
   $("#contactPreviewBody").innerHTML = '<p class="muted" style="margin:0">Chargement de l\'aperçu…</p>';
   $("#contactPreviewNote").textContent = "";
   $("#contactPreviewPanel").hidden = false;
@@ -643,7 +643,7 @@ async function runContactPreview(contact) {
   }));
 
   contactPreviewMsgs = renders.map(x => x.msg);
-  $("#contactPreviewTitle").textContent = contact.email;
+  $("#contactPreviewTitle").textContent = contact.email || [contact.first_name, contact.last_name].filter(Boolean).join(" ") || contact.linkedin;
   $("#contactPreviewBody").innerHTML = renders.map(x => x.html).join("");
   $("#contactPreviewNote").textContent = contact.current_step >= total ? "Séquence terminée." : "";
   $("#contactPreviewPanel").hidden = false;
@@ -658,7 +658,7 @@ function renderContacts() {
   const q = $("#contactSearch").value.trim().toLowerCase();
   const rows = contactRows.filter(r =>
     (!statusFilter || r.status === statusFilter) &&
-    (!q || [r.email, r.first_name, r.last_name].filter(Boolean).join(" ").toLowerCase().includes(q))
+    (!q || [r.email, r.first_name, r.last_name, r.linkedin].filter(Boolean).join(" ").toLowerCase().includes(q))
   );
 
   // La campagne utilise-t-elle des étapes LinkedIn ? (alors une URL de profil est requise)
@@ -675,15 +675,15 @@ function renderContacts() {
   $("#contacts tbody").innerHTML = rows.map(r => `
     <tr style="cursor:pointer" title="Voir l'aperçu personnalisé pour ce contact" onclick="previewContact(${r.contact_id})">
       <td onclick="event.stopPropagation()"><input type="checkbox" class="contactChk" data-id="${r.cc_id}" data-status="${r.status}" onchange="updateSelection()"></td>
-      <td>${esc(r.email)}${r.linkedin
+      <td>${r.email ? esc(r.email) : `<span class="muted">LinkedIn seul</span>`}${r.linkedin
         ? ` <a class="li-link" href="${esc(liUrl(r.linkedin))}" target="_blank" rel="noopener" title="Profil LinkedIn : ${esc(r.linkedin)}" onclick="event.stopPropagation()">in</a>`
         : (hasLiSteps ? ` <span class="err" title="Aucune URL LinkedIn — les étapes LinkedIn échoueront">⚠️</span>` : "")}</td>
       <td>${esc([r.first_name, r.last_name].filter(Boolean).join(" "))}</td>
-      <td>${pill(r.status)}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
+      <td>${pill(r.status)}${r.li_thread_url ? ` <a href="${esc(r.li_thread_url)}" target="_blank" rel="noopener" title="Réponse sur LinkedIn — ouvrir la conversation" onclick="event.stopPropagation()">💬</a>` : ""}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
       <td>${r.current_step || "—"}</td>
       <td>${r.visit_count ? `<span title="${new Date(r.last_visit_at).toLocaleString("fr-FR")} — ${r.visit_count} visite(s)">🌐 ${r.visit_count}</span>` : "—"}</td>
       <td>${r.variant || "—"}</td>
-      <td class="muted">${esc(r.sender || "—")}</td>
+      <td class="muted">${esc([r.sender, r.li_sender && `in: ${r.li_sender}`].filter(Boolean).join(" · ") || "—")}</td>
       <td class="muted">${r.next_send_at ? new Date(r.next_send_at).toLocaleString("fr-FR") : "—"}</td>
     </tr>
   `).join("") || `<tr><td colspan="9" class="muted">${contactRows.length

@@ -308,7 +308,7 @@ server.registerTool(
   {
     title: "Importer des contacts (CSV)",
     description:
-      "Importe des contacts dans une campagne depuis un CSV brut. Colonne 'email' OBLIGATOIRE ; colonnes reconnues : first_name, last_name, company, linkedin ; toute autre colonne devient une variable de template. Les doublons (email déjà inscrit) sont ignorés ; les adresses sans serveur mail (MX) sont rejetées. Les contacts importés arrivent en statut 'held' (non lancés) — utilise ensuite launch_contacts pour les activer.",
+      "Importe des contacts dans une campagne depuis un CSV brut. Chaque ligne doit avoir un 'email' ou un 'linkedin' (URL de profil) — les deux si possible ; colonnes reconnues : first_name, last_name, company ; toute autre colonne devient une variable de template. Dédoublonnage par email, sinon par profil LinkedIn. Un email sans serveur mail (MX) est écarté (la ligne reste si elle a un LinkedIn). Un contact sans email saute les étapes email ; sans profil, les étapes LinkedIn. Les contacts importés arrivent en statut 'held' (non lancés) — utilise ensuite launch_contacts pour les activer.",
     inputSchema: {
       campaign_id: z.number().int().describe("Campagne cible."),
       csv: z.string().describe("Contenu CSV brut (avec ligne d'en-tête contenant 'email')."),

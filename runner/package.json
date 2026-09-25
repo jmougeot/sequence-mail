@@ -1,0 +1,13 @@
+{
+  "name": "sequence-li-runner",
+  "version": "0.1.0",
+  "description": "Navigateurs serveur des comptes LinkedIn de Sequence Mail (un Chromium par compte, derrière son proxy).",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node runner.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

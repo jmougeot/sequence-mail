@@ -59,6 +59,16 @@ export const config = {
     pauseAfterErrorMin: int("LI_PAUSE_AFTER_ERROR_MIN", 60),
     // Report quand un message vise un contact pas encore connecté (invitation non acceptée)
     messageRetryHours: int("LI_MESSAGE_RETRY_HOURS", 12),
+    // Contrôle de sécurité / captcha LinkedIn : pause longue du compte concerné
+    checkpointPauseMin: int("LI_CHECKPOINT_PAUSE_MIN", 24 * 60),
+    // Lecture de la messagerie (détection des réponses LinkedIn) : au plus une
+    // fois toutes les N minutes par compte, s'il a des contacts à surveiller.
+    inboxEveryMin: int("LI_INBOX_EVERY_MIN", 20),
+    // Chiffre la session LinkedIn et le proxy des comptes en mode serveur.
+    // Obligatoire pour ce mode ; ne jamais le changer sans renvoyer les sessions.
+    secretKey: process.env.LI_SECRET_KEY ?? "",
+    // Secret partagé avec le service runner (navigateurs serveur), réseau interne.
+    runnerSecret: process.env.LI_RUNNER_SECRET ?? "",
   },
 };
 

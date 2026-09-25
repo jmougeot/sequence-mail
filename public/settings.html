@@ -29,7 +29,7 @@
     </div>
     <div id="liStatus"></div>
     <table id="liAccounts" style="margin-top:12px">
-      <thead><tr><th>Compte</th><th>Extension</th><th>Invitations</th><th>Messages</th><th>En file</th><th>Contacts</th><th>Plafonds / jour</th><th>Actif</th><th></th></tr></thead>
+      <thead><tr><th>Compte</th><th>Exécution</th><th>Invitations</th><th>Messages</th><th>En file</th><th>Contacts</th><th>Plafonds / jour</th><th>Actif</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
     <div class="inline" style="gap:8px;margin-top:12px">
@@ -39,7 +39,10 @@
     <div id="liToken" class="card" hidden style="margin-top:12px;background:var(--hover)"></div>
     <p class="muted" style="margin-bottom:0">Chaque compte LinkedIn a son extension Chrome (dossier <code>extension/</code>), dans le Chrome où ce compte est connecté.
     Collez le <b>jeton</b> du compte dans le popup de l'extension. Quotas, délais et pauses sont propres à chaque compte ; un contact reste au compte qui l'a abordé en premier (un message ne part que d'un compte connecté au destinataire).
-    Plafonds vides = valeurs par défaut du serveur ; le warm-up les atteint progressivement.</p>
+    Plafonds vides = valeurs par défaut du serveur ; le warm-up les atteint progressivement.<br>
+    <b>Navigateur serveur</b> (plus besoin de laisser Chrome ouvert) : dans le popup de l'extension, cliquez « Confier ce compte au serveur » — la session LinkedIn part chiffrée, puis renseignez ici un <b>proxy résidentiel/ISP fixe</b> propre au compte, situé dans la région de son propriétaire (sans proxy, le serveur ne lance rien : une IP de datacenter fait restreindre le compte). Ne vous déconnectez pas de LinkedIn ensuite : cela couperait aussi la session du serveur.
+    Les réponses reçues sur LinkedIn sont détectées (lecture de la messagerie toutes les ~20 min) et arrêtent la séquence, emails compris.</p>
+    <p class="err" id="liServerWarn" hidden style="margin-bottom:0">Mode serveur indisponible : LI_SECRET_KEY et LI_RUNNER_SECRET doivent être définis dans le .env du serveur.</p>
   </div>
 
   <div class="card">
@@ -111,6 +114,7 @@ async function loadLi() {
       <div class="stat-card"><div class="sv">${s.queue.failed}</div><div class="sl">Échecs</div></div>
     </div>`;
 
+  $("#liServerWarn").hidden = s.server_mode_ready || !s.accounts.some(a => a.mode === "server");
   const btn = $("#liToggle");
   btn.hidden = !s.accounts.length;
   btn.textContent = s.enabled ? "⏸ Tout mettre en pause" : "▶ Tout réactiver";
@@ -119,11 +123,20 @@ async function loadLi() {
   if (document.activeElement && $("#liAccounts").contains(document.activeElement)) return;
   $("#liAccounts tbody").innerHTML = s.accounts.map(a => {
     const dot = a.connected ? "var(--ok)" : "var(--bad)";
-    const state = a.paused_until ? `<div class="err">pause jusqu'à ${new Date(a.paused_until).toLocaleTimeString("fr-FR", {hour:"2-digit", minute:"2-digit"})}</div>` : "";
+    const state = a.paused_until ? `<div class="err">pause jusqu'à ${new Date(a.paused_until).toLocaleString("fr-FR", {weekday:"short", hour:"2-digit", minute:"2-digit"})}</div>` : "";
+    const who = a.mode === "server" ? "navigateur serveur" : "extension";
+    const sess = a.mode !== "server" ? ""
+      : a.session.state === "ok" ? `<div class="ok">session ✓ (${timeAgo(a.session.updated_at)})</div>`
+      : a.session.state ? `<div class="err" title="${esc(a.session.error)}">session ${a.session.state === "expired" ? "expirée" : "bloquée (contrôle de sécurité)"} — à renvoyer depuis l'extension</div>`
+      : `<div class="err">session à envoyer depuis l'extension</div>`;
+    const proxy = a.mode !== "server" ? "" : `<div><input value="" placeholder="${a.has_proxy ? "proxy configuré ✓ (remplacer…)" : "⚠️ proxy http://user:mdp@hôte:port"}" style="width:220px" onchange="patchLi(${a.id}, {proxy: this.value})"></div>`;
     return `<tr>
       <td><input value="${esc(a.name)}" style="width:130px" onchange="patchLi(${a.id}, {name: this.value})"></td>
-      <td><span style="width:9px;height:9px;border-radius:50%;background:${dot};display:inline-block"></span>
-        <span class="muted">${a.last_seen_at ? timeAgo(a.last_seen_at) : "jamais vue"}</span>${state}</td>
+      <td><select onchange="patchLi(${a.id}, {mode: this.value})">
+          <option value="extension" ${a.mode === "extension" ? "selected" : ""}>Extension Chrome</option>
+          <option value="server" ${a.mode === "server" ? "selected" : ""}>Navigateur serveur</option></select>
+        <div><span style="width:9px;height:9px;border-radius:50%;background:${dot};display:inline-block"></span>
+        <span class="muted">${who} ${a.last_seen_at ? `vu ${timeAgo(a.last_seen_at)}` : "jamais vu"}${a.watching ? ` · surveille ${a.watching} réponse(s)` : ""}</span></div>${sess}${proxy}${state}</td>
       <td>${a.today.invite.sent} / ${a.today.invite.cap}</td>
       <td>${a.today.message.sent} / ${a.today.message.cap}</td>
       <td>${a.queue.pending}${a.queue.failed ? ` <span class="err">· ${a.queue.failed} échec(s)</span>` : ""}</td>
@@ -159,7 +172,8 @@ async function addLiAccount() {
 }
 
 async function patchLi(id, patch) {
-  await api(`/api/li/accounts/${id}`, jsonPost("PATCH", patch));
+  try { await api(`/api/li/accounts/${id}`, jsonPost("PATCH", patch)); }
+  catch (e) { alert(e.message || e); }
   loadLi();
 }
 

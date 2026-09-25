@@ -1,9 +1,9 @@
 /**
  * Canal LinkedIn des séquences, multi-comptes. Quand une étape LinkedIn devient
  * due, le scheduler appelle `enqueueStep` : une action entre en file et le
- * contact passe en attente. Chaque compte LinkedIn (une extension Chrome ou un
- * navigateur serveur, identifié par son jeton) réclame ensuite `nextAction()` —
- * et c'est ICI, côté serveur, que se décide si CE compte a le droit d'agir :
+ * contact passe en attente. Chaque compte LinkedIn réclame ensuite
+ * `nextAction()` — et c'est ICI, côté serveur, que se décide si CE compte a le
+ * droit d'agir :
  *   1. plafonds journaliers par type (invitation/message), avec warm-up ;
  *   2. plage horaire ouvrée seulement ;
  *   3. délai aléatoire entre deux actions ;
@@ -11,48 +11,87 @@
  * Quotas, délais et pauses sont propres à chaque compte : plusieurs comptes
  * travaillent en parallèle sans se gêner.
  *
+ * Deux exécutants possibles par compte (li_accounts.mode) :
+ *   - 'extension' : l'extension Chrome, dans le navigateur de la personne,
+ *     identifiée par le jeton du compte (en-tête X-LI-Account) ;
+ *   - 'server'    : le service runner (Chromium sur le VPS, derrière le proxy
+ *     du compte), qui rejoue la session LinkedIn envoyée par l'extension.
+ * Un compte n'est servi qu'à l'exécutant de son mode : jamais les deux à la fois.
+ *
  * Attribution : un contact est attaché au premier compte qui le prend en charge
  * (campaign_contacts.li_account_id) et toutes ses actions suivantes passent par
  * lui — un message ne part que d'un compte connecté au destinataire. Tant qu'il
  * n'est attaché à personne, n'importe quel compte autorisé par la campagne peut
  * le prendre : la charge se répartit d'elle-même sur les comptes disponibles.
  *
- * Au succès, `recordResult` fait avancer le contact à l'étape suivante de la
- * séquence (qu'elle soit email ou LinkedIn).
+ * Détection des réponses : quand un compte a des contacts à surveiller, il
+ * reçoit régulièrement une action 'sync_inbox' (lecture de la messagerie) dont
+ * le résultat est traité par li-inbox.ts.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 import { db } from "../db.js";
 
 const L = config.linkedin;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const LEASE_MS = 5 * 60 * 1000;
-const SEEN_TIMEOUT_MS = 2 * 60 * 1000; // l'extension interroge toutes les ~60 s
+const SEEN_TIMEOUT_MS = 2 * 60 * 1000; // l'exécutant interroge toutes les ~60 s
+const WATCH_DAYS = 45; // durée de surveillance des réponses après la dernière action envoyée
 
 export type LiActionType = "invite" | "message";
+export type LiMode = "extension" | "server";
 
 export interface LiAccount {
   id: number;
   name: string;
   active: number;
+  mode: LiMode;
   invites_per_day: number | null;
   messages_per_day: number | null;
   warmup_started_at: number | null;
   next_allowed_at: number | null;
   paused_until: number | null;
   last_seen_at: number | null;
+  last_inbox_at: number | null;
+  session_state: "ok" | "expired" | "checkpoint" | null;
+  session_error: string | null;
+  session_updated_at: number | null;
+  has_proxy: number;
+  has_session: number;
   created_at: number;
 }
 
 let enabled = true; // interrupteur général (tous comptes)
+
+// --- Chiffrement (session et proxy des comptes en mode serveur) -------------
+
+function secretKey(): Buffer {
+  if (!L.secretKey) throw new Error("LI_SECRET_KEY manquant dans .env : impossible de stocker une session ou un proxy");
+  return createHash("sha256").update(L.secretKey).digest();
+}
+
+function seal(plain: string): string {
+  const iv = randomBytes(12);
+  const c = createCipheriv("aes-256-gcm", secretKey(), iv);
+  const enc = Buffer.concat([c.update(plain, "utf8"), c.final()]);
+  return [iv, c.getAuthTag(), enc].map((b) => b.toString("base64url")).join(".");
+}
+
+function unseal(sealed: string): string {
+  const [iv, tag, enc] = sealed.split(".").map((p) => Buffer.from(p, "base64url"));
+  const d = createDecipheriv("aes-256-gcm", secretKey(), iv);
+  d.setAuthTag(tag);
+  return Buffer.concat([d.update(enc), d.final()]).toString("utf8");
+}
 
 // --- Comptes -----------------------------------------------------------------
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 const newToken = () => "li_" + randomBytes(24).toString("base64url");
 
-const ACCOUNT_COLS =
-  "id, name, active, invites_per_day, messages_per_day, warmup_started_at, next_allowed_at, paused_until, last_seen_at, created_at";
+const ACCOUNT_COLS = `id, name, active, mode, invites_per_day, messages_per_day, warmup_started_at, next_allowed_at,
+  paused_until, last_seen_at, last_inbox_at, session_state, session_error, session_updated_at,
+  proxy_enc IS NOT NULL AS has_proxy, session_enc IS NOT NULL AS has_session, created_at`;
 
 export function listAccounts(): LiAccount[] {
   return db.prepare(`SELECT ${ACCOUNT_COLS} FROM li_accounts ORDER BY id`).all() as LiAccount[];
@@ -75,6 +114,14 @@ export function resolveAccount(token: string | undefined): LiAccount | null | "i
   return (db.prepare(`SELECT ${ACCOUNT_COLS} FROM li_accounts ORDER BY id LIMIT 1`).get() as LiAccount | undefined) ?? null;
 }
 
+/** Le runner prouve son identité par le secret partagé (réseau interne du VPS). */
+export function isRunner(secret: string | undefined): boolean {
+  if (!L.runnerSecret || !secret) return false;
+  const a = Buffer.from(secret);
+  const b = Buffer.from(L.runnerSecret);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 /** Crée un compte ; le jeton en clair n'est rendu qu'ici (seul son hash est stocké). */
 export function createAccount(name: string): { account: LiAccount; token: string } {
   const token = newToken();
@@ -92,7 +139,14 @@ export function rotateToken(id: number): string | null {
 
 export function updateAccount(
   id: number,
-  patch: { name?: string; active?: boolean; invites_per_day?: number | null; messages_per_day?: number | null; restart_warmup?: boolean }
+  patch: {
+    name?: string;
+    active?: boolean;
+    mode?: LiMode;
+    invites_per_day?: number | null;
+    messages_per_day?: number | null;
+    restart_warmup?: boolean;
+  }
 ): LiAccount | undefined {
   const cap = (v: number | null | undefined) => (v == null ? null : Math.max(0, Math.round(v)));
   db.transaction(() => {
@@ -102,6 +156,9 @@ export function updateAccount(
       db.prepare(
         "UPDATE li_accounts SET active = ?, paused_until = CASE WHEN ? THEN NULL ELSE paused_until END WHERE id = ?"
       ).run(patch.active ? 1 : 0, patch.active ? 1 : 0, id);
+    }
+    if (patch.mode === "extension" || patch.mode === "server") {
+      db.prepare("UPDATE li_accounts SET mode = ? WHERE id = ?").run(patch.mode, id);
     }
     if ("invites_per_day" in patch) db.prepare("UPDATE li_accounts SET invites_per_day = ? WHERE id = ?").run(cap(patch.invites_per_day), id);
     if ("messages_per_day" in patch) db.prepare("UPDATE li_accounts SET messages_per_day = ? WHERE id = ?").run(cap(patch.messages_per_day), id);
@@ -125,6 +182,136 @@ export function deleteAccount(id: number): { ok: true } | { error: string } {
   if (used) return { error: "Ce compte a déjà des contacts : désactivez-le plutôt que de le supprimer." };
   db.prepare("DELETE FROM li_accounts WHERE id = ?").run(id);
   return { ok: true };
+}
+
+// --- Session et proxy (mode serveur) -----------------------------------------
+
+export interface LiCookie {
+  name: string;
+  value: string;
+  domain: string;
+  path?: string;
+  expires?: number;
+  httpOnly?: boolean;
+  secure?: boolean;
+  sameSite?: "Strict" | "Lax" | "None";
+}
+
+export interface LiSession {
+  cookies: LiCookie[];
+  user_agent: string | null;
+  captured_at: number;
+}
+
+/**
+ * Enregistre la session LinkedIn envoyée par l'extension (cookies du domaine
+ * linkedin.com + user-agent du navigateur d'origine) et bascule le compte en
+ * mode serveur : l'extension cesse alors d'exécuter pour ce compte.
+ */
+export function storeSession(id: number, cookies: unknown, userAgent: unknown): { ok: true } | { error: string } {
+  if (!Array.isArray(cookies)) return { error: "cookies[] manquant" };
+  const clean: LiCookie[] = cookies
+    .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+    .filter((c) => typeof c.name === "string" && typeof c.value === "string" && /linkedin\.com$/i.test(String(c.domain ?? "")))
+    .map((c) => ({
+      name: String(c.name),
+      value: String(c.value),
+      domain: String(c.domain),
+      path: typeof c.path === "string" ? c.path : "/",
+      expires: typeof c.expires === "number" ? c.expires : undefined,
+      httpOnly: Boolean(c.httpOnly),
+      secure: Boolean(c.secure),
+      sameSite: c.sameSite === "Strict" || c.sameSite === "Lax" || c.sameSite === "None" ? c.sameSite : undefined,
+    }));
+  if (!clean.some((c) => c.name === "li_at")) {
+    return { error: "Cookie de session LinkedIn (li_at) absent : connectez-vous à LinkedIn dans ce navigateur puis réessayez." };
+  }
+  const session: LiSession = {
+    cookies: clean,
+    user_agent: typeof userAgent === "string" ? userAgent.slice(0, 400) : null,
+    captured_at: Date.now(),
+  };
+  let sealed: string;
+  try {
+    sealed = seal(JSON.stringify(session));
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+  db.prepare(
+    `UPDATE li_accounts SET session_enc = ?, session_state = 'ok', session_error = NULL, session_updated_at = ?,
+       mode = 'server', paused_until = NULL WHERE id = ?`
+  ).run(sealed, Date.now(), id);
+  return { ok: true };
+}
+
+/** Proxy du compte (http://user:pass@hôte:port, https:// ou socks5://) ; null le retire. */
+export function setProxy(id: number, url: string | null): { ok: true } | { error: string } {
+  if (url == null || !url.trim()) {
+    db.prepare("UPDATE li_accounts SET proxy_enc = NULL WHERE id = ?").run(id);
+    return { ok: true };
+  }
+  try {
+    const u = new URL(url.trim());
+    if (!/^(https?|socks5):$/.test(u.protocol) || !u.hostname || !u.port) {
+      return { error: "Proxy attendu sous la forme http://utilisateur:motdepasse@hôte:port (ou socks5://…)" };
+    }
+    db.prepare("UPDATE li_accounts SET proxy_enc = ? WHERE id = ?").run(seal(u.toString()), id);
+    return { ok: true };
+  } catch (e) {
+    return { error: e instanceof TypeError ? "URL de proxy invalide" : (e as Error).message };
+  }
+}
+
+/** Le runner signale une session morte (déconnexion) ou un contrôle de sécurité. */
+export function setSessionState(id: number, state: "ok" | "expired" | "checkpoint", error?: string): void {
+  const now = Date.now();
+  db.prepare(
+    `UPDATE li_accounts SET session_state = ?, session_error = ?,
+       paused_until = CASE WHEN ? = 'checkpoint' THEN ? ELSE paused_until END WHERE id = ?`
+  ).run(state, error ?? null, state, now + L.checkpointPauseMin * 60_000, id);
+}
+
+/**
+ * Contrôle de sécurité / captcha LinkedIn : longue pause du compte. En mode
+ * serveur, la session est aussi marquée à vérifier (la personne doit passer le
+ * contrôle dans son propre navigateur puis renvoyer sa session).
+ */
+export function pauseForCheckpoint(account: LiAccount, error: string): void {
+  db.prepare(
+    `UPDATE li_accounts SET paused_until = ?, session_error = ?,
+       session_state = CASE WHEN mode = 'server' THEN 'checkpoint' ELSE session_state END WHERE id = ?`
+  ).run(Date.now() + L.checkpointPauseMin * 60_000, error.slice(0, 500), account.id);
+}
+
+/** Comptes que le runner doit faire tourner, avec session et proxy déchiffrés. */
+export function runnerAccounts() {
+  const rows = db
+    .prepare(
+      `SELECT id, name, proxy_enc, session_enc, session_updated_at FROM li_accounts
+       WHERE mode = 'server' AND active = 1 AND session_state = 'ok' AND session_enc IS NOT NULL`
+    )
+    .all() as Array<{ id: number; name: string; proxy_enc: string | null; session_enc: string; session_updated_at: number }>;
+  return rows.flatMap((r) => {
+    try {
+      return [
+        {
+          id: r.id,
+          name: r.name,
+          proxy: r.proxy_enc ? unseal(r.proxy_enc) : null,
+          session: JSON.parse(unseal(r.session_enc)) as LiSession,
+          session_version: r.session_updated_at,
+        },
+      ];
+    } catch (e) {
+      console.error(`[linkedin] compte ${r.id} : session illisible (LI_SECRET_KEY changée ?)`, (e as Error).message);
+      return [];
+    }
+  });
+}
+
+/** Plage où le runner garde les navigateurs ouverts (envois + lecture de la messagerie). */
+export function runnerWindow() {
+  return { hour_start: Math.max(0, L.hourStart - 1), hour_end: Math.min(24, L.hourEnd + 3), tz_offset_min: -new Date().getTimezoneOffset() };
 }
 
 // --- Rythme d'un compte ------------------------------------------------------
@@ -164,6 +351,13 @@ function withinWindow(ts: number): boolean {
   return d.getHours() >= L.hourStart && d.getHours() < L.hourEnd;
 }
 
+/** Lecture de la messagerie : plage élargie, week-end compris (lire n'est pas envoyer). */
+function withinInboxWindow(ts: number): boolean {
+  const w = runnerWindow();
+  const h = new Date(ts).getHours();
+  return h >= w.hour_start && h < w.hour_end;
+}
+
 function nextWindowOpen(ts: number): number {
   const d = new Date(ts);
   for (let i = 0; i < 8; i++) {
@@ -184,14 +378,27 @@ function reclaimStale(): void {
   ).run(Date.now() - LEASE_MS);
 }
 
+/** Contacts d'un compte dont on attend une éventuelle réponse sur LinkedIn. */
+function watchedCount(accountId: number): number {
+  return (
+    db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM campaign_contacts cc
+         WHERE cc.li_account_id = ? AND cc.replied_at IS NULL
+           AND cc.status IN ('awaiting_li', 'in_progress', 'completed')
+           AND EXISTS (SELECT 1 FROM li_actions la WHERE la.campaign_contact_id = cc.id AND la.status = 'sent' AND la.sent_at > ?)`
+      )
+      .get(accountId, Date.now() - WATCH_DAYS * DAY_MS) as { n: number }
+  ).n;
+}
+
 // --- Mise en file (appelée par le scheduler quand une étape LinkedIn est due) --
 
 /**
  * Dépose une action LinkedIn pour une étape de séquence et met le contact en
- * attente (status 'awaiting_li' : ni le scheduler email ni la détection de
- * réponses ne le reprennent). L'action hérite du compte déjà attaché au contact
- * (sinon elle reste libre, cf. `nextAction`). Dédoublonné : pas deux actions
- * vivantes pour la même étape du même contact.
+ * attente (status 'awaiting_li' : le scheduler email le laisse). L'action hérite
+ * du compte déjà attaché au contact (sinon elle reste libre, cf. `nextAction`).
+ * Dédoublonné : pas deux actions vivantes pour la même étape du même contact.
  */
 export function enqueueStep(
   ccId: number,
@@ -215,6 +422,14 @@ export function enqueueStep(
   })();
 }
 
+/** Annule les actions LinkedIn pas encore jouées (réponse, désinscription…). */
+export function cancelLinkedInActions(where: string, param: unknown, reason: string): void {
+  db.prepare(
+    `UPDATE li_actions SET status = 'cancelled', lease_at = NULL, error = ?
+     WHERE status IN ('pending', 'sending') AND ${where}`
+  ).run(reason, param);
+}
+
 // --- Avancement de la séquence après une action réussie ----------------------
 
 interface StepRow {
@@ -224,10 +439,10 @@ interface StepRow {
 
 /** Marque l'étape franchie et planifie la suivante (ou termine la séquence). */
 function advanceContact(ccId: number, completedStep: number): void {
-  const cc = db.prepare(`SELECT campaign_id FROM campaign_contacts WHERE id = ?`).get(ccId) as
-    | { campaign_id: number }
+  const cc = db.prepare(`SELECT campaign_id, status FROM campaign_contacts WHERE id = ?`).get(ccId) as
+    | { campaign_id: number; status: string }
     | undefined;
-  if (!cc) return;
+  if (!cc || cc.status !== "awaiting_li") return; // réponse/arrêt entre-temps : on ne relance rien
   const steps = db
     .prepare(`SELECT step_number, wait_days FROM steps WHERE campaign_id = ? ORDER BY step_number`)
     .all(cc.campaign_id) as StepRow[];
@@ -247,8 +462,12 @@ function advanceContact(ccId: number, completedStep: number): void {
 
 // --- Distributeur : que peut faire ce compte, maintenant ? -------------------
 
+export type LiServedAction =
+  | { id: number; linkedin: string; type: LiActionType; body: string | null }
+  | { id: 0; linkedin: null; type: "sync_inbox"; body: null; limit: number };
+
 export type NextResult =
-  | { action: { id: number; linkedin: string; type: LiActionType; body: string | null } }
+  | { action: LiServedAction }
   | { idle: true; reason: string }
   | { wait: number; reason: string };
 
@@ -268,15 +487,38 @@ const ELIGIBLE = `
          OR (la.li_account_id IS NULL AND cc.li_account_id IS NULL
              AND (cp.li_account_ids IS NULL OR EXISTS (SELECT 1 FROM json_each(cp.li_account_ids) WHERE value = @acc))))`;
 
-export function nextAction(account: LiAccount): NextResult {
+export function nextAction(account: LiAccount, via: LiMode): NextResult {
   const now = Date.now();
   db.prepare("UPDATE li_accounts SET last_seen_at = ? WHERE id = ?").run(now, account.id);
   reclaimStale();
 
   if (!enabled) return { idle: true, reason: "Envoi LinkedIn en pause (désactivé pour tous les comptes)" };
   if (!account.active) return { idle: true, reason: `Compte « ${account.name} » désactivé` };
+  if (account.mode !== via) {
+    return {
+      idle: true,
+      reason:
+        account.mode === "server"
+          ? `Compte « ${account.name} » piloté par le serveur — cette extension n'agit plus pour lui`
+          : `Compte « ${account.name} » piloté par l'extension Chrome`,
+    };
+  }
+  if (via === "server" && account.session_state !== "ok") {
+    return { idle: true, reason: "Session LinkedIn à renvoyer depuis l'extension" };
+  }
   if ((account.paused_until ?? 0) > now)
     return { wait: Math.ceil((account.paused_until! - now) / 1000), reason: "Pause de sécurité après une erreur" };
+
+  // Lecture de la messagerie (détection des réponses), hors quotas d'envoi.
+  if (now - (account.last_inbox_at ?? 0) >= L.inboxEveryMin * 60_000 && withinInboxWindow(now) && watchedCount(account.id)) {
+    db.prepare(`UPDATE li_accounts SET last_inbox_at = ?, next_allowed_at = MAX(COALESCE(next_allowed_at, 0), ?) WHERE id = ?`).run(
+      now,
+      Math.round(now + rand(20, 60) * 1000),
+      account.id
+    );
+    return { action: { id: 0, linkedin: null, type: "sync_inbox", body: null, limit: 40 } };
+  }
+
   if (!withinWindow(now)) return { wait: Math.ceil((nextWindowOpen(now) - now) / 1000), reason: "Hors plage horaire d'envoi" };
   if ((account.next_allowed_at ?? 0) > now)
     return { wait: Math.ceil((account.next_allowed_at! - now) / 1000), reason: "Délai entre deux actions" };
@@ -321,23 +563,34 @@ export function nextAction(account: LiAccount): NextResult {
   return { action: { id: row.id, linkedin: row.linkedin, type: row.type, body: row.body } };
 }
 
+const NOT_FOUND = /\(404\)/;
+const CHECKPOINT = /contrôle de sécurité|checkpoint|captcha|challenge/i;
+
 /**
  * Verdict d'une action exécutée par un compte :
  * - `retry` (message à un profil pas encore connecté) → on reporte l'action de
  *   quelques heures, sans pause ni avancement ;
  * - succès → journalisé (quota du compte), délai du compte armé, et le contact
  *   avance d'une étape ;
- * - échec → pause de sécurité longue de CE compte, contact marqué en échec.
+ * - échec → contact marqué en échec, et pause de sécurité du compte : longue
+ *   sur un contrôle de sécurité LinkedIn, aucune sur un profil introuvable (404).
  * Rend false si l'action n'appartient pas à ce compte.
  */
 export function recordResult(account: LiAccount, id: number, ok: boolean, error?: string, retry?: boolean): boolean {
   const row = db
-    .prepare(`SELECT id, type, campaign_contact_id, step_number, li_account_id FROM li_actions WHERE id = ?`)
+    .prepare(`SELECT id, type, status, campaign_contact_id, step_number, li_account_id FROM li_actions WHERE id = ?`)
     .get(id) as
-    | { id: number; type: LiActionType; campaign_contact_id: number; step_number: number; li_account_id: number | null }
+    | { id: number; type: LiActionType; status: string; campaign_contact_id: number; step_number: number; li_account_id: number | null }
     | undefined;
   if (!row || row.li_account_id !== account.id) return false;
   const now = Date.now();
+
+  // Annulée pendant l'exécution (le contact a répondu) : on compte le geste
+  // s'il a eu lieu (quota), sans rien faire avancer.
+  if (row.status !== "sending") {
+    if (ok) db.prepare(`INSERT INTO li_log (type, sent_at, li_account_id) VALUES (?, ?, ?)`).run(row.type, now, account.id);
+    return true;
+  }
 
   if (retry && !ok) {
     // Invitation pas encore acceptée : on retentera le message plus tard, sans punir.
@@ -350,20 +603,26 @@ export function recordResult(account: LiAccount, id: number, ok: boolean, error?
   }
 
   if (ok) {
-    db.prepare(`UPDATE li_actions SET status = 'sent', sent_at = ?, lease_at = NULL, error = NULL WHERE id = ?`).run(now, id);
+    db.prepare(`UPDATE li_actions SET status = 'sent', sent_at = ?, lease_at = NULL, error = ? WHERE id = ?`).run(now, error ?? null, id);
     db.prepare(`INSERT INTO li_log (type, sent_at, li_account_id) VALUES (?, ?, ?)`).run(row.type, now, account.id);
     db.prepare(`UPDATE li_accounts SET next_allowed_at = ? WHERE id = ?`).run(
       Math.round(now + rand(L.minGapSec, L.maxGapSec) * 1000),
       account.id
     );
     advanceContact(row.campaign_contact_id, row.step_number);
-  } else {
-    db.prepare(`UPDATE li_actions SET status = 'failed', lease_at = NULL, error = ? WHERE id = ?`).run(error ?? "échec", id);
-    db.prepare(`UPDATE campaign_contacts SET status = 'failed', error = ?, next_send_at = NULL WHERE id = ?`).run(
-      `LinkedIn (${account.name}) : ${error ?? "échec"}`,
-      row.campaign_contact_id
-    );
-    db.prepare(`UPDATE li_accounts SET paused_until = ? WHERE id = ?`).run(now + L.pauseAfterErrorMin * 60 * 1000, account.id);
+    return true;
+  }
+
+  const msg = error ?? "échec";
+  db.prepare(`UPDATE li_actions SET status = 'failed', lease_at = NULL, error = ? WHERE id = ?`).run(msg, id);
+  db.prepare(`UPDATE campaign_contacts SET status = 'failed', error = ?, next_send_at = NULL WHERE id = ?`).run(
+    `LinkedIn (${account.name}) : ${msg}`,
+    row.campaign_contact_id
+  );
+  if (CHECKPOINT.test(msg)) {
+    pauseForCheckpoint(account, msg);
+  } else if (!NOT_FOUND.test(msg)) {
+    db.prepare(`UPDATE li_accounts SET paused_until = ? WHERE id = ?`).run(now + L.pauseAfterErrorMin * 60_000, account.id);
   }
   return true;
 }
@@ -379,7 +638,7 @@ function count(sql: string, ...args: unknown[]): number {
   return (db.prepare(sql).get(...args) as { n: number }).n;
 }
 
-/** État d'un compte : présence de l'extension, quotas du jour, file. */
+/** État d'un compte : présence de l'exécutant, session, quotas du jour, file. */
 export function accountStatus(a: LiAccount) {
   const now = Date.now();
   const invites = sentToday(a.id, "invite");
@@ -389,9 +648,19 @@ export function accountStatus(a: LiAccount) {
     name: a.name,
     enabled: enabled && Boolean(a.active),
     active: Boolean(a.active),
-    // « connecté » = l'extension de ce compte a interrogé le serveur il y a moins de 2 min
+    mode: a.mode,
+    // « connecté » = l'exécutant de ce compte a interrogé le serveur il y a moins de 2 min
     connected: a.last_seen_at != null && now - a.last_seen_at < SEEN_TIMEOUT_MS,
     last_seen_at: a.last_seen_at,
+    session: {
+      state: a.session_state,
+      error: a.session_error,
+      updated_at: a.session_updated_at,
+      stored: Boolean(a.has_session),
+    },
+    has_proxy: Boolean(a.has_proxy),
+    last_inbox_at: a.last_inbox_at,
+    watching: watchedCount(a.id),
     within_window: withinWindow(now),
     paused_until: (a.paused_until ?? 0) > now ? a.paused_until : null,
     next_allowed_at: (a.next_allowed_at ?? 0) > now ? a.next_allowed_at : null,
@@ -427,6 +696,7 @@ export function outreachStatus() {
     connected: accounts.some((a) => a.connected),
     last_seen_at: lastSeen || null,
     within_window: withinWindow(now),
+    server_mode_ready: Boolean(L.secretKey && L.runnerSecret),
     today: {
       invite: { sent: sum((a) => a.today.invite.sent), cap: sum((a) => (a.active ? a.today.invite.cap : 0)) },
       message: { sent: sum((a) => a.today.message.sent), cap: sum((a) => (a.active ? a.today.message.cap : 0)) },

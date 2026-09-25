@@ -9,6 +9,7 @@ import { effectiveDailyLimit } from "./services/scheduler.js";
 import { registerOutreachRoutes } from "./services/outreach-routes.js";
 import { registerVisitRoutes } from "./services/visits.js";
 import { registerUnsubscribeRoutes } from "./services/unsubscribe.js";
+import { normalizeLinkedin } from "./services/linkedin-url.js";
 
 export function createServer(): express.Express {
   const app = express();
@@ -458,7 +459,7 @@ export function createServer(): express.Express {
       first_name ?? null,
       last_name ?? null,
       company ?? null,
-      linkedin === undefined ? null : linkedin.trim() || null,
+      linkedin === undefined ? null : normalizeLinkedin(linkedin),
       merged ? JSON.stringify(merged) : null,
       req.params.id
     );
@@ -479,8 +480,8 @@ export function createServer(): express.Express {
     try {
       const rows = parseCsv(String(req.body ?? ""));
       if (!rows.length) return res.status(400).json({ error: "CSV vide ou illisible" });
-      if (!("email" in rows[0])) {
-        return res.status(400).json({ error: "Le CSV doit contenir une colonne 'email'" });
+      if (!("email" in rows[0]) && !("linkedin" in rows[0])) {
+        return res.status(400).json({ error: "Le CSV doit contenir une colonne 'email' ou 'linkedin'" });
       }
       res.json(await importContacts(Number(req.params.id), rows));
     } catch (err) {
@@ -512,12 +513,14 @@ export function createServer(): express.Express {
         `SELECT c.id AS contact_id, c.email, c.first_name, c.last_name, c.company, c.linkedin, c.extra,
                 cc.id AS cc_id, cc.status, cc.current_step, cc.variant, cc.account_id,
                 cc.next_send_at, cc.replied_at, cc.error, a.email AS sender,
+                li.name AS li_sender, cc.li_thread_url,
                 (SELECT COUNT(*) FROM visits v WHERE v.cc_id = cc.id AND v.is_bot = 0) AS visit_count,
                 (SELECT MAX(v.at) FROM visits v WHERE v.cc_id = cc.id AND v.is_bot = 0) AS last_visit_at,
                 (SELECT COUNT(*) FROM visits v WHERE v.cc_id = cc.id AND v.is_bot = 1) AS bot_visit_count
          FROM campaign_contacts cc
          JOIN contacts c ON c.id = cc.contact_id
          LEFT JOIN accounts a ON a.id = cc.account_id
+         LEFT JOIN li_accounts li ON li.id = cc.li_account_id
          WHERE cc.campaign_id = ?
          ORDER BY cc.id`
       )
