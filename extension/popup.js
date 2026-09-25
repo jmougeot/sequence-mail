@@ -92,9 +92,8 @@ document.getElementById("saveAuth").addEventListener("click", async () => {
 });
 
 // Confie le compte au serveur : envoie la session LinkedIn de ce navigateur
-// (cookies linkedin.com + user-agent). Le compte passe en mode serveur ; cette
-// extension n'exécute plus rien pour lui.
-const SAME_SITE = { no_restriction: "None", lax: "Lax", strict: "Strict" };
+// (cookies linkedin.com + user-agent) et le profil connecté. Le compte passe en
+// mode serveur ; cette extension n'exécute plus rien pour lui.
 document.getElementById("handover").addEventListener("click", async () => {
   const msg = document.getElementById("handoverMsg");
   const { liToken } = await chrome.storage.local.get("liToken");
@@ -102,25 +101,21 @@ document.getElementById("handover").addEventListener("click", async () => {
     msg.textContent = "Renseignez d'abord le jeton du compte LinkedIn ci-dessous.";
     return;
   }
-  const cookies = (await chrome.cookies.getAll({ domain: "linkedin.com" })).map((c) => ({
-    name: c.name,
-    value: c.value,
-    domain: c.domain,
-    path: c.path,
-    expires: c.expirationDate,
-    httpOnly: c.httpOnly,
-    secure: c.secure,
-    sameSite: SAME_SITE[c.sameSite],
-  }));
+  msg.textContent = "Lecture de la session LinkedIn…";
+  const cap = await chrome.runtime.sendMessage({ type: "capture-linkedin" });
+  if (!cap || !cap.ok) {
+    msg.textContent = (cap && cap.error) || "Session LinkedIn illisible.";
+    return;
+  }
   try {
     const r = await fetch(`${await getServer()}/api/li/session`, {
       method: "POST",
       headers: { "content-type": "application/json", ...(await authHeaders()) },
-      body: JSON.stringify({ cookies, user_agent: navigator.userAgent }),
+      body: JSON.stringify({ cookies: cap.cookies, user_agent: cap.user_agent, member: cap.member }),
     });
     const d = await r.json().catch(() => ({}));
     msg.textContent = r.ok
-      ? `✓ Session transmise : le serveur pilote désormais « ${d.account && d.account.name} ».`
+      ? `✓ Session de ${cap.member.name || cap.member.slug} transmise : le serveur pilote désormais « ${d.account && d.account.name} ».`
       : `Échec : ${d.error || r.status}`;
   } catch {
     msg.textContent = "Serveur injoignable.";

@@ -10,6 +10,9 @@ export interface ImportReport {
   updated: number; // déjà inscrit à la campagne : ses champs ont été rafraîchis
   skipped: number;
   errors: string[];
+  // Sur demande (source.withIds) : contact retenu pour chaque ligne, dans
+  // l'ordre des lignes (null = ligne ignorée ou contact désinscrit).
+  contact_ids?: Array<number | null>;
 }
 
 const mxCache = new Map<string, boolean>();
@@ -43,9 +46,10 @@ export async function domainAcceptsMail(domain: string): Promise<boolean> {
 export async function importContacts(
   campaignId: number,
   rows: Array<Record<string, string>>,
-  source: { attioRecordIds?: Record<string, string> } = {}
+  source: { attioRecordIds?: Record<string, string>; withIds?: boolean } = {}
 ): Promise<ImportReport> {
   const report: ImportReport = { imported: 0, updated: 0, skipped: 0, errors: [] };
+  const ids: Array<number | null> = [];
 
   // Vérification MX par domaine, en amont de la transaction (résolution DNS asynchrone)
   const domains = new Set(
@@ -97,6 +101,7 @@ export async function importContacts(
         report.errors.push(`${email} : domaine sans serveur mail (MX introuvable)${linkedin ? " — gardé pour LinkedIn" : ""}`);
         email = null;
       }
+      ids.push(null); // remplacé par l'id du contact s'il est retenu
       if (!email && !linkedin) {
         report.skipped++;
         if (label === "(ligne vide)") report.errors.push("Ligne sans email ni profil LinkedIn ignorée");
@@ -134,12 +139,14 @@ export async function importContacts(
         report.skipped++; // désinscrit : ne jamais le réinscrire
         continue;
       }
+      ids[ids.length - 1] = id;
       const r = enroll.run(campaignId, id);
       if (r.changes > 0) report.imported++;
       else report.updated++; // déjà inscrit : ses champs viennent d'être mis à jour
     }
   });
   run();
+  if (source.withIds) report.contact_ids = ids;
   return report;
 }
 

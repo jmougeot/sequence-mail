@@ -27,10 +27,21 @@
  * Détection des réponses : quand un compte a des contacts à surveiller, il
  * reçoit régulièrement une action 'sync_inbox' (lecture de la messagerie) dont
  * le résultat est traité par li-inbox.ts.
+ *
+ * Bon compte, à coup sûr :
+ *   - propriétaire (owner_ref) : une campagne n'est servie qu'aux comptes du
+ *     même propriétaire — un client Azerit n'envoie jamais depuis le LinkedIn
+ *     d'un autre, quelle que soit la sélection de comptes de la campagne ;
+ *   - identité (member_slug) : le profil LinkedIn réellement connecté est
+ *     relevé à la remise de session, puis l'exécutant le relit dans la page
+ *     avant chaque action (`expect_member`). Autre profil → rien n'est envoyé,
+ *     l'action retourne en file et le compte s'arrête (« wrong_account »)
+ *     jusqu'à ce que la bonne session soit renvoyée.
  */
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 import { db } from "../db.js";
+import { linkedinSlug } from "./linkedin-url.js";
 
 const L = config.linkedin;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -41,9 +52,16 @@ const WATCH_DAYS = 45; // durée de surveillance des réponses après la derniè
 export type LiActionType = "invite" | "message";
 export type LiMode = "extension" | "server";
 
+export type LiSessionState = "ok" | "expired" | "checkpoint" | "wrong_account";
+
 export interface LiAccount {
   id: number;
   name: string;
+  owner_ref: string | null;
+  member_slug: string | null;
+  member_name: string | null;
+  member_avatar: string | null;
+  member_checked_at: number | null;
   active: number;
   mode: LiMode;
   invites_per_day: number | null;
@@ -53,7 +71,7 @@ export interface LiAccount {
   paused_until: number | null;
   last_seen_at: number | null;
   last_inbox_at: number | null;
-  session_state: "ok" | "expired" | "checkpoint" | null;
+  session_state: LiSessionState | null;
   session_error: string | null;
   session_updated_at: number | null;
   has_proxy: number;
@@ -89,7 +107,7 @@ function unseal(sealed: string): string {
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 const newToken = () => "li_" + randomBytes(24).toString("base64url");
 
-const ACCOUNT_COLS = `id, name, active, mode, invites_per_day, messages_per_day, warmup_started_at, next_allowed_at,
+const ACCOUNT_COLS = `id, name, owner_ref, member_slug, member_name, member_avatar, member_checked_at, active, mode, invites_per_day, messages_per_day, warmup_started_at, next_allowed_at,
   paused_until, last_seen_at, last_inbox_at, session_state, session_error, session_updated_at,
   proxy_enc IS NOT NULL AS has_proxy, session_enc IS NOT NULL AS has_session, created_at`;
 
@@ -103,15 +121,20 @@ export function getAccount(id: number): LiAccount | undefined {
 
 /**
  * Compte appelant, d'après le jeton de l'en-tête X-LI-Account. Sans jeton, on
- * sert le compte le plus ancien : c'est l'extension installée avant le
- * multi-comptes, qui continue de fonctionner sans réglage.
+ * sert le plus ancien compte du tableau de bord (sans propriétaire) : c'est
+ * l'extension installée avant le multi-comptes, qui continue de fonctionner
+ * sans réglage. Jamais le compte d'un client.
  */
 export function resolveAccount(token: string | undefined): LiAccount | null | "invalid" {
   if (token) {
     const row = db.prepare(`SELECT ${ACCOUNT_COLS} FROM li_accounts WHERE token_hash = ?`).get(hashToken(token));
     return (row as LiAccount | undefined) ?? "invalid";
   }
-  return (db.prepare(`SELECT ${ACCOUNT_COLS} FROM li_accounts ORDER BY id LIMIT 1`).get() as LiAccount | undefined) ?? null;
+  return (
+    (db.prepare(`SELECT ${ACCOUNT_COLS} FROM li_accounts WHERE owner_ref IS NULL ORDER BY id LIMIT 1`).get() as
+      | LiAccount
+      | undefined) ?? null
+  );
 }
 
 /** Le runner prouve son identité par le secret partagé (réseau interne du VPS). */
@@ -123,11 +146,11 @@ export function isRunner(secret: string | undefined): boolean {
 }
 
 /** Crée un compte ; le jeton en clair n'est rendu qu'ici (seul son hash est stocké). */
-export function createAccount(name: string): { account: LiAccount; token: string } {
+export function createAccount(name: string, ownerRef: string | null = null): { account: LiAccount; token: string } {
   const token = newToken();
   const { lastInsertRowid } = db
-    .prepare("INSERT INTO li_accounts (name, token_hash) VALUES (?, ?)")
-    .run(name, hashToken(token));
+    .prepare("INSERT INTO li_accounts (name, token_hash, owner_ref) VALUES (?, ?, ?)")
+    .run(name, hashToken(token), ownerRef);
   return { account: getAccount(Number(lastInsertRowid))!, token };
 }
 
@@ -203,13 +226,71 @@ export interface LiSession {
   captured_at: number;
 }
 
+/** Profil LinkedIn connecté, tel que lu par l'exécutant (slug /in/…, nom, photo). */
+export interface LiMember {
+  slug: string;
+  name: string | null;
+  avatar: string | null;
+}
+
+/** Slug canonique d'un profil (URL complète ou slug nu), sinon null. */
+export function memberSlug(value: unknown): string | null {
+  return typeof value === "string" ? linkedinSlug(value) : null;
+}
+
+/** Identité envoyée par un exécutant ({ slug, name, avatar }), validée ; null si absente/illisible. */
+export function parseMember(value: unknown): LiMember | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  const slug = memberSlug(v.slug);
+  if (!slug) return null;
+  const str = (x: unknown, max: number) => (typeof x === "string" && x.trim() ? x.trim().slice(0, max) : null);
+  const avatar = str(v.avatar, 1000);
+  return { slug, name: str(v.name, 200), avatar: avatar && /^https:\/\//.test(avatar) ? avatar : null };
+}
+
+/**
+ * Le compte est connecté au mauvais profil LinkedIn : plus aucune action tant
+ * que la bonne session n'a pas été renvoyée (storeSession remet l'état à ok).
+ */
+export function markWrongAccount(account: LiAccount, actual: string | null): void {
+  const error = actual
+    ? `Connecté à LinkedIn en tant que « ${actual} » au lieu de « ${account.member_slug} » — rien n'a été envoyé. Renvoyez la session du bon compte.`
+    : "Profil LinkedIn connecté illisible — rien n'a été envoyé.";
+  db.prepare(`UPDATE li_accounts SET session_state = 'wrong_account', session_error = ? WHERE id = ?`).run(error, account.id);
+  console.warn(`[linkedin] « ${account.name} » : ${error}`);
+}
+
+/** Identité confirmée par l'exécutant : première relève (compte sans identité) ou simple horodatage. */
+function confirmMember(account: LiAccount, member: LiMember): void {
+  db.prepare(
+    `UPDATE li_accounts SET member_slug = COALESCE(member_slug, ?), member_name = COALESCE(?, member_name),
+       member_avatar = COALESCE(?, member_avatar), member_checked_at = ? WHERE id = ?`
+  ).run(member.slug, member.name, member.avatar, Date.now(), account.id);
+}
+
 /**
  * Enregistre la session LinkedIn envoyée par l'extension (cookies du domaine
  * linkedin.com + user-agent du navigateur d'origine) et bascule le compte en
  * mode serveur : l'extension cesse alors d'exécuter pour ce compte.
  */
-export function storeSession(id: number, cookies: unknown, userAgent: unknown): { ok: true } | { error: string } {
+export function storeSession(
+  id: number,
+  cookies: unknown,
+  userAgent: unknown,
+  member: LiMember | null = null
+): { ok: true } | { error: string; code?: "other_member" } {
   if (!Array.isArray(cookies)) return { error: "cookies[] manquant" };
+  const account = getAccount(id);
+  if (!account) return { error: "Compte introuvable" };
+  // Une session d'un AUTRE profil que celui du compte est refusée : ses
+  // contacts sont reliés à ce profil-là, et c'est de lui que doivent partir les messages.
+  if (member && account.member_slug && member.slug !== account.member_slug) {
+    return {
+      code: "other_member",
+      error: `Ce navigateur est connecté à LinkedIn en tant que « ${member.slug} », pas « ${account.member_slug} » (le profil de ce compte).`,
+    };
+  }
   const clean: LiCookie[] = cookies
     .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
     .filter((c) => typeof c.name === "string" && typeof c.value === "string" && /linkedin\.com$/i.test(String(c.domain ?? "")))
@@ -237,10 +318,17 @@ export function storeSession(id: number, cookies: unknown, userAgent: unknown): 
   } catch (e) {
     return { error: (e as Error).message };
   }
+  const now = Date.now();
   db.prepare(
     `UPDATE li_accounts SET session_enc = ?, session_state = 'ok', session_error = NULL, session_updated_at = ?,
        mode = 'server', paused_until = NULL WHERE id = ?`
-  ).run(sealed, Date.now(), id);
+  ).run(sealed, now, id);
+  if (member) {
+    db.prepare(
+      `UPDATE li_accounts SET member_slug = ?, member_name = COALESCE(?, member_name),
+         member_avatar = COALESCE(?, member_avatar), member_checked_at = ? WHERE id = ?`
+    ).run(member.slug, member.name, member.avatar, now, id);
+  }
   return { ok: true };
 }
 
@@ -263,7 +351,7 @@ export function setProxy(id: number, url: string | null): { ok: true } | { error
 }
 
 /** Le runner signale une session morte (déconnexion) ou un contrôle de sécurité. */
-export function setSessionState(id: number, state: "ok" | "expired" | "checkpoint", error?: string): void {
+export function setSessionState(id: number, state: LiSessionState, error?: string): void {
   const now = Date.now();
   db.prepare(
     `UPDATE li_accounts SET session_state = ?, session_error = ?,
@@ -287,16 +375,24 @@ export function pauseForCheckpoint(account: LiAccount, error: string): void {
 export function runnerAccounts() {
   const rows = db
     .prepare(
-      `SELECT id, name, proxy_enc, session_enc, session_updated_at FROM li_accounts
+      `SELECT id, name, member_slug, proxy_enc, session_enc, session_updated_at FROM li_accounts
        WHERE mode = 'server' AND active = 1 AND session_state = 'ok' AND session_enc IS NOT NULL`
     )
-    .all() as Array<{ id: number; name: string; proxy_enc: string | null; session_enc: string; session_updated_at: number }>;
+    .all() as Array<{
+      id: number;
+      name: string;
+      member_slug: string | null;
+      proxy_enc: string | null;
+      session_enc: string;
+      session_updated_at: number;
+    }>;
   return rows.flatMap((r) => {
     try {
       return [
         {
           id: r.id,
           name: r.name,
+          member_slug: r.member_slug,
           proxy: r.proxy_enc ? unseal(r.proxy_enc) : null,
           session: JSON.parse(unseal(r.session_enc)) as LiSession,
           session_version: r.session_updated_at,
@@ -462,9 +558,11 @@ function advanceContact(ccId: number, completedStep: number): void {
 
 // --- Distributeur : que peut faire ce compte, maintenant ? -------------------
 
+// expect_member : profil que l'exécutant doit trouver connecté avant d'agir
+// (null = compte encore sans identité, relevée au premier passage).
 export type LiServedAction =
-  | { id: number; linkedin: string; type: LiActionType; body: string | null }
-  | { id: 0; linkedin: null; type: "sync_inbox"; body: null; limit: number };
+  | { id: number; linkedin: string; type: LiActionType; body: string | null; expect_member: string | null }
+  | { id: 0; linkedin: null; type: "sync_inbox"; body: null; limit: number; expect_member: string | null };
 
 export type NextResult =
   | { action: LiServedAction }
@@ -476,13 +574,14 @@ type ActionRow = { id: number; campaign_contact_id: number; linkedin: string; ty
 // Actions qu'un compte peut prendre : les siennes, ou les libres (contact encore
 // attaché à personne) d'une campagne qui l'autorise. Seulement pour les
 // campagnes actives et les contacts toujours en attente (ni arrêtés, ni en
-// réponse entre-temps).
+// réponse entre-temps), et TOUJOURS du même propriétaire que le compte.
 const ELIGIBLE = `
   FROM li_actions la
   JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
   JOIN campaigns cp ON cp.id = cc.campaign_id
   WHERE la.status = 'pending'
     AND cc.status = 'awaiting_li' AND cp.status = 'active'
+    AND cp.owner_ref IS @owner
     AND (la.li_account_id = @acc
          OR (la.li_account_id IS NULL AND cc.li_account_id IS NULL
              AND (cp.li_account_ids IS NULL OR EXISTS (SELECT 1 FROM json_each(cp.li_account_ids) WHERE value = @acc))))`;
@@ -503,6 +602,9 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
           : `Compte « ${account.name} » piloté par l'extension Chrome`,
     };
   }
+  if (account.session_state === "wrong_account") {
+    return { idle: true, reason: account.session_error ?? "Mauvais profil LinkedIn connecté — renvoyez la session du bon compte" };
+  }
   if (via === "server" && account.session_state !== "ok") {
     return { idle: true, reason: "Session LinkedIn à renvoyer depuis l'extension" };
   }
@@ -516,7 +618,7 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
       Math.round(now + rand(20, 60) * 1000),
       account.id
     );
-    return { action: { id: 0, linkedin: null, type: "sync_inbox", body: null, limit: 40 } };
+    return { action: { id: 0, linkedin: null, type: "sync_inbox", body: null, limit: 40, expect_member: account.member_slug } };
   }
 
   if (!withinWindow(now)) return { wait: Math.ceil((nextWindowOpen(now) - now) / 1000), reason: "Hors plage horaire d'envoi" };
@@ -535,10 +637,10 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
          AND (la.not_before IS NULL OR la.not_before <= @now)
        ORDER BY (la.li_account_id IS NULL), la.id ASC LIMIT 1`
     )
-    .get({ acc: account.id, now }) as ActionRow | undefined;
+    .get({ acc: account.id, owner: account.owner_ref, now }) as ActionRow | undefined;
 
   if (!row) {
-    const blocked = db.prepare(`SELECT 1 ${ELIGIBLE} LIMIT 1`).get({ acc: account.id });
+    const blocked = db.prepare(`SELECT 1 ${ELIGIBLE} LIMIT 1`).get({ acc: account.id, owner: account.owner_ref });
     if (blocked) return { wait: untilTomorrow, reason: "Quota du jour atteint ou actions reportées" };
     return { idle: true, reason: "File LinkedIn vide" };
   }
@@ -560,50 +662,121 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   })();
   if (!claimed) return { wait: 5, reason: "Action prise par un autre compte" };
 
-  return { action: { id: row.id, linkedin: row.linkedin, type: row.type, body: row.body } };
+  return {
+    action: { id: row.id, linkedin: row.linkedin, type: row.type, body: row.body, expect_member: account.member_slug },
+  };
 }
 
 const NOT_FOUND = /\(404\)/;
 const CHECKPOINT = /contrôle de sécurité|checkpoint|captcha|challenge/i;
 
+/** Verdict d'un exécutant pour une action servie. */
+export interface LiVerdict {
+  ok: boolean;
+  error?: string;
+  retry?: boolean; // message à un profil pas encore connecté : reporter
+  member?: LiMember | null; // profil lu dans la page juste avant d'agir
+  wrong_account?: boolean; // l'exécutant a refusé d'agir : autre profil connecté
+  identity_unknown?: boolean; // profil connecté illisible : rien n'a été fait
+}
+
+/** Remet une action servie en file, sans la compter ni punir le contact. */
+function requeue(id: number, error: string): void {
+  db.prepare(`UPDATE li_actions SET status = 'pending', lease_at = NULL, attempts = MAX(attempts - 1, 0), error = ? WHERE id = ?`).run(
+    error,
+    id
+  );
+}
+
 /**
  * Verdict d'une action exécutée par un compte :
+ * - autre profil connecté (ou profil illisible) → rien n'est parti : l'action
+ *   retourne en file et le compte s'arrête (mauvais profil) ou fait une pause ;
  * - `retry` (message à un profil pas encore connecté) → on reporte l'action de
- *   quelques heures, sans pause ni avancement ;
- * - succès → journalisé (quota du compte), délai du compte armé, et le contact
- *   avance d'une étape ;
+ *   quelques heures, sans pause ni avancement — jusqu'à LI_MESSAGE_RETRY_MAX_DAYS,
+ *   au-delà l'invitation est considérée ignorée et la séquence s'arrête là ;
+ * - succès → journalisé (quota du compte, profil émetteur), délai du compte
+ *   armé, et le contact avance d'une étape ;
  * - échec → contact marqué en échec, et pause de sécurité du compte : longue
  *   sur un contrôle de sécurité LinkedIn, aucune sur un profil introuvable (404).
  * Rend false si l'action n'appartient pas à ce compte.
  */
-export function recordResult(account: LiAccount, id: number, ok: boolean, error?: string, retry?: boolean): boolean {
+export function recordResult(account: LiAccount, id: number, v: LiVerdict): boolean {
   const row = db
-    .prepare(`SELECT id, type, status, campaign_contact_id, step_number, li_account_id FROM li_actions WHERE id = ?`)
+    .prepare(`SELECT id, type, status, campaign_contact_id, step_number, li_account_id, created_at FROM li_actions WHERE id = ?`)
     .get(id) as
-    | { id: number; type: LiActionType; status: string; campaign_contact_id: number; step_number: number; li_account_id: number | null }
+    | {
+        id: number;
+        type: LiActionType;
+        status: string;
+        campaign_contact_id: number;
+        step_number: number;
+        li_account_id: number | null;
+        created_at: number;
+      }
     | undefined;
   if (!row || row.li_account_id !== account.id) return false;
   const now = Date.now();
+  const member = v.member ?? null;
+  const otherMember = Boolean(member && account.member_slug && member.slug !== account.member_slug);
+
+  // Refus de l'exécutant : rien n'a été envoyé.
+  if (!v.ok && (v.wrong_account || otherMember)) {
+    if (row.status === "sending") requeue(id, "mauvais profil LinkedIn connecté — en attente du bon compte");
+    markWrongAccount(account, member?.slug ?? null);
+    return true;
+  }
+  if (!v.ok && v.identity_unknown) {
+    if (row.status === "sending") requeue(id, v.error ?? "profil connecté illisible");
+    db.prepare(`UPDATE li_accounts SET paused_until = ?, session_error = ? WHERE id = ?`).run(
+      now + L.pauseAfterErrorMin * 60_000,
+      `Profil LinkedIn connecté illisible (${v.error ?? "?"}) — rien n'a été envoyé`,
+      account.id
+    );
+    return true;
+  }
+  if (member && !otherMember) confirmMember(account, member);
+  // Parti d'un autre profil malgré tout (exécutant d'avant la vérification) :
+  // le geste a eu lieu, on le trace, mais le compte s'arrête aussitôt.
+  if (v.ok && otherMember) markWrongAccount(account, member!.slug);
+  const sentBy = member?.slug ?? account.member_slug;
 
   // Annulée pendant l'exécution (le contact a répondu) : on compte le geste
   // s'il a eu lieu (quota), sans rien faire avancer.
   if (row.status !== "sending") {
-    if (ok) db.prepare(`INSERT INTO li_log (type, sent_at, li_account_id) VALUES (?, ?, ?)`).run(row.type, now, account.id);
+    if (v.ok) db.prepare(`INSERT INTO li_log (type, sent_at, li_account_id) VALUES (?, ?, ?)`).run(row.type, now, account.id);
     return true;
   }
 
-  if (retry && !ok) {
+  if (v.retry && !v.ok) {
+    if (now - row.created_at > L.messageRetryMaxDays * DAY_MS) {
+      // Invitation jamais acceptée : la séquence s'arrête, sans échec ni pause.
+      db.prepare(`UPDATE li_actions SET status = 'cancelled', lease_at = NULL, error = ? WHERE id = ?`).run(
+        `invitation non acceptée après ${L.messageRetryMaxDays} j`,
+        id
+      );
+      db.prepare(`UPDATE campaign_contacts SET status = 'completed', next_send_at = NULL, error = ? WHERE id = ? AND status = 'awaiting_li'`).run(
+        `Invitation LinkedIn non acceptée après ${L.messageRetryMaxDays} j`,
+        row.campaign_contact_id
+      );
+      return true;
+    }
     // Invitation pas encore acceptée : on retentera le message plus tard, sans punir.
     db.prepare(`UPDATE li_actions SET status = 'pending', lease_at = NULL, not_before = ?, error = ? WHERE id = ?`).run(
       now + L.messageRetryHours * 3600 * 1000,
-      error ?? "en attente d'acceptation",
+      v.error ?? "en attente d'acceptation",
       id
     );
     return true;
   }
 
-  if (ok) {
-    db.prepare(`UPDATE li_actions SET status = 'sent', sent_at = ?, lease_at = NULL, error = ? WHERE id = ?`).run(now, error ?? null, id);
+  if (v.ok) {
+    db.prepare(`UPDATE li_actions SET status = 'sent', sent_at = ?, lease_at = NULL, error = ?, member_slug = ? WHERE id = ?`).run(
+      now,
+      v.error ?? null,
+      sentBy,
+      id
+    );
     db.prepare(`INSERT INTO li_log (type, sent_at, li_account_id) VALUES (?, ?, ?)`).run(row.type, now, account.id);
     db.prepare(`UPDATE li_accounts SET next_allowed_at = ? WHERE id = ?`).run(
       Math.round(now + rand(L.minGapSec, L.maxGapSec) * 1000),
@@ -613,7 +786,7 @@ export function recordResult(account: LiAccount, id: number, ok: boolean, error?
     return true;
   }
 
-  const msg = error ?? "échec";
+  const msg = v.error ?? "échec";
   db.prepare(`UPDATE li_actions SET status = 'failed', lease_at = NULL, error = ? WHERE id = ?`).run(msg, id);
   db.prepare(`UPDATE campaign_contacts SET status = 'failed', error = ?, next_send_at = NULL WHERE id = ?`).run(
     `LinkedIn (${account.name}) : ${msg}`,
@@ -624,6 +797,19 @@ export function recordResult(account: LiAccount, id: number, ok: boolean, error?
   } else if (!NOT_FOUND.test(msg)) {
     db.prepare(`UPDATE li_accounts SET paused_until = ? WHERE id = ?`).run(now + L.pauseAfterErrorMin * 60_000, account.id);
   }
+  return true;
+}
+
+/**
+ * Identité jointe à une lecture de messagerie : autre profil → compte arrêté
+ * et lecture ignorée (ce ne sont pas ses conversations). Rend false dans ce cas.
+ */
+export function checkInboxMember(account: LiAccount, member: LiMember | null, wrongAccount: boolean): boolean {
+  if (wrongAccount || (member && account.member_slug && member.slug !== account.member_slug)) {
+    markWrongAccount(account, member?.slug ?? null);
+    return false;
+  }
+  if (member) confirmMember(account, member);
   return true;
 }
 
@@ -646,6 +832,16 @@ export function accountStatus(a: LiAccount) {
   return {
     id: a.id,
     name: a.name,
+    owner_ref: a.owner_ref,
+    member: a.member_slug
+      ? {
+          slug: a.member_slug,
+          name: a.member_name,
+          avatar: a.member_avatar,
+          url: `https://www.linkedin.com/in/${a.member_slug}`,
+          checked_at: a.member_checked_at,
+        }
+      : null,
     enabled: enabled && Boolean(a.active),
     active: Boolean(a.active),
     mode: a.mode,

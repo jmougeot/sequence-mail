@@ -127,11 +127,14 @@ async function loadLi() {
     const who = a.mode === "server" ? "navigateur serveur" : "extension";
     const sess = a.mode !== "server" ? ""
       : a.session.state === "ok" ? `<div class="ok">session ✓ (${timeAgo(a.session.updated_at)})</div>`
+      : a.session.state === "wrong_account" ? `<div class="err" title="${esc(a.session.error)}">mauvais profil LinkedIn connecté — rien envoyé ; session du bon compte à renvoyer</div>`
       : a.session.state ? `<div class="err" title="${esc(a.session.error)}">session ${a.session.state === "expired" ? "expirée" : "bloquée (contrôle de sécurité)"} — à renvoyer depuis l'extension</div>`
       : `<div class="err">session à envoyer depuis l'extension</div>`;
     const proxy = a.mode !== "server" ? "" : `<div><input value="" placeholder="${a.has_proxy ? "proxy configuré ✓ (remplacer…)" : "⚠️ proxy http://user:mdp@hôte:port"}" style="width:220px" onchange="patchLi(${a.id}, {proxy: this.value})"></div>`;
     return `<tr>
-      <td><input value="${esc(a.name)}" style="width:130px" onchange="patchLi(${a.id}, {name: this.value})"></td>
+      <td><input value="${esc(a.name)}" style="width:130px" onchange="patchLi(${a.id}, {name: this.value})">
+        ${a.member ? `<div><a href="${esc(a.member.url)}" target="_blank" rel="noopener" title="Profil vérifié avant chaque action">✓ ${esc(a.member.name || a.member.slug)}</a></div>` : `<div class="muted">profil pas encore vérifié</div>`}
+        ${a.owner_ref ? `<div class="muted" title="Compte d'un utilisateur Azerit : ses campagnes seulement">client ${esc(a.owner_ref)}</div>` : ""}</td>
       <td><select onchange="patchLi(${a.id}, {mode: this.value})">
           <option value="extension" ${a.mode === "extension" ? "selected" : ""}>Extension Chrome</option>
           <option value="server" ${a.mode === "server" ? "selected" : ""}>Navigateur serveur</option></select>

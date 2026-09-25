@@ -10,17 +10,23 @@
  *
  * Côté tableau de bord : /status (tous comptes) et /accounts (création, jeton,
  * mode, proxy, quotas, activation).
+ *
+ * Chaque verdict et chaque lecture de messagerie porte le profil LinkedIn lu
+ * dans la page (`member`) : c'est ce qui garantit, côté serveur, que l'action
+ * est partie du bon compte (cf. outreach.ts, recordResult).
  */
 import type express from "express";
 import { processInbox, type LiConversation } from "./li-inbox.js";
 import {
   accountStatus,
+  checkInboxMember,
   createAccount,
   deleteAccount,
   getAccount,
   isRunner,
   nextAction,
   outreachStatus,
+  parseMember,
   pauseForCheckpoint,
   recordResult,
   resolveAccount,
@@ -98,16 +104,32 @@ export function registerOutreachRoutes(app: express.Express): void {
     const b = req.body as Record<string, unknown>;
     const id = Number(b.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: "id manquant" });
-    const ok = recordResult(c.account, id, Boolean(b.ok), typeof b.error === "string" ? b.error : undefined, Boolean(b.retry));
+    const ok = recordResult(c.account, id, {
+      ok: Boolean(b.ok),
+      error: typeof b.error === "string" ? b.error.slice(0, 500) : undefined,
+      retry: Boolean(b.retry),
+      member: parseMember(b.member),
+      wrong_account: Boolean(b.wrong_account),
+      identity_unknown: Boolean(b.identity_unknown),
+    });
     if (!ok) return res.status(404).json({ error: "Action inconnue pour ce compte" });
     res.json({ ok: true });
   });
 
-  // Messagerie lue (action sync_inbox) : { ok, conversations?: [...], error? }
+  // Messagerie lue (action sync_inbox) : { ok, conversations?: [...], error?, member?, wrong_account? }
   app.post("/api/li/inbox", (req, res) => {
     const c = caller(req, res);
     if (!c) return;
-    const b = req.body as { ok?: boolean; conversations?: LiConversation[]; error?: string };
+    const b = req.body as {
+      ok?: boolean;
+      conversations?: LiConversation[];
+      error?: string;
+      member?: unknown;
+      wrong_account?: boolean;
+    };
+    if (!checkInboxMember(c.account, parseMember(b.member), Boolean(b.wrong_account))) {
+      return res.json({ ok: true, processed: false, wrong_account: true });
+    }
     if (!b.ok || !Array.isArray(b.conversations)) {
       // Lecture ratée : pas de pause (ce n'est pas un envoi), sauf contrôle de sécurité.
       if (/contrôle de sécurité|checkpoint|captcha/i.test(b.error ?? "")) pauseForCheckpoint(c.account, b.error!);
@@ -123,9 +145,9 @@ export function registerOutreachRoutes(app: express.Express): void {
     const c = caller(req, res);
     if (!c) return;
     if (c.via !== "extension") return res.status(403).json({ error: "Réservé à l'extension" });
-    const b = req.body as { cookies?: unknown; user_agent?: unknown };
-    const r = storeSession(c.account.id, b.cookies, b.user_agent);
-    if ("error" in r) return res.status(400).json(r);
+    const b = req.body as { cookies?: unknown; user_agent?: unknown; member?: unknown };
+    const r = storeSession(c.account.id, b.cookies, b.user_agent, parseMember(b.member));
+    if ("error" in r) return res.status(r.code === "other_member" ? 409 : 400).json(r);
     res.json({ ok: true, account: accountStatus(getAccount(c.account.id)!) });
   });
 
@@ -160,8 +182,8 @@ export function registerOutreachRoutes(app: express.Express): void {
     if (!c) return;
     if (c.via !== "server") return res.status(403).json({ error: "Réservé au runner" });
     const b = req.body as { state?: string; error?: string };
-    if (b.state !== "ok" && b.state !== "expired" && b.state !== "checkpoint") {
-      return res.status(400).json({ error: "state attendu : ok | expired | checkpoint" });
+    if (b.state !== "ok" && b.state !== "expired" && b.state !== "checkpoint" && b.state !== "wrong_account") {
+      return res.status(400).json({ error: "state attendu : ok | expired | checkpoint | wrong_account" });
     }
     setSessionState(c.account.id, b.state, typeof b.error === "string" ? b.error.slice(0, 500) : undefined);
     console.warn(`[linkedin] session ${b.state} pour « ${c.account.name} »${b.error ? ` : ${b.error}` : ""}`);

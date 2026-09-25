@@ -6,10 +6,19 @@
  * le content script, puis renvoie le verdict au serveur.
  *
  * Sécurité : une seule action à la fois, et toute erreur remontée déclenche côté
- * serveur une longue pause. On n'insiste jamais.
+ * serveur une longue pause. On n'insiste jamais. Avant chaque action, le content
+ * script vérifie que le profil LinkedIn connecté est celui du compte
+ * (`expect_member`) ; le verdict renvoie ce profil au serveur.
+ *
+ * Pont Azerit : sur app.azerit.tech, la page demande (via azerit-bridge.js) de
+ * relier le LinkedIn de ce navigateur au compte Azerit connecté ; on capture la
+ * session et le profil, et on les remet à Azerit avec le code d'appairage
+ * fourni par la page.
  */
 const DEFAULT_SERVER = "https://sequence.example.com"; // prod partagée Sequence Mail (réglable dans le popup — ex. http://localhost:3000 en local)
 const ALARM = "li-tick";
+// Origines de l'app Azerit autorisées à demander la remise de session.
+const AZERIT_ORIGIN = /^(https:\/\/app\.azerit\.tech|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)$/;
 
 let busy = false; // garde-fou : jamais deux actions en parallèle
 
@@ -80,7 +89,13 @@ async function tick() {
       await fetch(`${SERVER}/api/li/inbox`, {
         method: "POST",
         headers: { "content-type": "application/json", ...auth },
-        body: JSON.stringify({ ok: r.ok, conversations: r.data && r.data.conversations, error: r.error }),
+        body: JSON.stringify({
+          ok: r.ok,
+          conversations: r.data && r.data.conversations,
+          error: r.error,
+          member: r.member,
+          wrong_account: r.wrong_account,
+        }),
       });
       await setStatus(r.ok ? { kind: "ok", text: "Messagerie lue" } : { kind: "err", text: `Messagerie : ${r.error || "illisible"}` });
     } else if (res.action) {
@@ -89,7 +104,15 @@ async function tick() {
       await fetch(`${SERVER}/api/li/result`, {
         method: "POST",
         headers: { "content-type": "application/json", ...auth },
-        body: JSON.stringify({ id: res.action.id, ok: verdict.ok, error: verdict.error, retry: verdict.retry }),
+        body: JSON.stringify({
+          id: res.action.id,
+          ok: verdict.ok,
+          error: verdict.error,
+          retry: verdict.retry,
+          member: verdict.member,
+          wrong_account: verdict.wrong_account,
+          identity_unknown: verdict.identity_unknown,
+        }),
       });
       await setStatus(
         verdict.ok
@@ -108,11 +131,13 @@ async function tick() {
   }
 }
 
-/** Onglet LinkedIn à réutiliser (sinon on en crée un en arrière-plan). */
+/** Onglet LinkedIn à réutiliser (sinon on en crée un en arrière-plan, chargé). */
 async function ensureTab() {
   const tabs = await chrome.tabs.query({ url: "https://www.linkedin.com/*" });
   if (tabs.length) return tabs[0];
-  return chrome.tabs.create({ url: "https://www.linkedin.com/feed/", active: false });
+  const tab = await chrome.tabs.create({ url: "https://www.linkedin.com/feed/", active: false });
+  await waitForLoad(tab.id);
+  return tab;
 }
 
 /** Attend que l'onglet ait fini de charger l'URL demandée. */
@@ -168,7 +193,10 @@ async function runInbox(action) {
     await chrome.tabs.update(tab.id, { url: "https://www.linkedin.com/messaging/" });
     await waitForLoad(tab.id);
     await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500));
-    return await sendToTab(tab.id, { type: "li-action", action: { type: "list_conversations", limit: action.limit || 40 } });
+    return await sendToTab(tab.id, {
+      type: "li-action",
+      action: { type: "list_conversations", limit: action.limit || 40, expect_member: action.expect_member ?? null },
+    });
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }
@@ -183,3 +211,75 @@ function profileUrl(url) {
     return url;
   }
 }
+
+// --- Remise de session (popup « Confier au serveur », app Azerit) ------------
+
+const SAME_SITE = { no_restriction: "None", lax: "Lax", strict: "Strict" };
+
+/**
+ * Session LinkedIn de ce navigateur (cookies linkedin.com + user-agent) et
+ * profil réellement connecté, lu dans un onglet LinkedIn.
+ */
+async function captureLinkedIn() {
+  const cookies = (await chrome.cookies.getAll({ domain: "linkedin.com" })).map((c) => ({
+    name: c.name,
+    value: c.value,
+    domain: c.domain,
+    path: c.path,
+    expires: c.expirationDate,
+    httpOnly: c.httpOnly,
+    secure: c.secure,
+    sameSite: SAME_SITE[c.sameSite],
+  }));
+  if (!cookies.some((c) => c.name === "li_at")) {
+    return { ok: false, error: "Vous n'êtes pas connecté à LinkedIn dans ce navigateur : connectez-vous sur linkedin.com puis réessayez." };
+  }
+  try {
+    const tab = await ensureTab();
+    const me = await sendToTab(tab.id, { type: "li-action", action: { type: "whoami" } }, 10);
+    if (!me.ok) return { ok: false, error: `Profil LinkedIn connecté illisible : ${me.error}` };
+    return { ok: true, cookies, user_agent: navigator.userAgent, member: me.data };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+/** Remet la session à Azerit, authentifiée par le code d'appairage de la page. */
+async function connectToAzerit(origin, code, replace) {
+  const cap = await captureLinkedIn();
+  if (!cap.ok) return cap;
+  let r;
+  try {
+    r = await fetch(`${origin}/api/linkedin/session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code, replace: Boolean(replace), cookies: cap.cookies, user_agent: cap.user_agent, member: cap.member }),
+    });
+  } catch {
+    return { ok: false, error: `Azerit injoignable (${origin})` };
+  }
+  const d = await r.json().catch(() => ({}));
+  if (r.ok) return { ok: true, account: d.account || null };
+  // FastAPI range l'erreur dans `detail` (texte, ou objet { error, code, current, got })
+  const detail = typeof d.detail === "object" && d.detail ? d.detail : { error: d.detail || d.error };
+  return { ok: false, status: r.status, ...detail, error: detail.error || `HTTP ${r.status}` };
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || typeof msg !== "object") return;
+  if (msg.type === "capture-linkedin" && sender.id === chrome.runtime.id && !sender.tab) {
+    captureLinkedIn().then(sendResponse); // popup de l'extension
+    return true;
+  }
+  if (msg.type === "azerit-connect") {
+    // L'origine vient de Chrome (onglet émetteur), jamais du message lui-même.
+    let origin = sender.origin;
+    if (!origin && sender.url) origin = new URL(sender.url).origin;
+    if (!origin || !AZERIT_ORIGIN.test(origin) || typeof msg.code !== "string") {
+      sendResponse({ ok: false, error: "origine non autorisée" });
+      return;
+    }
+    connectToAzerit(origin, msg.code, msg.replace).then(sendResponse);
+    return true;
+  }
+});

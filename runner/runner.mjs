@@ -17,6 +17,8 @@
  *   - redirection vers la page de connexion → session signalée expirée, le
  *     compte s'arrête jusqu'à ce que la personne renvoie sa session ;
  *   - contrôle de sécurité → signalé, le compte s'arrête (pause longue côté app) ;
+ *   - profil connecté ≠ profil du compte (content.js le relit avant chaque
+ *     action) → rien n'est envoyé, l'app arrête le compte (« wrong_account ») ;
  *   - navigateurs fermés hors de la plage d'activité (économie de RAM, et un
  *     humain ne reste pas connecté toute la nuit).
  */
@@ -195,19 +197,31 @@ class Worker {
   async perform(action) {
     if (action.type === "sync_inbox") {
       await this.goto("https://www.linkedin.com/messaging/");
-      const r = await this.exec({ type: "list_conversations", limit: action.limit || 40 });
+      const r = await this.exec({ type: "list_conversations", limit: action.limit || 40, expect_member: action.expect_member ?? null });
       const res = await api("POST", "/api/li/inbox", this.acc.id, {
         ok: r.ok,
         conversations: r.data && r.data.conversations,
         error: r.error,
+        member: r.member,
+        wrong_account: r.wrong_account,
       });
+      if (res.wrong_account) throw new SessionLost(`mauvais profil LinkedIn connecté (${r.member && r.member.slug})`);
       log(this.acc, `messagerie lue (${r.ok ? `${res.conversations} conv., ${res.replied?.length ?? 0} réponse(s)` : r.error})`);
       return;
     }
     await this.goto(profileUrl(action.linkedin));
     const r = await this.exec(action);
-    await api("POST", "/api/li/result", this.acc.id, { id: action.id, ok: r.ok, error: r.error, retry: r.retry });
-    log(this.acc, `${action.type} → ${action.linkedin} : ${r.ok ? "ok" : `échec (${r.error})`}`);
+    await api("POST", "/api/li/result", this.acc.id, {
+      id: action.id,
+      ok: r.ok,
+      error: r.error,
+      retry: r.retry,
+      member: r.member,
+      wrong_account: r.wrong_account,
+      identity_unknown: r.identity_unknown,
+    });
+    log(this.acc, `${action.type} → ${action.linkedin} : ${r.ok ? `ok (depuis ${r.member && r.member.slug})` : `échec (${r.error})`}`);
+    if (r.wrong_account) throw new SessionLost(`mauvais profil LinkedIn connecté (${r.member && r.member.slug})`);
   }
 
   async run() {

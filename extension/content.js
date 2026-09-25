@@ -851,6 +851,74 @@ async function openConversationByName(name) {
   return { ok: true };
 }
 
+// --- Identité : quel profil LinkedIn est connecté dans CETTE page ? ----------
+// C'est le garde-fou « bon compte » : avant toute action servie par Sequence
+// Mail, on relit le profil connecté et on refuse d'agir s'il n'est pas celui
+// attendu. Lecture par l'API interne que la page LinkedIn appelle elle-même au
+// chargement (/voyager/api/me) — aucun clic, rien de visible.
+
+/** Slug canonique (« jean-dupont-123 ») : décodé, en minuscules. */
+function normSlug(s) {
+  let out = String(s || "").trim();
+  try {
+    out = decodeURIComponent(out);
+  } catch {
+    // slug mal encodé : gardé tel quel
+  }
+  return out.replace(/\/+$/, "").toLowerCase();
+}
+
+/** Premier objet (profondeur limitée) qui porte un publicIdentifier. */
+function findMiniProfile(node, depth = 0) {
+  if (!node || typeof node !== "object" || depth > 6) return null;
+  if (typeof node.publicIdentifier === "string" && node.publicIdentifier) return node;
+  for (const v of Array.isArray(node) ? node : Object.values(node)) {
+    const hit = findMiniProfile(v, depth + 1);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** URL de photo (≈200 px) d'une VectorImage LinkedIn, sinon null. */
+function pictureUrl(profile) {
+  const find = (node, depth = 0) => {
+    if (!node || typeof node !== "object" || depth > 4) return null;
+    if (typeof node.rootUrl === "string" && Array.isArray(node.artifacts)) return node;
+    for (const v of Object.values(node)) {
+      const hit = find(v, depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const img = find(profile.picture || profile.profilePicture);
+  if (!img || !img.artifacts.length) return null;
+  const art = [...img.artifacts].sort((a, b) => Math.abs((a.width || 0) - 200) - Math.abs((b.width || 0) - 200))[0];
+  return art && art.fileIdentifyingUrlPathSegment ? img.rootUrl + art.fileIdentifyingUrlPathSegment : null;
+}
+
+async function doWhoami() {
+  const m = document.cookie.match(/(?:^|;\s*)JSESSIONID="?([^";]+)"?/);
+  if (!m) return { ok: false, error: "cookie JSESSIONID absent — pas connecté à LinkedIn ?" };
+  let r;
+  try {
+    r = await fetch(`${location.origin}/voyager/api/me`, {
+      credentials: "include",
+      headers: {
+        "csrf-token": m[1],
+        accept: "application/vnd.linkedin.normalized+json+2.1",
+        "x-restli-protocol-version": "2.0.0",
+      },
+    });
+  } catch (e) {
+    return { ok: false, error: `lecture du profil connecté impossible (${e && e.message ? e.message : e})` };
+  }
+  if (!r.ok) return { ok: false, error: `lecture du profil connecté impossible (HTTP ${r.status})` };
+  const p = findMiniProfile(await r.json().catch(() => null));
+  if (!p) return { ok: false, error: "profil connecté introuvable dans la réponse LinkedIn" };
+  const name = [p.firstName, p.lastName].filter((x) => typeof x === "string" && x).join(" ") || null;
+  return { ok: true, data: { slug: normSlug(p.publicIdentifier), name, avatar: pictureUrl(p) } };
+}
+
 // Garde anti-doublon : le background peut ré-injecter content.js si le script du
 // manifest tarde (onglet endormi) — on ne doit jamais enregistrer deux listeners,
 // sinon chaque action serait exécutée deux fois (double envoi !).
@@ -870,34 +938,60 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendResponse({ ok: false, error: "contrôle de sécurité LinkedIn détecté — pause" });
           return;
         }
+        if (action.type === "whoami") {
+          sendResponse(await doWhoami());
+          return;
+        }
+        // Action servie par Sequence Mail (elle porte `expect_member`) : on ne
+        // joue rien tant que le profil connecté n'est pas vérifié. Autre profil
+        // → refus ; profil illisible → refus aussi (dans le doute, on n'envoie pas).
+        let member = null;
+        if ("expect_member" in action) {
+          const me = await doWhoami();
+          if (!me.ok) {
+            sendResponse({ ok: false, identity_unknown: true, error: me.error });
+            return;
+          }
+          member = me.data;
+          if (action.expect_member && normSlug(action.expect_member) !== member.slug) {
+            sendResponse({
+              ok: false,
+              wrong_account: true,
+              member,
+              error: `connecté à LinkedIn en tant que « ${member.slug} » au lieu de « ${normSlug(action.expect_member)} » — rien envoyé`,
+            });
+            return;
+          }
+        }
+        const respond = (r) => sendResponse(member ? { ...r, member } : r);
         // Page 404 (profil supprimé, URL erronée) sur une action qui a navigué
         // vers une URL précise : échec IMMÉDIAT, sans attendre les timeouts de
         // sélecteurs (~20 s) — et sans pause punitive côté serveur.
         if ((action.type === "view_profile" || action.linkedin || action.thread) && pageNotFound()) {
-          sendResponse({ ok: false, error: NOT_FOUND_ERROR });
+          respond({ ok: false, error: NOT_FOUND_ERROR });
           return;
         }
         // Mode « conversation ouverte » (le plus fiable) : on agit directement
         // dans le fil affiché, sans navigation ni clic sur la liste.
         if (action.open && (action.type === "message" || action.type === "read_messages")) {
           if (!/\/messaging\//.test(location.href)) {
-            sendResponse({ ok: false, error: "aucune conversation ouverte à l'écran (ouvre la conversation LinkedIn voulue d'abord)" });
+            respond({ ok: false, error: "aucune conversation ouverte à l'écran (ouvre la conversation LinkedIn voulue d'abord)" });
             return;
           }
           const r = action.type === "read_messages"
             ? await doReadMessages(action.limit, true)
             : await doMessage(action.body, true);
-          sendResponse(r);
+          respond(r);
           return;
         }
         // Ciblage par NOM (secondaire) : on ouvre la conversation puis on agit dans le fil.
         if (action.conv_name && (action.type === "message" || action.type === "read_messages")) {
           const opened = await openConversationByName(action.conv_name);
-          if (!opened.ok) { sendResponse(opened); return; }
+          if (!opened.ok) { respond(opened); return; }
           const r = action.type === "read_messages"
             ? await doReadMessages(action.limit, true)
             : await doMessage(action.body, true);
-          sendResponse(r);
+          respond(r);
           return;
         }
         const inThread = !!action.thread; // action ciblant un fil (/messaging/thread/...)
@@ -907,7 +1001,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           : action.type === "list_conversations" ? await doListConversations(action.limit)
           : action.type === "view_profile" ? await doViewProfile()
           : await doInvite(action.body);
-        sendResponse(r);
+        respond(r);
       } catch (e) {
         sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
       }

@@ -1,21 +1,45 @@
 {
   "manifest_version": 3,
-  "name": "Prospection LinkedIn — Sequence Mail",
-  "version": "0.3.0",
-  "description": "Exécute en douceur, dans votre propre session LinkedIn, les invitations/messages mis en file par l'app Sequence Mail. La cadence (quotas, horaires, délais) est imposée par le serveur local.",
-  "permissions": ["storage", "alarms", "tabs", "scripting", "cookies"],
+  "name": "Azerit — LinkedIn",
+  "version": "0.4.0",
+  "description": "Relie votre LinkedIn à Azerit / Sequence Mail. Les invitations et messages partent de VOTRE profil, vérifié avant chaque action, au rythme imposé par le serveur (quotas, horaires, délais).",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting",
+    "cookies"
+  ],
   "host_permissions": [
     "https://www.linkedin.com/*",
+    "https://app.azerit.tech/*",
     "https://sequence.example.com/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
   ],
-  "background": { "service_worker": "background.js" },
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
-      "matches": ["https://www.linkedin.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://www.linkedin.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://app.azerit.tech/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "azerit-bridge.js"
+      ],
+      "run_at": "document_start"
     }
   ],
   "action": {

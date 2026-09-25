@@ -347,3 +347,30 @@ if ((db.pragma("user_version", { simple: true }) as number) < 5) {
   db.pragma("user_version = 5");
 }
 db.exec("CREATE INDEX IF NOT EXISTS idx_contacts_linkedin ON contacts (linkedin)");
+
+// Plusieurs clients (Azerit) : chaque compte LinkedIn et chaque campagne
+// appartiennent à un propriétaire (owner_ref, ex. « azerit:u:12 » ; NULL = le
+// tableau de bord Sequence Mail). Une campagne n'est servie qu'aux comptes du
+// même propriétaire (outreach.ts), quel que soit le reste de la configuration.
+// external_ref : clé de la campagne chez le client (ex. le poste Azerit).
+addColumnIfMissing("li_accounts", "owner_ref", "owner_ref TEXT");
+addColumnIfMissing("campaigns", "owner_ref", "owner_ref TEXT");
+addColumnIfMissing("campaigns", "external_ref", "external_ref TEXT");
+db.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_external ON campaigns (owner_ref, external_ref) WHERE external_ref IS NOT NULL"
+);
+db.exec("CREATE INDEX IF NOT EXISTS idx_li_accounts_owner ON li_accounts (owner_ref)");
+// Identité LinkedIn du compte (profil /in/<slug> réellement connecté), relevée
+// à la remise de session puis revérifiée par l'exécutant avant chaque action :
+// un message ne part jamais d'un autre profil que celui-ci.
+addColumnIfMissing("li_accounts", "member_slug", "member_slug TEXT");
+addColumnIfMissing("li_accounts", "member_name", "member_name TEXT");
+addColumnIfMissing("li_accounts", "member_avatar", "member_avatar TEXT");
+addColumnIfMissing("li_accounts", "member_checked_at", "member_checked_at INTEGER");
+// Profil qui a effectivement joué l'action (trace « envoyé depuis … »).
+addColumnIfMissing("li_actions", "member_slug", "member_slug TEXT");
+// Variables propres à une inscription (message rédigé pour CE candidat sur CE
+// poste) : prioritaires sur contacts.extra, partagé entre toutes les campagnes.
+addColumnIfMissing("campaign_contacts", "vars", "vars TEXT");
+// Clé du candidat chez le client (lead Azerit) : statuts renvoyés par cette clé.
+addColumnIfMissing("campaign_contacts", "external_key", "external_key TEXT");

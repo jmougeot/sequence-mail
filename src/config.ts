@@ -59,6 +59,8 @@ export const config = {
     pauseAfterErrorMin: int("LI_PAUSE_AFTER_ERROR_MIN", 60),
     // Report quand un message vise un contact pas encore connecté (invitation non acceptée)
     messageRetryHours: int("LI_MESSAGE_RETRY_HOURS", 12),
+    // …pendant au plus N jours après la mise en file : au-delà, invitation ignorée, séquence close.
+    messageRetryMaxDays: int("LI_MESSAGE_RETRY_MAX_DAYS", 21),
     // Contrôle de sécurité / captcha LinkedIn : pause longue du compte concerné
     checkpointPauseMin: int("LI_CHECKPOINT_PAUSE_MIN", 24 * 60),
     // Lecture de la messagerie (détection des réponses LinkedIn) : au plus une
@@ -70,6 +72,9 @@ export const config = {
     // Secret partagé avec le service runner (navigateurs serveur), réseau interne.
     runnerSecret: process.env.LI_RUNNER_SECRET ?? "",
   },
+  // Clé de l'API de service (/api/svc) appelée par Azerit sur le réseau interne
+  // du VPS. Vide = API désactivée.
+  serviceApiKey: process.env.SERVICE_API_KEY ?? "",
 };
 
 export function googleRedirectUri(): string {

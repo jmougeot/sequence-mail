@@ -7,6 +7,8 @@ import { importContacts, parseCsv, renderTemplate } from "./services/contacts.js
 import { syncFromAttio } from "./services/attio.js";
 import { effectiveDailyLimit } from "./services/scheduler.js";
 import { registerOutreachRoutes } from "./services/outreach-routes.js";
+import { registerServiceRoutes } from "./services/service-routes.js";
+import { cancelLinkedInActions } from "./services/outreach.js";
 import { registerVisitRoutes } from "./services/visits.js";
 import { registerUnsubscribeRoutes } from "./services/unsubscribe.js";
 import { normalizeLinkedin } from "./services/linkedin-url.js";
@@ -22,6 +24,9 @@ export function createServer(): express.Express {
 
   // --- Étapes LinkedIn (consommées par l'extension Chrome) ---
   registerOutreachRoutes(app);
+
+  // --- API de service (Azerit, réseau interne) ---
+  registerServiceRoutes(app);
 
   // --- Lien personnalisé {{link}} + suivi des visites ---
   registerVisitRoutes(app);
@@ -367,12 +372,16 @@ export function createServer(): express.Express {
       return res.status(400).json({ error: "ids[] est requis" });
     }
     const placeholders = ids.map(() => "?").join(",");
-    const { changes } = db
-      .prepare(
-        `UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL
-         WHERE id IN (${placeholders}) AND campaign_id = ? AND status IN ('held', 'pending', 'in_progress')`
-      )
-      .run(...ids, Number(req.params.id));
+    const changes = db.transaction(() => {
+      const { changes } = db
+        .prepare(
+          `UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL
+           WHERE id IN (${placeholders}) AND campaign_id = ? AND status IN ('held', 'pending', 'in_progress', 'awaiting_li')`
+        )
+        .run(...ids, Number(req.params.id));
+      for (const id of ids) cancelLinkedInActions("campaign_contact_id = ?", id, "arrêté manuellement");
+      return changes;
+    })();
     res.json({ ok: true, stopped: changes });
   });
 

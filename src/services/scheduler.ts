@@ -486,7 +486,10 @@ export async function sendTick(): Promise<void> {
       `SELECT cc.id AS cc_id, cc.campaign_id, cc.contact_id, cc.status, cc.current_step,
               cc.account_id, cc.thread_id, cc.last_gmail_message_id, cc.variant,
               cp.account_ids AS campaign_account_ids,
-              c.email, c.first_name, c.last_name, c.company, c.linkedin, c.extra, c.attio_record_id
+              c.email, c.first_name, c.last_name, c.company, c.linkedin, c.attio_record_id,
+              -- variables de l'inscription (message écrit pour ce candidat sur ce poste) prioritaires
+              CASE WHEN cc.vars IS NULL THEN c.extra WHEN c.extra IS NULL THEN cc.vars
+                   ELSE json_patch(c.extra, cc.vars) END AS extra
        FROM campaign_contacts cc
        JOIN contacts c ON c.id = cc.contact_id
        JOIN campaigns cp ON cp.id = cc.campaign_id
