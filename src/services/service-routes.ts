@@ -48,6 +48,9 @@ function ownerOf(req: express.Request): string | null {
   return OWNER.test(owner) ? owner : null;
 }
 
+/** « Léa Martin (in/lea-martin-42) » : le nom seul ne distingue pas deux homonymes. */
+const label = (name: string | null, slug: string) => (name ? `${name} (in/${slug})` : `in/${slug}`);
+
 /** Compte courant d'un propriétaire : le plus récent actif, sinon le plus récent. */
 function ownerAccount(owner: string): LiAccount | undefined {
   const row = db
@@ -154,7 +157,7 @@ export function registerServiceRoutes(app: express.Express): void {
       if (!b.replace) {
         return res.status(409).json({
           code: "other_member",
-          error: `Ce navigateur est connecté à LinkedIn en tant que « ${member.name ?? member.slug} », pas « ${account.member_name ?? account.member_slug} » (votre compte relié).`,
+          error: `Ce navigateur est connecté à LinkedIn en tant que « ${label(member.name, member.slug)} », pas « ${label(account.member_name, account.member_slug!)} » (votre compte relié).`,
           current: accountStatus(account).member,
           got: member,
         });
@@ -309,6 +312,35 @@ export function registerServiceRoutes(app: express.Express): void {
       campaign: { id: campaign.id, status: campaign.status, steps },
       contacts: contacts.map((c) => ({ ...c, actions: byCc.get(c.cc_id) ?? [] })),
     });
+  });
+
+  /**
+   * État de toute la campagne : 'paused' (poste clos : plus rien ne part, rien
+   * n'est perdu), 'active' (reprise), 'stopped' (poste supprimé : chaque
+   * candidat encore en cours est arrêté, actions en file annulées).
+   */
+  app.post("/api/svc/campaigns/:id/status", (req, res) => {
+    const campaign = ownedCampaign(req.params.id, ownerOf(req)!);
+    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    const status = (req.body as { status?: unknown }).status;
+    if (status !== "active" && status !== "paused" && status !== "stopped") {
+      return res.status(400).json({ error: "status attendu : active | paused | stopped" });
+    }
+    db.transaction(() => {
+      db.prepare("UPDATE campaigns SET status = ? WHERE id = ?").run(status === "active" ? "active" : "paused", campaign.id);
+      if (status === "stopped") {
+        db.prepare(
+          `UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL
+           WHERE campaign_id = ? AND status IN ('held', 'pending', 'in_progress', 'awaiting_li')`
+        ).run(campaign.id);
+        cancelLinkedInActions(
+          "campaign_contact_id IN (SELECT id FROM campaign_contacts WHERE campaign_id = ?)",
+          campaign.id,
+          "poste supprimé dans Azerit"
+        );
+      }
+    })();
+    res.json({ ok: true, status });
   });
 
   /** Arrête la séquence de candidats (clés Azerit) : plus rien ne part, actions en file annulées. */
