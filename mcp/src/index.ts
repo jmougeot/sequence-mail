@@ -184,7 +184,7 @@ server.registerTool(
   {
     title: "État du canal LinkedIn",
     description:
-      "État de l'automatisation LinkedIn (pilotée par l'extension Chrome) : activée ou non, compteurs du jour, prochaine action en file.",
+      "État de l'automatisation LinkedIn, multi-comptes : interrupteur général, totaux du jour, file, et détail par compte LinkedIn (accounts : id, nom, extension connectée, quotas du jour, pause de sécurité, contacts attachés).",
     inputSchema: {},
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
@@ -209,6 +209,11 @@ server.registerTool(
         .min(1)
         .optional()
         .describe("Comptes d'envoi autorisés (ids de list_accounts). Omis = tous les comptes, y compris les futurs."),
+      li_account_ids: z
+        .array(z.number().int())
+        .min(1)
+        .optional()
+        .describe("Comptes LinkedIn autorisés (ids de linkedin_status → accounts). Omis = tous les comptes LinkedIn."),
     },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   },
@@ -229,13 +234,36 @@ server.registerTool(
         .union([z.array(z.number().int()).min(1), z.null()])
         .optional()
         .describe("Comptes d'envoi autorisés (ids de list_accounts). null = tous les comptes ; omis = sélection inchangée."),
+      li_account_ids: z
+        .union([z.array(z.number().int()).min(1), z.null()])
+        .optional()
+        .describe(
+          "Comptes LinkedIn autorisés (ids de linkedin_status → accounts). null = tous ; omis = inchangé. Un contact déjà abordé reste à son compte."
+        ),
     },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   },
   handler(
-    ({ campaign_id, name, steps, account_ids }: { campaign_id: number; name: string; steps: unknown; account_ids?: number[] | null }) =>
+    ({
+      campaign_id,
+      name,
+      steps,
+      account_ids,
+      li_account_ids,
+    }: {
+      campaign_id: number;
+      name: string;
+      steps: unknown;
+      account_ids?: number[] | null;
+      li_account_ids?: number[] | null;
+    }) =>
       api("PUT", `/api/campaigns/${campaign_id}`, {
-        json: account_ids === undefined ? { name, steps } : { name, steps, account_ids },
+        json: {
+          name,
+          steps,
+          ...(account_ids === undefined ? {} : { account_ids }),
+          ...(li_account_ids === undefined ? {} : { li_account_ids }),
+        },
       })
   )
 );
@@ -433,7 +461,7 @@ server.registerTool(
   {
     title: "Activer/désactiver le canal LinkedIn",
     description:
-      "Active ou met en pause l'automatisation LinkedIn (invitations/messages via l'extension Chrome). Renvoie le nouvel état.",
+      "Active ou met en pause l'automatisation LinkedIn de TOUS les comptes (interrupteur général). Renvoie le nouvel état.",
     inputSchema: { enabled: z.boolean().describe("true pour activer, false pour mettre en pause.") },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },

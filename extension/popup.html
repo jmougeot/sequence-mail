@@ -21,6 +21,7 @@
 </head>
 <body>
   <h1>Prospection LinkedIn</h1>
+  <div class="muted" id="account" style="margin:-6px 0 6px;font-size:12px"></div>
   <div class="row">
     <span><span class="dot" id="dot"></span><span id="statusText" class="muted">…</span></span>
     <button id="toggle">…</button>
@@ -32,6 +33,11 @@
     <div class="line">
       <input id="server" placeholder="https://sequence.example.com">
       <button id="saveServer">OK</button>
+    </div>
+    <label for="liToken" style="margin-top:10px">Jeton du compte LinkedIn (Réglages de l'app)</label>
+    <div class="line">
+      <input id="liToken" type="password" placeholder="li_…">
+      <button id="saveToken">OK</button>
     </div>
     <label for="authPass" style="margin-top:10px">Mot de passe d'accès (prod protégée)</label>
     <div class="line">

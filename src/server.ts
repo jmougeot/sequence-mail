@@ -105,10 +105,10 @@ export function createServer(): express.Express {
    * Normalise la sélection de comptes d'envoi d'une campagne.
    * null / undefined = tous les comptes (défaut) ; sinon liste d'ids non vide.
    */
-  function normalizeAccountIds(ids: unknown): { value: string | null } | { error: string } {
+  function normalizeAccountIds(ids: unknown, field = "account_ids"): { value: string | null } | { error: string } {
     if (ids == null) return { value: null };
     if (!Array.isArray(ids) || !ids.every((x) => Number.isInteger(x))) {
-      return { error: "account_ids doit être une liste d'identifiants de comptes" };
+      return { error: `${field} doit être une liste d'identifiants de comptes` };
     }
     if (!ids.length) return { error: "Sélectionnez au moins un compte d'envoi" };
     return { value: JSON.stringify([...new Set(ids as number[])]) };
@@ -136,19 +136,22 @@ export function createServer(): express.Express {
   }
 
   app.post("/api/campaigns", (req, res) => {
-    const { name, steps, account_ids } = req.body as {
+    const { name, steps, account_ids, li_account_ids } = req.body as {
       name: string;
       steps: StepInput[];
       account_ids?: number[] | null;
+      li_account_ids?: number[] | null;
     };
     const err = validateSteps(name, steps);
     if (err) return res.status(400).json({ error: err });
     const senders = normalizeAccountIds(account_ids);
     if ("error" in senders) return res.status(400).json({ error: senders.error });
+    const liSenders = normalizeAccountIds(li_account_ids, "li_account_ids");
+    if ("error" in liSenders) return res.status(400).json({ error: liSenders.error });
     const result = db.transaction(() => {
       const { lastInsertRowid } = db
-        .prepare("INSERT INTO campaigns (name, status, account_ids) VALUES (?, 'paused', ?)")
-        .run(name, senders.value);
+        .prepare("INSERT INTO campaigns (name, status, account_ids, li_account_ids) VALUES (?, 'paused', ?, ?)")
+        .run(name, senders.value, liSenders.value);
       insertSteps(lastInsertRowid, steps);
       return lastInsertRowid;
     })();
@@ -210,16 +213,21 @@ export function createServer(): express.Express {
   // Détail d'une campagne avec ses étapes (pour l'édition)
   app.get("/api/campaigns/:id", (req, res) => {
     const campaign = db
-      .prepare("SELECT id, name, status, account_ids FROM campaigns WHERE id = ?")
-      .get(req.params.id) as { account_ids: string | null } | undefined;
+      .prepare("SELECT id, name, status, account_ids, li_account_ids FROM campaigns WHERE id = ?")
+      .get(req.params.id) as { account_ids: string | null; li_account_ids: string | null } | undefined;
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
     const steps = db
       .prepare(
         "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action FROM steps WHERE campaign_id = ? ORDER BY step_number"
       )
       .all(req.params.id);
-    // account_ids : null = tous les comptes, sinon liste d'ids (JSON en base)
-    res.json({ ...campaign, account_ids: campaign.account_ids ? JSON.parse(campaign.account_ids) : null, steps });
+    // account_ids / li_account_ids : null = tous les comptes, sinon liste d'ids (JSON en base)
+    res.json({
+      ...campaign,
+      account_ids: campaign.account_ids ? JSON.parse(campaign.account_ids) : null,
+      li_account_ids: campaign.li_account_ids ? JSON.parse(campaign.li_account_ids) : null,
+      steps,
+    });
   });
 
   // Modification d'une campagne, y compris en cours : les étapes sont remplacées.
@@ -229,20 +237,27 @@ export function createServer(): express.Express {
   app.put("/api/campaigns/:id", (req, res) => {
     const exists = db.prepare("SELECT id FROM campaigns WHERE id = ?").get(req.params.id);
     if (!exists) return res.status(404).json({ error: "Campagne introuvable" });
-    const { name, steps, account_ids } = req.body as {
+    const { name, steps, account_ids, li_account_ids } = req.body as {
       name: string;
       steps: StepInput[];
       account_ids?: number[] | null;
+      li_account_ids?: number[] | null;
     };
     const err = validateSteps(name, steps);
     if (err) return res.status(400).json({ error: err });
     // account_ids absent du body = sélection inchangée ; null = tous les comptes
     const senders = "account_ids" in req.body ? normalizeAccountIds(account_ids) : null;
     if (senders && "error" in senders) return res.status(400).json({ error: senders.error });
+    const liSenders = "li_account_ids" in req.body ? normalizeAccountIds(li_account_ids, "li_account_ids") : null;
+    if (liSenders && "error" in liSenders) return res.status(400).json({ error: liSenders.error });
     db.transaction(() => {
       db.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run(name, req.params.id);
       if (senders) {
         db.prepare("UPDATE campaigns SET account_ids = ? WHERE id = ?").run(senders.value, req.params.id);
+      }
+      // Ne touche que les contacts pas encore attachés : un contact engagé reste à son compte.
+      if (liSenders) {
+        db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(liSenders.value, req.params.id);
       }
       db.prepare("DELETE FROM steps WHERE campaign_id = ?").run(req.params.id);
       insertSteps(Number(req.params.id), steps);

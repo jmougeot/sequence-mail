@@ -7,11 +7,15 @@ async function getServer() {
   return (server || DEFAULT_SERVER).replace(/\/+$/, "");
 }
 
-// En-tête d'auth pour la prod protégée par mot de passe (vide en local).
+// En-têtes d'auth : mot de passe de la prod + jeton du compte LinkedIn.
 async function authHeaders() {
-  const { authUser, authPass } = await chrome.storage.local.get(["authUser", "authPass"]);
-  if (!authPass) return {};
-  return { Authorization: "Basic " + btoa(`${authUser || "admin"}:${authPass}`) };
+  const { authUser, authPass, liToken } = await chrome.storage.local.get(["authUser", "authPass", "liToken"]);
+  const h = {};
+  if (authPass) h.Authorization = "Basic " + btoa(`${authUser || "admin"}:${authPass}`);
+  // Jeton du compte LinkedIn de ce navigateur (Réglages de l'app) : quotas et
+  // contacts propres à ce compte. Sans jeton, le serveur sert le compte principal.
+  if (liToken) h["X-LI-Account"] = liToken;
+  return h;
 }
 
 async function refresh() {
@@ -36,15 +40,22 @@ async function refresh() {
     document.getElementById("authPass").value = authPass || "";
   }
 
-  // Quotas du jour, lus côté serveur
+  const { liToken } = await chrome.storage.local.get("liToken");
+  if (document.activeElement !== document.getElementById("liToken")) {
+    document.getElementById("liToken").value = liToken || "";
+  }
+
+  // Quotas du jour de ce compte, lus côté serveur
   try {
     const r = await fetch(`${SERVER}/api/li/status`, { headers: await authHeaders() });
-    if (r.status === 401) {
+    const st = await r.json().catch(() => ({}));
+    if (!r.ok) {
       document.getElementById("stat").innerHTML = "";
-      document.getElementById("sub").textContent = "Accès refusé (401) — mot de passe d'accès manquant ou incorrect.";
+      document.getElementById("sub").textContent =
+        st.error || `Accès refusé (${r.status}) — mot de passe d'accès manquant ou incorrect.`;
       return;
     }
-    const st = await r.json();
+    document.getElementById("account").textContent = st.name ? `Compte : ${st.name}` : "";
     document.getElementById("stat").innerHTML =
       `<div><b>${st.today.invite.sent}/${st.today.invite.cap}</b>invitations</div>` +
       `<div><b>${st.today.message.sent}/${st.today.message.cap}</b>messages</div>` +
@@ -77,6 +88,12 @@ document.getElementById("saveAuth").addEventListener("click", async () => {
     authUser: document.getElementById("authUser").value.trim() || "admin",
     authPass: document.getElementById("authPass").value,
   });
+  refresh();
+});
+
+// Enregistre le jeton du compte LinkedIn (Réglages de l'app → Comptes LinkedIn)
+document.getElementById("saveToken").addEventListener("click", async () => {
+  await chrome.storage.local.set({ liToken: document.getElementById("liToken").value.trim() });
   refresh();
 });
 

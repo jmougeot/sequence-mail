@@ -24,11 +24,22 @@
 
   <div class="card">
     <div class="inline" style="justify-content:space-between;margin-bottom:12px">
-      <h2 style="margin:0">Prospection LinkedIn (extension)</h2>
+      <h2 style="margin:0">Comptes LinkedIn</h2>
       <button id="liToggle" class="ghost" hidden onclick="toggleLi()"></button>
     </div>
     <div id="liStatus"></div>
-    <p class="muted" id="liHint" style="margin-bottom:0"></p>
+    <table id="liAccounts" style="margin-top:12px">
+      <thead><tr><th>Compte</th><th>Extension</th><th>Invitations</th><th>Messages</th><th>En file</th><th>Contacts</th><th>Plafonds / jour</th><th>Actif</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="inline" style="gap:8px;margin-top:12px">
+      <input id="liNewName" placeholder="Nom du compte (ex : Jacques)" style="width:220px">
+      <button onclick="addLiAccount()">+ Ajouter un compte LinkedIn</button>
+    </div>
+    <div id="liToken" class="card" hidden style="margin-top:12px;background:var(--hover)"></div>
+    <p class="muted" style="margin-bottom:0">Chaque compte LinkedIn a son extension Chrome (dossier <code>extension/</code>), dans le Chrome où ce compte est connecté.
+    Collez le <b>jeton</b> du compte dans le popup de l'extension. Quotas, délais et pauses sont propres à chaque compte ; un contact reste au compte qui l'a abordé en premier (un message ne part que d'un compte connecté au destinataire).
+    Plafonds vides = valeurs par défaut du serveur ; le warm-up les atteint progressivement.</p>
   </div>
 
   <div class="card">
@@ -84,36 +95,86 @@ async function loadSettings() {
   $("#settings tbody").innerHTML = rows.map(([k, v]) => `<tr><th style="width:280px">${k}</th><td>${v}</td></tr>`).join("");
 }
 
-// --- Connexion LinkedIn (extension Chrome) ---
+// --- Comptes LinkedIn (une extension Chrome par compte) ---
 async function loadLi() {
   let s;
   try { s = await api("/api/li/status"); }
   catch { $("#liStatus").innerHTML = `<span class="muted">Statut indisponible.</span>`; return; }
 
-  const color = s.connected ? "var(--ok)" : "var(--bad)";
-  const label = s.connected ? "Extension connectée" : "Extension non détectée";
-  const seen = s.last_seen_at ? `vue ${timeAgo(s.last_seen_at)}` : "jamais vue";
-
+  const online = s.accounts.filter(a => a.connected).length;
   $("#liStatus").innerHTML = `
-    <div class="inline" style="gap:8px;margin-bottom:12px">
-      <span style="width:10px;height:10px;border-radius:50%;background:${color};display:inline-block"></span>
-      <b>${label}</b>
-      <span class="muted">· ${seen}${s.connected && !s.enabled ? " · en pause" : ""}</span>
-    </div>
     <div class="stat-grid" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr))">
+      <div class="stat-card"><div class="sv">${online} / ${s.accounts.length}</div><div class="sl">Comptes connectés</div></div>
       <div class="stat-card"><div class="sv">${s.today.invite.sent} / ${s.today.invite.cap}</div><div class="sl">Invitations aujourd'hui</div></div>
       <div class="stat-card"><div class="sv">${s.today.message.sent} / ${s.today.message.cap}</div><div class="sl">Messages aujourd'hui</div></div>
-      <div class="stat-card"><div class="sv">${s.queue.pending}</div><div class="sl">Actions en file</div></div>
+      <div class="stat-card"><div class="sv">${s.queue.pending}</div><div class="sl">Actions en file${s.queue.unassigned ? ` (${s.queue.unassigned} non attribuées)` : ""}</div></div>
       <div class="stat-card"><div class="sv">${s.queue.failed}</div><div class="sl">Échecs</div></div>
     </div>`;
 
   const btn = $("#liToggle");
-  btn.hidden = false;
-  btn.textContent = s.enabled ? "⏸ Mettre en pause" : "▶ Activer";
+  btn.hidden = !s.accounts.length;
+  btn.textContent = s.enabled ? "⏸ Tout mettre en pause" : "▶ Tout réactiver";
 
-  $("#liHint").textContent = s.connected
-    ? "L'extension interroge le serveur et joue les invitations/messages des étapes LinkedIn de vos campagnes."
-    : "Installez l'extension Chrome (dossier extension/) et restez connecté à LinkedIn dans Chrome. Vérifiez qu'elle pointe bien vers ce serveur.";
+  // Ne pas réécrire le tableau pendant une saisie
+  if (document.activeElement && $("#liAccounts").contains(document.activeElement)) return;
+  $("#liAccounts tbody").innerHTML = s.accounts.map(a => {
+    const dot = a.connected ? "var(--ok)" : "var(--bad)";
+    const state = a.paused_until ? `<div class="err">pause jusqu'à ${new Date(a.paused_until).toLocaleTimeString("fr-FR", {hour:"2-digit", minute:"2-digit"})}</div>` : "";
+    return `<tr>
+      <td><input value="${esc(a.name)}" style="width:130px" onchange="patchLi(${a.id}, {name: this.value})"></td>
+      <td><span style="width:9px;height:9px;border-radius:50%;background:${dot};display:inline-block"></span>
+        <span class="muted">${a.last_seen_at ? timeAgo(a.last_seen_at) : "jamais vue"}</span>${state}</td>
+      <td>${a.today.invite.sent} / ${a.today.invite.cap}</td>
+      <td>${a.today.message.sent} / ${a.today.message.cap}</td>
+      <td>${a.queue.pending}${a.queue.failed ? ` <span class="err">· ${a.queue.failed} échec(s)</span>` : ""}</td>
+      <td>${a.contacts}</td>
+      <td><input type="number" min="0" value="${a.invites_per_day}" title="Invitations / jour" style="width:56px" onchange="patchLi(${a.id}, {invites_per_day: this.value})">
+          <input type="number" min="0" value="${a.messages_per_day}" title="Messages / jour" style="width:56px" onchange="patchLi(${a.id}, {messages_per_day: this.value})"></td>
+      <td><input type="checkbox" ${a.active ? "checked" : ""} onchange="patchLi(${a.id}, {active: this.checked})"></td>
+      <td style="white-space:nowrap"><button class="ghost" onclick="rotateLi(${a.id})" title="Générer un nouveau jeton (l'ancien cesse de fonctionner)">Jeton</button>
+          <button class="danger" onclick="deleteLi(${a.id})" title="Supprimer (seulement si le compte n'a encore rien fait)">✕</button></td>
+    </tr>`;
+  }).join("") || '<tr><td colspan="9" class="muted">Aucun compte LinkedIn — ajoutez-en un ci-dessous.</td></tr>';
+}
+
+const jsonPost = (method, body) => ({ method, headers: {"Content-Type":"application/json"}, body: JSON.stringify(body ?? {}) });
+
+function showToken(name, token) {
+  const box = $("#liToken");
+  box.hidden = false;
+  box.innerHTML = `<b>Jeton du compte « ${esc(name)} »</b> — copiez-le maintenant, il ne sera plus affiché :
+    <div class="inline" style="gap:8px;margin-top:8px"><code style="user-select:all;word-break:break-all">${esc(token)}</code>
+    <button class="ghost" onclick="navigator.clipboard.writeText('${esc(token)}')">Copier</button>
+    <button class="ghost" onclick="$('#liToken').hidden = true">Fermer</button></div>
+    <div class="muted" style="margin-top:6px">À coller dans le popup de l'extension Chrome de ce compte (champ « Jeton du compte LinkedIn »).</div>`;
+}
+
+async function addLiAccount() {
+  const name = $("#liNewName").value.trim();
+  if (!name) return $("#liNewName").focus();
+  const a = await api("/api/li/accounts", jsonPost("POST", { name }));
+  $("#liNewName").value = "";
+  showToken(a.name, a.token);
+  loadLi();
+}
+
+async function patchLi(id, patch) {
+  await api(`/api/li/accounts/${id}`, jsonPost("PATCH", patch));
+  loadLi();
+}
+
+async function rotateLi(id) {
+  if (!confirm("Générer un nouveau jeton ? L'extension qui utilise l'ancien sera refusée jusqu'à ce que vous y colliez le nouveau.")) return;
+  const r = await api(`/api/li/accounts/${id}/token`, jsonPost("POST"));
+  const a = (await api("/api/li/accounts")).find(x => x.id === id);
+  showToken(a ? a.name : `#${id}`, r.token);
+}
+
+async function deleteLi(id) {
+  if (!confirm("Supprimer ce compte LinkedIn ?")) return;
+  try { await api(`/api/li/accounts/${id}`, { method: "DELETE" }); }
+  catch (e) { alert(e.message || e); }
+  loadLi();
 }
 
 function timeAgo(ts) {

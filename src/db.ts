@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -233,4 +234,54 @@ if ((db.pragma("user_version", { simple: true }) as number) < 2) {
 if ((db.pragma("user_version", { simple: true }) as number) < 3) {
   reclassifyAllVisits();
   db.pragma("user_version = 3");
+}
+
+// Plusieurs comptes LinkedIn : chacun a sa propre session (extension Chrome ou
+// navigateur serveur), identifiée par un jeton, et ses propres quotas, délais et
+// pauses. Un contact reste attaché au compte qui l'a abordé en premier : un
+// message LinkedIn ne peut partir que d'un compte connecté au destinataire.
+db.exec(`
+CREATE TABLE IF NOT EXISTS li_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,       -- sha256 du jeton envoyé par l'extension (en-tête X-LI-Account)
+  active INTEGER NOT NULL DEFAULT 1,
+  invites_per_day INTEGER,               -- NULL = LI_INVITES_PER_DAY
+  messages_per_day INTEGER,              -- NULL = LI_MESSAGES_PER_DAY
+  warmup_started_at INTEGER,             -- départ du warm-up ; NULL = première action journalisée
+  next_allowed_at INTEGER,               -- délai aléatoire entre deux actions
+  paused_until INTEGER,                  -- pause de sécurité après un échec
+  last_seen_at INTEGER,                  -- dernier appel de l'extension (« connecté »)
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+`);
+addColumnIfMissing("li_actions", "li_account_id", "li_account_id INTEGER REFERENCES li_accounts(id)");
+addColumnIfMissing("li_log", "li_account_id", "li_account_id INTEGER REFERENCES li_accounts(id)");
+addColumnIfMissing("campaign_contacts", "li_account_id", "li_account_id INTEGER REFERENCES li_accounts(id)");
+// Comptes LinkedIn autorisés pour la campagne : JSON [ids] ; NULL = tous.
+addColumnIfMissing("campaigns", "li_account_ids", "li_account_ids TEXT");
+db.exec("CREATE INDEX IF NOT EXISTS idx_li_actions_account ON li_actions (li_account_id, status)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_li_log_account ON li_log (li_account_id, sent_at)");
+
+// v4 : l'historique LinkedIn d'avant le multi-comptes appartient à un compte
+// « principal », qui sert aussi l'extension déjà installée (sans jeton).
+if ((db.pragma("user_version", { simple: true }) as number) < 4) {
+  db.transaction(() => {
+    const hasHistory = db.prepare("SELECT 1 FROM li_actions UNION SELECT 1 FROM li_log LIMIT 1").get();
+    const hasAccount = db.prepare("SELECT 1 FROM li_accounts LIMIT 1").get();
+    if (hasHistory && !hasAccount) {
+      const hash = createHash("sha256").update(randomBytes(24)).digest("hex");
+      const first = db.prepare("SELECT MIN(sent_at) AS t FROM li_log").get() as { t: number | null };
+      const { lastInsertRowid: id } = db
+        .prepare("INSERT INTO li_accounts (name, token_hash, warmup_started_at) VALUES ('Compte principal', ?, ?)")
+        .run(hash, first.t);
+      db.prepare("UPDATE li_actions SET li_account_id = ? WHERE li_account_id IS NULL").run(id);
+      db.prepare("UPDATE li_log SET li_account_id = ? WHERE li_account_id IS NULL").run(id);
+      db.prepare(
+        `UPDATE campaign_contacts SET li_account_id = ?
+         WHERE li_account_id IS NULL AND id IN (SELECT campaign_contact_id FROM li_actions)`
+      ).run(id);
+    }
+    db.pragma("user_version = 4");
+  })();
 }

@@ -20,13 +20,17 @@ async function getServer() {
 }
 
 /**
- * En-tête d'authentification pour la prod protégée par mot de passe (Caddy
- * basic_auth). Réglé depuis le popup ; vide en local (pas de mot de passe).
+ * En-têtes d'authentification : mot de passe de la prod (Caddy basic_auth) et
+ * jeton du compte LinkedIn. Réglés depuis le popup.
  */
 async function authHeaders() {
-  const { authUser, authPass } = await chrome.storage.local.get(["authUser", "authPass"]);
-  if (!authPass) return {};
-  return { Authorization: "Basic " + btoa(`${authUser || "admin"}:${authPass}`) };
+  const { authUser, authPass, liToken } = await chrome.storage.local.get(["authUser", "authPass", "liToken"]);
+  const h = {};
+  if (authPass) h.Authorization = "Basic " + btoa(`${authUser || "admin"}:${authPass}`);
+  // Jeton du compte LinkedIn de ce navigateur (Réglages de l'app) : quotas et
+  // contacts propres à ce compte. Sans jeton, le serveur sert le compte principal.
+  if (liToken) h["X-LI-Account"] = liToken;
+  return h;
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -60,17 +64,22 @@ async function tick() {
     const auth = await authHeaders();
     const r = await fetch(`${SERVER}/api/li/next`, { headers: auth });
     if (r.status === 401) {
-      await setStatus({ kind: "err", text: "Accès refusé (401) — renseignez le mot de passe d'accès dans le popup." });
+      const { error } = await r.json().catch(() => ({}));
+      await setStatus({ kind: "err", text: error || "Accès refusé (401) — renseignez le mot de passe d'accès dans le popup." });
       return; // le finally remet busy = false
     }
     const res = await r.json();
+    if (res.error) {
+      await setStatus({ kind: "err", text: res.error });
+      return;
+    }
     if (res.action) {
       await setStatus({ kind: "run", text: `${res.action.type === "invite" ? "Invitation" : "Message"} en cours…` });
       const verdict = await runAction(res.action);
       await fetch(`${SERVER}/api/li/result`, {
         method: "POST",
         headers: { "content-type": "application/json", ...auth },
-        body: JSON.stringify({ id: res.action.id, ok: verdict.ok, error: verdict.error }),
+        body: JSON.stringify({ id: res.action.id, ok: verdict.ok, error: verdict.error, retry: verdict.retry }),
       });
       await setStatus(
         verdict.ok
