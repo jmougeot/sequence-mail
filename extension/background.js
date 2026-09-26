@@ -52,6 +52,19 @@ chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === ALARM) tick();
 });
 
+/**
+ * Ce navigateur exécute-t-il des actions pour Sequence Mail ? La prod est
+ * derrière un mot de passe (Caddy) : sans mot de passe d'accès ni autre serveur
+ * choisi, aucune requête ne peut aboutir. C'est le cas d'un utilisateur
+ * d'Azerit : l'extension ne sert qu'à relier son LinkedIn (les navigateurs
+ * serveur envoient à sa place), elle n'interroge donc rien.
+ */
+async function isExecutor() {
+  const { server, authPass } = await chrome.storage.local.get(["server", "authPass"]);
+  const custom = Boolean(server) && server.replace(/\/+$/, "") !== DEFAULT_SERVER;
+  return Boolean(authPass) || custom;
+}
+
 async function getEnabled() {
   const { enabled } = await chrome.storage.local.get("enabled");
   return enabled !== false; // activé par défaut
@@ -65,6 +78,10 @@ async function tick() {
   if (busy) return;
   if (!(await getEnabled())) {
     await setStatus({ kind: "off", text: "Extension en pause" });
+    return;
+  }
+  if (!(await isExecutor())) {
+    await setStatus({ kind: "idle", text: "Relié à Azerit — rien à exécuter dans ce navigateur" });
     return;
   }
   busy = true;

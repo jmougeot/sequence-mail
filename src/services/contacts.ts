@@ -2,6 +2,7 @@ import { parse } from "csv-parse/sync";
 import { resolveMx } from "node:dns/promises";
 import { db } from "../db.js";
 import { normalizeLinkedin } from "./linkedin-url.js";
+import { isOptedOut } from "./opt-out.js";
 
 const KNOWN_COLUMNS = new Set(["email", "first_name", "last_name", "company", "linkedin"]);
 
@@ -11,7 +12,8 @@ export interface ImportReport {
   skipped: number;
   errors: string[];
   // Sur demande (source.withIds) : contact retenu pour chaque ligne, dans
-  // l'ordre des lignes (null = ligne ignorée ou contact désinscrit).
+  // l'ordre des lignes (null = ligne ignorée ou contact désinscrit auprès du
+  // propriétaire de la campagne).
   contact_ids?: Array<number | null>;
 }
 
@@ -83,7 +85,9 @@ export async function importContacts(
       attio_record_id = COALESCE(@attio_record_id, attio_record_id)
     WHERE id = @id
   `);
-  const getContact = db.prepare("SELECT id, do_not_contact FROM contacts WHERE id = ?");
+  // Désinscription propre au propriétaire de la campagne (cf. opt-out.ts)
+  const owner = (db.prepare("SELECT owner_ref FROM campaigns WHERE id = ?").get(campaignId) as { owner_ref: string | null } | undefined)
+    ?.owner_ref ?? null;
   const enroll = db.prepare(`
     INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, status)
     VALUES (?, ?, 'held')
@@ -134,8 +138,7 @@ export async function importContacts(
       } else {
         id = Number(insert.run(fields).lastInsertRowid);
       }
-      const { do_not_contact } = getContact.get(id) as { id: number; do_not_contact: number };
-      if (do_not_contact) {
+      if (isOptedOut(id, owner)) {
         report.skipped++; // désinscrit : ne jamais le réinscrire
         continue;
       }

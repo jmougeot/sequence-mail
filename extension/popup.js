@@ -18,7 +18,22 @@ async function authHeaders() {
   return h;
 }
 
+// Même règle que background.js : sans mot de passe d'accès ni autre serveur,
+// ce navigateur n'exécute rien (utilisateur d'Azerit) — vue « Azerit » seule,
+// réglages d'exécutant derrière « Advanced settings ».
+let showAdvanced = false;
+async function isExecutor() {
+  const { server, authPass } = await chrome.storage.local.get(["server", "authPass"]);
+  const custom = Boolean(server) && server.replace(/\/+$/, "") !== DEFAULT_SERVER;
+  return Boolean(authPass) || custom;
+}
+
 async function refresh() {
+  const operator = showAdvanced || (await isExecutor());
+  document.getElementById("bridge").hidden = operator;
+  document.getElementById("operator").hidden = !operator;
+  if (!operator) return; // rien à interroger
+
   const SERVER = await getServer();
   const { enabled, lastStatus } = await chrome.storage.local.get(["enabled", "lastStatus"]);
   if (document.activeElement !== document.getElementById("server")) {
@@ -68,6 +83,11 @@ async function refresh() {
     document.getElementById("sub").textContent = `App Sequence Mail injoignable (${SERVER}).`;
   }
 }
+
+document.getElementById("showAdvanced").addEventListener("click", () => {
+  showAdvanced = true;
+  refresh();
+});
 
 document.getElementById("toggle").addEventListener("click", async () => {
   const { enabled } = await chrome.storage.local.get("enabled");

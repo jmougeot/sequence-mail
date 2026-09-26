@@ -761,7 +761,7 @@ async function setStatusSelected(sel) {
   const ids = $$("#contacts .contactChk:checked").map(c => +c.dataset.id);
   if (!ids.length) return;
   const warn =
-    status === "opted_out" ? "\n\n⚠️ Ils seront aussi ajoutés à la liste globale do_not_contact (plus jamais contactés, toutes campagnes)." :
+    status === "opted_out" ? "\n\n⚠️ Ils seront aussi désinscrits auprès du propriétaire de cette campagne (plus jamais contactés dans ses campagnes)." :
     status === "pending" ? "\n\nIls repartiront au prochain créneau d'envoi si la campagne est active." :
     status === "in_progress" ? "\n\nLa séquence reprendra à leur prochaine étape dès le prochain créneau d'envoi." : "";
   if (!confirm(`Passer ${ids.length} contact(s) au statut « ${STATUS_LABELS[status]} » ?${warn}`)) return;

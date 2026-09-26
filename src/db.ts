@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS contacts (
   linkedin TEXT,                         -- URL du profil LinkedIn (pour les étapes LinkedIn)
   extra TEXT,                            -- JSON : colonnes CSV supplémentaires
   attio_record_id TEXT,
-  do_not_contact INTEGER NOT NULL DEFAULT 0, -- désinscrit : exclu de toutes les campagnes
+  do_not_contact INTEGER NOT NULL DEFAULT 0, -- désinscrit du tableau de bord (campagnes sans propriétaire ; clients : owner_opt_outs)
   created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
 );
 
@@ -374,3 +374,15 @@ addColumnIfMissing("li_actions", "member_slug", "member_slug TEXT");
 addColumnIfMissing("campaign_contacts", "vars", "vars TEXT");
 // Clé du candidat chez le client (lead Azerit) : statuts renvoyés par cette clé.
 addColumnIfMissing("campaign_contacts", "external_key", "external_key TEXT");
+// Désinscriptions auprès d'un client (owner_ref) : un refus exprimé sur la
+// campagne d'un client ne vaut que pour lui (cf. services/opt-out.ts). Le
+// tableau de bord (owner_ref NULL) garde contacts.do_not_contact.
+db.exec(`
+CREATE TABLE IF NOT EXISTS owner_opt_outs (
+  owner_ref TEXT NOT NULL,
+  contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+  reason TEXT,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+  PRIMARY KEY (owner_ref, contact_id)
+);
+`);

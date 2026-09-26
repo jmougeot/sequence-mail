@@ -9,6 +9,7 @@ import { effectiveDailyLimit } from "./services/scheduler.js";
 import { registerOutreachRoutes } from "./services/outreach-routes.js";
 import { registerServiceRoutes } from "./services/service-routes.js";
 import { cancelLinkedInActions } from "./services/outreach.js";
+import { optOutFromCampaignOf } from "./services/opt-out.js";
 import { registerVisitRoutes } from "./services/visits.js";
 import { registerUnsubscribeRoutes } from "./services/unsubscribe.js";
 import { normalizeLinkedin } from "./services/linkedin-url.js";
@@ -406,11 +407,12 @@ export function createServer(): express.Express {
         )
         .run(status, status, Date.now(), ...ids, Number(req.params.id));
       if (status === "opted_out") {
-        // Cohérence avec la détection automatique : désinscrit = plus jamais contacté
-        db.prepare(
-          `UPDATE contacts SET do_not_contact = 1
-           WHERE id IN (SELECT contact_id FROM campaign_contacts WHERE id IN (${placeholders}))`
-        ).run(...ids);
+        // Cohérence avec la détection automatique : désinscrit auprès du
+        // propriétaire de la campagne, ses autres séquences chez lui arrêtées
+        const own = db
+          .prepare(`SELECT id FROM campaign_contacts WHERE id IN (${placeholders}) AND campaign_id = ?`)
+          .all(...ids, Number(req.params.id)) as Array<{ id: number }>;
+        for (const { id } of own) optOutFromCampaignOf(id, "marqué désinscrit à la main");
       }
       return changes;
     })();

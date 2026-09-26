@@ -4,6 +4,7 @@ import { pushSequenceStatus } from "./attio.js";
 import { renderTemplate } from "./contacts.js";
 import { getForeignMessages, sendEmail, type AccountRow, type ForeignMessage } from "./google.js";
 import { cancelLinkedInActions, enqueueStep } from "./outreach.js";
+import { NOT_OPTED_OUT, optOutFromCampaignOf } from "./opt-out.js";
 import { visitLink } from "./visits.js";
 import { unsubLink } from "./unsubscribe.js";
 
@@ -476,31 +477,49 @@ async function processOne(row: DueRow): Promise<void> {
   }
 }
 
-/** Un tick d'envoi : traite quelques contacts dus, dans la fenêtre autorisée. */
+// Contacts dont l'étape suivante est due (campagne active, contact pas désinscrit
+// auprès du propriétaire de la campagne).
+const DUE_SELECT = `
+  SELECT cc.id AS cc_id, cc.campaign_id, cc.contact_id, cc.status, cc.current_step,
+         cc.account_id, cc.thread_id, cc.last_gmail_message_id, cc.variant,
+         cp.account_ids AS campaign_account_ids,
+         c.email, c.first_name, c.last_name, c.company, c.linkedin, c.attio_record_id,
+         -- variables de l'inscription (message écrit pour ce candidat sur ce poste) prioritaires
+         CASE WHEN cc.vars IS NULL THEN c.extra WHEN c.extra IS NULL THEN cc.vars
+              ELSE json_patch(c.extra, cc.vars) END AS extra
+  FROM campaign_contacts cc
+  JOIN contacts c ON c.id = cc.contact_id
+  JOIN campaigns cp ON cp.id = cc.campaign_id
+  WHERE cp.status = 'active'
+    AND ${NOT_OPTED_OUT}
+    AND cc.status IN ('pending', 'in_progress')
+    AND (cc.next_send_at IS NULL OR cc.next_send_at <= @now)`;
+
+const NEXT_IS_LINKEDIN = `EXISTS (SELECT 1 FROM steps s
+  WHERE s.campaign_id = cc.campaign_id AND s.step_number = cc.current_step + 1 AND s.channel = 'linkedin')`;
+
+/**
+ * Un tick d'envoi. Deux files séparées, pour qu'aucune ne bloque l'autre :
+ * - étapes LinkedIn : simple mise en file, à toute heure — plage horaire,
+ *   quotas et rythme LinkedIn s'appliquent quand l'action est servie
+ *   (outreach.ts) ;
+ * - emails : quelques contacts dus, dans la fenêtre d'envoi. Un email en
+ *   attente de quota ou de délai reste en tête de cette file sans retenir
+ *   les candidats LinkedIn.
+ */
 export async function sendTick(): Promise<void> {
   resetDailyCounters();
-  if (!inSendWindow()) return;
+  const now = Date.now();
 
+  const linkedinDue = db
+    .prepare(`${DUE_SELECT} AND ${NEXT_IS_LINKEDIN} ORDER BY COALESCE(cc.next_send_at, 0) ASC, cc.id ASC LIMIT 200`)
+    .all({ now }) as DueRow[];
+  for (const row of linkedinDue) await processOne(row);
+
+  if (!inSendWindow()) return;
   const due = db
-    .prepare(
-      `SELECT cc.id AS cc_id, cc.campaign_id, cc.contact_id, cc.status, cc.current_step,
-              cc.account_id, cc.thread_id, cc.last_gmail_message_id, cc.variant,
-              cp.account_ids AS campaign_account_ids,
-              c.email, c.first_name, c.last_name, c.company, c.linkedin, c.attio_record_id,
-              -- variables de l'inscription (message écrit pour ce candidat sur ce poste) prioritaires
-              CASE WHEN cc.vars IS NULL THEN c.extra WHEN c.extra IS NULL THEN cc.vars
-                   ELSE json_patch(c.extra, cc.vars) END AS extra
-       FROM campaign_contacts cc
-       JOIN contacts c ON c.id = cc.contact_id
-       JOIN campaigns cp ON cp.id = cc.campaign_id
-       WHERE cp.status = 'active'
-         AND c.do_not_contact = 0
-         AND cc.status IN ('pending', 'in_progress')
-         AND (cc.next_send_at IS NULL OR cc.next_send_at <= ?)
-       ORDER BY COALESCE(cc.next_send_at, 0) ASC
-       LIMIT 5`
-    )
-    .all(Date.now()) as DueRow[];
+    .prepare(`${DUE_SELECT} AND NOT ${NEXT_IS_LINKEDIN} ORDER BY COALESCE(cc.next_send_at, 0) ASC LIMIT 5`)
+    .all({ now }) as DueRow[];
 
   for (const row of due) {
     await processOne(row);
@@ -510,9 +529,11 @@ export async function sendTick(): Promise<void> {
 }
 
 /**
- * Retire le contact du workflow (statut terminal) et, si demandé, de toutes les
- * campagnes. Les actions LinkedIn encore en file pour lui sont annulées : une
- * réponse (email ou LinkedIn) arrête tous les canaux.
+ * Retire le contact du workflow (statut terminal) et, si demandé, le désinscrit
+ * auprès du propriétaire de la campagne — ses autres campagnes chez ce même
+ * propriétaire s'arrêtent, celles des autres clients continuent (opt-out.ts).
+ * Les actions LinkedIn encore en file pour lui sont annulées : une réponse
+ * (email ou LinkedIn) arrête tous les canaux.
  */
 export function terminate(
   row: { cc_id: number; contact_id: number; attio_record_id: string | null },
@@ -525,18 +546,7 @@ export function terminate(
       "UPDATE campaign_contacts SET status = ?, replied_at = ?, next_send_at = NULL WHERE id = ?"
     ).run(status, Date.now(), row.cc_id);
     cancelLinkedInActions(`campaign_contact_id = ?`, row.cc_id, `séquence arrêtée (${status})`);
-    if (blacklist) {
-      db.prepare("UPDATE contacts SET do_not_contact = 1 WHERE id = ?").run(row.contact_id);
-      db.prepare(
-        `UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL
-         WHERE contact_id = ? AND status IN ('pending', 'in_progress', 'awaiting_li')`
-      ).run(row.contact_id);
-      cancelLinkedInActions(
-        `campaign_contact_id IN (SELECT id FROM campaign_contacts WHERE contact_id = ?)`,
-        row.contact_id,
-        "contact désinscrit"
-      );
-    }
+    if (blacklist) optOutFromCampaignOf(row.cc_id, status === "bounced" ? "adresse email invalide" : "refus du contact");
   })();
   syncAttio(row.attio_record_id, attioLabel);
 }
@@ -545,7 +555,7 @@ export function terminate(
  * Vérifie les fils en cours et classifie chaque message entrant :
  * - bounce  -> statut 'bounced' + adresse blacklistée (protège la délivrabilité)
  * - réponse automatique (OOO) -> la relance est reportée de ~7 jours, la séquence continue
- * - refus / désinscription    -> 'opted_out' + liste do_not_contact globale
+ * - refus / désinscription    -> 'opted_out' + désinscrit chez le propriétaire de la campagne
  * - vraie réponse             -> 'replied', retiré du workflow
  */
 export async function checkRepliesTick(): Promise<void> {
@@ -617,7 +627,7 @@ export async function checkRepliesTick(): Promise<void> {
           optedOut ? "Pas intéressé / désinscrit 🚫" : "A répondu ✅"
         );
         console.log(
-          `[réponse] ${row.email} ${optedOut ? "s'est désinscrit (do_not_contact)" : "a répondu"} — retiré du workflow`
+          `[réponse] ${row.email} ${optedOut ? "s'est désinscrit" : "a répondu"} — retiré du workflow`
         );
         terminal = true;
         break;

@@ -33,6 +33,10 @@ c'est plus lent mais beaucoup moins détectable.
    l'extension non empaquetée** → choisissez le dossier `Sequence-mail/extension`.
 3. Épinglez l'icône. Le popup montre l'état, les quotas du jour, et un bouton
    pause/activation.
+   Tant qu'aucun mot de passe d'accès ni autre serveur n'est réglé, l'extension
+   n'interroge rien et le popup n'affiche que la vue « Azerit » (c'est ce que
+   voient les utilisateurs d'Azerit, pour qui elle ne sert qu'à relier leur
+   LinkedIn) : ouvrez **Advanced settings** pour les champs ci-dessous.
 4. **Adresse du serveur** (champ en bas du popup) : par défaut l'extension vise la
    prod partagée `https://sequence.example.com`. Pour développer en local, lancez
    `cd Sequence-mail && npm run dev` (sert sur `localhost:3000`) et mettez

@@ -4,12 +4,14 @@
  * Chaque email porte un lien `…/u/<token>` propre au prospect. Gmail/Yahoo
  * appellent ce lien (POST, sans interaction) quand le destinataire utilise leur
  * bouton « Se désabonner » ; un clic humain (GET) aboutit au même résultat. Le
- * contact passe alors en do_not_contact global et ses séquences sont stoppées.
+ * contact est alors désinscrit auprès du propriétaire de la campagne et ses
+ * séquences chez lui sont stoppées (cf. opt-out.ts).
  */
 import crypto from "node:crypto";
 import type { Express } from "express";
 import { config } from "../config.js";
 import { db } from "../db.js";
+import { optOutFromCampaignOf } from "./opt-out.js";
 
 /** Lien de désinscription stable d'un prospect (pour l'en-tête List-Unsubscribe). */
 export function unsubLink(ccId: number): string {
@@ -24,21 +26,13 @@ export function unsubLink(ccId: number): string {
   return `${config.baseUrl}/u/${token}`;
 }
 
-/** Blackliste le contact (do_not_contact) et stoppe ses séquences. */
+/** Désinscrit le contact (chez le propriétaire de la campagne) et stoppe ses séquences. */
 function optOut(token: string): boolean {
-  const cc = db.prepare("SELECT id, contact_id FROM campaign_contacts WHERE unsub_token = ?").get(token) as
-    | { id: number; contact_id: number }
-    | undefined;
+  const cc = db.prepare("SELECT id FROM campaign_contacts WHERE unsub_token = ?").get(token) as { id: number } | undefined;
   if (!cc) return false;
   db.transaction(() => {
-    db.prepare("UPDATE contacts SET do_not_contact = 1 WHERE id = ?").run(cc.contact_id);
-    db.prepare(
-      "UPDATE campaign_contacts SET status = 'opted_out', next_send_at = NULL WHERE id = ?"
-    ).run(cc.id);
-    db.prepare(
-      `UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL
-       WHERE contact_id = ? AND status IN ('pending', 'in_progress')`
-    ).run(cc.contact_id);
+    db.prepare("UPDATE campaign_contacts SET status = 'opted_out', next_send_at = NULL WHERE id = ?").run(cc.id);
+    optOutFromCampaignOf(cc.id, "lien de désinscription");
   })();
   return true;
 }

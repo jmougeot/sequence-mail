@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Azerit — LinkedIn",
-  "version": "0.4.0",
-  "description": "Relie votre LinkedIn à Azerit / Sequence Mail. Les invitations et messages partent de VOTRE profil, vérifié avant chaque action, au rythme imposé par le serveur (quotas, horaires, délais).",
+  "version": "0.4.1",
+  "description": "Relie votre LinkedIn à Azerit. Les invitations et messages partent de VOTRE profil, vérifié avant chaque action, au rythme imposé par le serveur (quotas, horaires, délais).",
   "permissions": [
     "storage",
     "alarms",
@@ -44,6 +44,6 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Prospection LinkedIn"
+    "default_title": "Azerit — LinkedIn"
   }
 }
