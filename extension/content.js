@@ -208,7 +208,24 @@ async function findConnectButton() {
   return btn;
 }
 
-/** Envoie une invitation (avec note optionnelle, tronquée à 200 caractères). */
+// Limite LinkedIn d'une note d'invitation (compte gratuit ; Premium : 300).
+const NOTE_MAX = 200;
+const RE_DISMISS = /^(ignorer|fermer|dismiss|close)\b/i;
+
+/** Ferme la fenêtre affichée (bouton « Ignorer »/« Fermer », sinon Échap). */
+async function dismissDialog() {
+  const btn = [...document.querySelectorAll("button[aria-label]")].find(
+    (b) => b.offsetParent !== null && RE_DISMISS.test(b.getAttribute("aria-label") || "")
+  );
+  if (btn) await clickHuman(btn);
+  else document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+  await human();
+}
+
+/** Envoie une invitation, avec la note si LinkedIn la permet. Une note trop
+ *  longue n'est jamais tronquée, et un compte gratuit à court de notes (LinkedIn
+ *  affiche alors une offre Premium au lieu du champ) n'échoue pas : dans les deux
+ *  cas l'invitation part sans note, et le verdict le dit. */
 async function doInvite(note) {
   // Déjà en relation / invitation déjà partie ? On considère l'action faite (pas d'erreur punitive).
   if (!findClickable(RE_CONNECT) && (findClickable(RE_MESSAGE) || findClickable(/en attente|pending/i))) {
@@ -219,30 +236,144 @@ async function doInvite(note) {
   await clickHuman(connect);
   await human();
 
-  const clean = (note || "").slice(0, 200).trim();
+  let clean = (note || "").trim();
+  let dropped = null; // pourquoi l'invitation part sans la note demandée
+  if (clean.length > NOTE_MAX) {
+    dropped = `note de ${clean.length} caractères, LinkedIn en accepte ${NOTE_MAX}`;
+    clean = "";
+  }
+  let noted = false;
   if (clean) {
     const addNote = await waitFor(() => findClickable(RE_ADD_NOTE), 4000);
-    if (addNote) {
+    if (!addNote) {
+      dropped = "option « Ajouter une note » absente";
+    } else {
       await clickHuman(addNote);
-      const box = await waitFor(
-        () => document.querySelector('textarea[name="message"], #custom-message, textarea#custom-message'),
-        4000
-      );
-      if (!box) return { ok: false, error: "champ de note introuvable" };
-      await typeInto(box, clean);
+      // champ VISIBLE : l'offre Premium peut laisser un formulaire de note masqué dans la page
+      const box = await waitFor(() => {
+        const b = document.querySelector('textarea[name="message"], #custom-message, textarea#custom-message');
+        return b && b.offsetParent !== null ? b : null;
+      }, 4000);
+      if (box) {
+        await typeInto(box, clean);
+        noted = true;
+      } else {
+        dropped = "plus de note personnalisée disponible sur ce compte (offre Premium affichée)";
+        await dismissDialog();
+        // l'offre a pu refermer la fenêtre d'invitation : on la rouvre
+        if (!findClickable(RE_SEND_NO_NOTE)) {
+          const again = await findConnectButton();
+          if (again) {
+            await clickHuman(again);
+            await human();
+          }
+        }
+      }
     }
   }
   // Envoyer (avec ou sans note)
-  const send = await waitFor(() => findClickable(clean ? RE_SEND_NOTE : RE_SEND_NO_NOTE) || findClickable(RE_SEND_NOTE), 5000);
+  const send = await waitFor(() => findClickable(noted ? RE_SEND_NOTE : RE_SEND_NO_NOTE) || findClickable(RE_SEND_NOTE), 5000);
   if (!send) return { ok: false, error: "bouton « Envoyer » de l'invitation introuvable" };
   await clickHuman(send);
   await human();
-  return { ok: true };
+  return dropped ? { ok: true, error: `invitation envoyée sans note — ${dropped}` } : { ok: true };
+}
+
+// --- Garde-fou d'un message servi par Sequence Mail ---------------------------
+// On relit la conversation ouverte juste avant d'écrire : c'est la seule source
+// sûre (la lecture de la messagerie ne passe que toutes les ~20 min, et rate une
+// réponse si l'utilisateur a lui-même répondu entre-temps).
+
+const normWords = (s) =>
+  String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+// Repère d'un message dans le fil : son début, espaces et accents normalisés.
+const textKey = (s) => normWords(s).slice(0, 60);
+
+/** Conversation qui contient l'éditeur (bulle de messagerie ou page /messaging). */
+function threadRoot(editor) {
+  return editor.closest(".msg-overlay-conversation-bubble, .msg-convo-wrapper, .msg-thread, .scaffold-layout__detail") || document;
+}
+
+/** Messages du fil, dans l'ordre : { mine: true | false | null (auteur illisible), text }. */
+function threadMessages(root, meName) {
+  const events = [...root.querySelectorAll(".msg-s-event-listitem")];
+  // LinkedIn marque les messages reçus (--other) ; à défaut, le nom de l'auteur.
+  const marked = events.some((ev) => ev.classList.contains("msg-s-event-listitem--other"));
+  const me = normWords(meName);
+  const out = [];
+  let sender = null; // les messages consécutifs d'un même auteur ne répètent pas son nom
+  for (const ev of events) {
+    const nameEl = ev.querySelector(".msg-s-message-group__name") || ev.closest("li")?.querySelector(".msg-s-message-group__name");
+    if (nameEl) sender = nameEl.textContent.trim();
+    let mine = null;
+    if (marked) mine = !ev.classList.contains("msg-s-event-listitem--other");
+    else if (sender && /^(vous|you)$/i.test(sender)) mine = true;
+    else if (sender && me) mine = normWords(sender).startsWith(me);
+    for (const body of ev.querySelectorAll(".msg-s-event-listitem__body")) {
+      const t = (body.innerText || body.textContent || "").trim();
+      if (t) out.push({ mine, text: t });
+    }
+  }
+  return out;
+}
+
+/**
+ * Décide, dans la conversation ouverte, si le message peut partir. `guard` vient
+ * du serveur : ce que la séquence a déjà envoyé à ce contact (`sent`, dans
+ * l'ordre) et `fresh` (la relation vient de notre invitation). Rend null s'il
+ * faut envoyer, sinon le verdict — et rien n'est écrit :
+ *  - ce texte est déjà dans le fil, de notre main : exécution précédente dont le
+ *    verdict s'est perdu → action faite, pas de doublon ;
+ *  - le contact a écrit depuis notre premier envoi → il a répondu (la séquence
+ *    s'arrête). Sans repère dans le fil : n'importe quel message de lui après
+ *    une relance ou une nouvelle relation, sinon le dernier message du fil ;
+ *  - fil illisible alors qu'on lui a déjà écrit, ou auteurs indéterminés → on
+ *    n'envoie pas, par précaution.
+ */
+async function threadGuard(editor, text, guard, meName) {
+  const sent = (guard.sent || []).filter((s) => s && s.body);
+  const followup = sent.some((s) => s.type === "message");
+  const root = threadRoot(editor);
+  let msgs = threadMessages(root, meName);
+  if (!msgs.length) {
+    // le fil se charge parfois après l'éditeur
+    await waitFor(() => root.querySelector(".msg-s-event-listitem__body"), followup ? 6000 : 2500);
+    msgs = threadMessages(root, meName);
+  }
+  if (!msgs.length) {
+    return followup
+      ? { ok: false, error: "conversation illisible alors qu'un message est déjà parti — rien envoyé par précaution" }
+      : null;
+  }
+  const key = textKey(text);
+  const anchors = new Set(sent.map((s) => textKey(s.body)).filter(Boolean));
+  // Un texte écrit par la séquence est de notre main, quel que soit le nom affiché.
+  for (const m of msgs) if (anchors.has(textKey(m.text)) || textKey(m.text) === key) m.mine = true;
+  if (msgs.some((m) => m.mine && textKey(m.text) === key)) {
+    return { ok: true, error: "déjà présent dans la conversation (exécution précédente) — pas renvoyé" };
+  }
+  const first = msgs.findIndex((m) => anchors.has(textKey(m.text)));
+  const scope = first >= 0 ? msgs.slice(first + 1) : followup || guard.fresh ? msgs : msgs.slice(-1);
+  const theirs = scope.filter((m) => m.mine === false);
+  if (theirs.length) {
+    return {
+      ok: false,
+      replied: true,
+      reply_text: theirs[theirs.length - 1].text.slice(0, 2000),
+      error: "le contact a écrit dans la conversation — message non envoyé",
+    };
+  }
+  if (scope.some((m) => m.mine === null)) {
+    return { ok: false, error: "auteur des messages de la conversation illisible — rien envoyé par précaution" };
+  }
+  return null;
 }
 
 /** Envoie un message. Depuis un profil (le profil doit être une relation) ou,
- *  si inThread, directement dans un fil déjà ouvert (/messaging/thread/...). */
-async function doMessage(text, inThread) {
+ *  si inThread, directement dans un fil déjà ouvert (/messaging/thread/...).
+ *  `guard` (actions servies par Sequence Mail) : conversation relue avant
+ *  d'écrire, cf. threadGuard ; `meName` = profil connecté. */
+async function doMessage(text, inThread, guard, meName) {
   if (!text || !text.trim()) return { ok: false, error: "message vide" };
   if (!inThread) {
     const msgBtn = await waitFor(() => findProfileMessageBtn(), 6000);
@@ -264,6 +395,11 @@ async function doMessage(text, inThread) {
     6000
   );
   if (!editor) return { ok: false, error: "zone de saisie du message introuvable" };
+
+  if (guard) {
+    const stop = await threadGuard(editor, text, guard, meName);
+    if (stop) return stop;
+  }
 
   // Saisie par COLLAGE (méthode principale : plus robuste et plus humaine — un
   // vrai éditeur active le bouton Envoyer sur un paste).
@@ -996,7 +1132,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
         const inThread = !!action.thread; // action ciblant un fil (/messaging/thread/...)
         const r =
-          action.type === "message" ? await doMessage(action.body, inThread)
+          action.type === "message" ? await doMessage(action.body, inThread, action.guard, member && member.name)
           : action.type === "read_messages" ? await doReadMessages(action.limit, inThread)
           : action.type === "list_conversations" ? await doListConversations(action.limit)
           : action.type === "view_profile" ? await doViewProfile()

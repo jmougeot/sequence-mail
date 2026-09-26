@@ -118,18 +118,16 @@ async function tick() {
     } else if (res.action) {
       await setStatus({ kind: "run", text: `${res.action.type === "invite" ? "Invitation" : "Message"} en cours…` });
       const verdict = await runAction(res.action);
-      await fetch(`${SERVER}/api/li/result`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...auth },
-        body: JSON.stringify({
-          id: res.action.id,
-          ok: verdict.ok,
-          error: verdict.error,
-          retry: verdict.retry,
-          member: verdict.member,
-          wrong_account: verdict.wrong_account,
-          identity_unknown: verdict.identity_unknown,
-        }),
+      await postVerdict(`${SERVER}/api/li/result`, auth, {
+        id: res.action.id,
+        ok: verdict.ok,
+        error: verdict.error,
+        retry: verdict.retry,
+        member: verdict.member,
+        wrong_account: verdict.wrong_account,
+        identity_unknown: verdict.identity_unknown,
+        replied: verdict.replied,
+        reply_text: verdict.reply_text,
       });
       await setStatus(
         verdict.ok
@@ -146,6 +144,29 @@ async function tick() {
   } finally {
     busy = false;
   }
+}
+
+/**
+ * Verdict d'une action jouée : perdu, l'action repasserait en file et le
+ * message repartirait. Quelques essais rapprochés (le service worker ne vit pas
+ * longtemps) ; au-delà, content.js retrouve le message dans la conversation
+ * et ne le renvoie pas.
+ */
+async function postVerdict(url, auth, body) {
+  for (const wait of [0, 2000, 5000, 10000]) {
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    try {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...auth },
+        body: JSON.stringify(body),
+      });
+      if (r.ok || (r.status >= 400 && r.status < 500)) return;
+    } catch {
+      // réseau : nouvel essai
+    }
+  }
+  throw new Error("verdict non transmis");
 }
 
 /** Onglet LinkedIn à réutiliser (sinon on en crée un en arrière-plan, chargé). */

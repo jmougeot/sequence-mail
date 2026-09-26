@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Azerit — LinkedIn",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Relie votre LinkedIn à Azerit. Les invitations et messages partent de VOTRE profil, vérifié avant chaque action, au rythme imposé par le serveur (quotas, horaires, délais).",
   "permissions": [
     "storage",

@@ -16,7 +16,7 @@
  * est partie du bon compte (cf. outreach.ts, recordResult).
  */
 import type express from "express";
-import { processInbox, type LiConversation } from "./li-inbox.js";
+import { processInbox, processThreadReply, type LiConversation } from "./li-inbox.js";
 import {
   accountStatus,
   checkInboxMember,
@@ -104,6 +104,12 @@ export function registerOutreachRoutes(app: express.Express): void {
     const b = req.body as Record<string, unknown>;
     const id = Number(b.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: "id manquant" });
+    // Le contact a écrit dans la conversation : l'exécutant n'a rien envoyé.
+    if (b.replied && !b.ok && !b.wrong_account) {
+      const text = typeof b.reply_text === "string" ? b.reply_text.slice(0, 2000) : "";
+      if (!processThreadReply(c.account, id, text)) return res.status(404).json({ error: "Action inconnue pour ce compte" });
+      return res.json({ ok: true, replied: true });
+    }
     const ok = recordResult(c.account, id, {
       ok: Boolean(b.ok),
       error: typeof b.error === "string" ? b.error.slice(0, 500) : undefined,

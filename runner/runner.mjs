@@ -60,6 +60,25 @@ function appHour(win) {
 }
 const inWindow = (win) => appHour(win) >= win.hour_start && appHour(win) < win.hour_end;
 
+/**
+ * Verdict d'une action jouée : il DOIT arriver. Perdu, l'action repasserait en
+ * file à l'expiration du bail et le message repartirait. On réessaie donc
+ * longtemps (~16 min) — ce compte ne reçoit rien d'autre pendant ce temps,
+ * l'action ne peut pas être rejouée ailleurs — sauf refus explicite (4xx).
+ */
+export async function report(path, accountId, body) {
+  const delays = [5, 15, 30, 60, 120, 240, 480];
+  for (let i = 0; ; i++) {
+    try {
+      return await api("POST", path, accountId, body);
+    } catch (e) {
+      if (i >= delays.length || / → 4\d\d\b/.test(e.message)) throw e;
+      console.warn(`[runner] #${accountId} : verdict non transmis (${e.message}) — nouvel essai dans ${delays[i]} s`);
+      await sleep(delays[i] * 1000);
+    }
+  }
+}
+
 function parseProxy(url) {
   if (!url) return undefined;
   const u = new URL(url);
@@ -211,7 +230,7 @@ class Worker {
     }
     await this.goto(profileUrl(action.linkedin));
     const r = await this.exec(action);
-    await api("POST", "/api/li/result", this.acc.id, {
+    await report("/api/li/result", this.acc.id, {
       id: action.id,
       ok: r.ok,
       error: r.error,
@@ -219,6 +238,8 @@ class Worker {
       member: r.member,
       wrong_account: r.wrong_account,
       identity_unknown: r.identity_unknown,
+      replied: r.replied,
+      reply_text: r.reply_text,
     });
     log(this.acc, `${action.type} → ${action.linkedin} : ${r.ok ? `ok (depuis ${r.member && r.member.slug})` : `échec (${r.error})`}`);
     if (r.wrong_account) throw new SessionLost(`mauvais profil LinkedIn connecté (${r.member && r.member.slug})`);

@@ -30,7 +30,7 @@ import {
 } from "./outreach.js";
 
 const OWNER = /^[a-z0-9][a-z0-9:_.-]{0,99}$/i;
-const INVITE_NOTE_MAX = 300; // limite LinkedIn d'une note d'invitation
+const INVITE_NOTE_MAX = 200; // limite LinkedIn d'une note d'invitation (compte gratuit ; au-delà, elle part sans note)
 const MESSAGE_MAX = 8000;
 
 function authorized(req: express.Request): boolean {

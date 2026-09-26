@@ -67,6 +67,15 @@ c'est plus lent mais beaucoup moins détectable.
   un inconnu, il faut d'abord une invitation acceptée.
 - **Invitations** : plafonnées par LinkedIn lui-même (~100–200/semaine), au-delà
   de nos propres quotas. On ne contourne pas cette limite serveur.
+- **Notes d'invitation** : 200 caractères (compte gratuit), et quelques notes
+  personnalisées par mois seulement. Une note trop longue n'est jamais tronquée,
+  et quand LinkedIn affiche l'offre Premium au lieu du champ, l'invitation part
+  **sans note** (le verdict le signale) plutôt que d'échouer.
+- **Avant chaque message** servi par le serveur, `content.js` relit la
+  conversation ouverte (`threadGuard`) : si le contact a écrit depuis notre
+  premier envoi, rien ne part et la séquence s'arrête (« a répondu ») ; si le
+  texte y est déjà (verdict perdu, action rejouée), il n'est pas renvoyé ; si
+  la conversation est illisible, rien ne part par précaution.
 - **Maintenance** : LinkedIn change ses libellés/structure. Si un envoi échoue
   avec « bouton introuvable », ajustez les sélecteurs dans `content.js`
   (section « ZONE À MAINTENIR »).

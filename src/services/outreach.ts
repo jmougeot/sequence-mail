@@ -560,9 +560,40 @@ function advanceContact(ccId: number, completedStep: number): void {
 
 // expect_member : profil que l'exécutant doit trouver connecté avant d'agir
 // (null = compte encore sans identité, relevée au premier passage).
+// guard (messages) : repères que l'exécutant cherche dans la conversation avant
+// d'écrire (cf. messageGuard, et threadGuard dans content.js).
 export type LiServedAction =
-  | { id: number; linkedin: string; type: LiActionType; body: string | null; expect_member: string | null }
+  | {
+      id: number;
+      linkedin: string;
+      type: LiActionType;
+      body: string | null;
+      expect_member: string | null;
+      guard?: MessageGuard;
+    }
   | { id: 0; linkedin: null; type: "sync_inbox"; body: null; limit: number; expect_member: string | null };
+
+export interface MessageGuard {
+  sent: Array<{ type: LiActionType; body: string }>; // déjà envoyé à ce contact par la séquence, dans l'ordre
+  fresh: boolean; // la relation vient de notre invitation : pas d'ancienne conversation
+}
+
+/**
+ * Ce que la séquence a déjà envoyé à ce contact (note d'invitation, messages).
+ * L'exécutant relit la conversation avant d'écrire : ces textes y servent de
+ * repères — le contact a-t-il écrit depuis ? ce message y est-il déjà (verdict
+ * perdu, action rejouée) ?
+ */
+function messageGuard(ccId: number): MessageGuard {
+  const sent = db
+    .prepare(`SELECT type, body, error FROM li_actions WHERE campaign_contact_id = ? AND status = 'sent' ORDER BY sent_at, id`)
+    .all(ccId) as Array<{ type: LiActionType; body: string | null; error: string | null }>;
+  const invite = sent.find((a) => a.type === "invite");
+  return {
+    sent: sent.filter((a) => a.body?.trim()).map((a) => ({ type: a.type, body: a.body! })),
+    fresh: Boolean(invite && !/déjà en relation/i.test(invite.error ?? "")),
+  };
+}
 
 export type NextResult =
   | { action: LiServedAction }
@@ -663,7 +694,14 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   if (!claimed) return { wait: 5, reason: "Action prise par un autre compte" };
 
   return {
-    action: { id: row.id, linkedin: row.linkedin, type: row.type, body: row.body, expect_member: account.member_slug },
+    action: {
+      id: row.id,
+      linkedin: row.linkedin,
+      type: row.type,
+      body: row.body,
+      expect_member: account.member_slug,
+      ...(row.type === "message" ? { guard: messageGuard(row.campaign_contact_id) } : {}),
+    },
   };
 }
 
@@ -696,7 +734,8 @@ function requeue(id: number, error: string): void {
  *   quelques heures, sans pause ni avancement — jusqu'à LI_MESSAGE_RETRY_MAX_DAYS,
  *   au-delà l'invitation est considérée ignorée et la séquence s'arrête là ;
  * - succès → journalisé (quota du compte, profil émetteur), délai du compte
- *   armé, et le contact avance d'une étape ;
+ *   armé, et le contact avance d'une étape — y compris quand le verdict arrive
+ *   après l'expiration du bail, tant que l'action n'a pas été rejouée ;
  * - échec → contact marqué en échec, et pause de sécurité du compte : longue
  *   sur un contrôle de sécurité LinkedIn, aucune sur un profil introuvable (404).
  * Rend false si l'action n'appartient pas à ce compte.
@@ -741,9 +780,13 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
   if (v.ok && otherMember) markWrongAccount(account, member!.slug);
   const sentBy = member?.slug ?? account.member_slug;
 
+  // Verdict tardif : le bail a expiré (exécutant coupé du serveur, app
+  // redémarrée) et l'action est repassée en file sans avoir été rejouée. Le
+  // geste a pourtant eu lieu : on l'enregistre, sinon elle repartirait.
+  const late = v.ok && row.status === "pending";
   // Annulée pendant l'exécution (le contact a répondu) : on compte le geste
   // s'il a eu lieu (quota), sans rien faire avancer.
-  if (row.status !== "sending") {
+  if (row.status !== "sending" && !late) {
     if (v.ok) db.prepare(`INSERT INTO li_log (type, sent_at, li_account_id) VALUES (?, ?, ?)`).run(row.type, now, account.id);
     return true;
   }

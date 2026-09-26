@@ -189,7 +189,7 @@ function stepChannel(s) {
 }
 
 function bodyPlaceholder(chan) {
-  return chan === "invite" ? "Note d’invitation (optionnelle, ~300 caractères) — Bonjour {{first_name}}…"
+  return chan === "invite" ? "Note d’invitation (optionnelle, 200 caractères max une fois personnalisée) — Bonjour {{first_name}}…"
     : chan === "message" ? "Message LinkedIn — Bonjour {{first_name}}…"
     : "Bonjour {{first_name}},\n...";
 }

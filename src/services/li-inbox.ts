@@ -166,3 +166,36 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
   }
   return report;
 }
+
+/**
+ * Réponse vue par l'exécutant dans la conversation, au moment d'envoyer un
+ * message (content.js, threadGuard) : rien n'est parti. La séquence s'arrête
+ * comme pour une réponse lue dans la messagerie (refus reconnu → désinscrit
+ * chez le propriétaire). Rend false si l'action n'est pas à ce compte.
+ */
+export function processThreadReply(account: LiAccount, actionId: number, text: string): boolean {
+  const row = db
+    .prepare(
+      `SELECT la.li_account_id, cc.id AS cc_id, cc.contact_id, c.attio_record_id, c.first_name, c.last_name
+       FROM li_actions la
+       JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
+       JOIN contacts c ON c.id = cc.contact_id
+       WHERE la.id = ?`
+    )
+    .get(actionId) as
+    | { li_account_id: number | null; cc_id: number; contact_id: number; attio_record_id: string | null; first_name: string | null; last_name: string | null }
+    | undefined;
+  if (!row || row.li_account_id !== account.id) return false;
+  const optedOut = isOptOut(text);
+  terminate(
+    { cc_id: row.cc_id, contact_id: row.contact_id, attio_record_id: row.attio_record_id },
+    optedOut ? "opted_out" : "replied",
+    optedOut,
+    optedOut ? "Pas intéressé / désinscrit 🚫 (LinkedIn)" : "A répondu ✅ (LinkedIn)"
+  );
+  // terminate a annulé l'action en cours : on note pourquoi elle n'est pas partie
+  db.prepare("UPDATE li_actions SET error = ? WHERE id = ?").run("le contact a écrit dans la conversation — message non envoyé", actionId);
+  const name = [row.first_name, row.last_name].filter(Boolean).join(" ") || `contact #${row.contact_id}`;
+  console.log(`[linkedin] ${name} a écrit dans la conversation (${account.name})${optedOut ? " — désinscrit" : ""} — message retenu, séquence arrêtée`);
+  return true;
+}
