@@ -5,4 +5,6 @@ _tmpdata
 .env
 *.log
 extension
+# le runner embarque le code d'interface LinkedIn partagé avec l'extension
+!extension/content.js
 scripts/macos-create-launcher.sh
