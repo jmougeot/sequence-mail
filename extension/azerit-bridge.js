@@ -12,8 +12,19 @@
 (() => {
   const version = chrome.runtime.getManifest().version;
   const reply = (data) => window.postMessage({ source: "azerit-extension", ...data }, location.origin);
+  // Extension rechargée pendant que la page restait ouverte : ce script devient
+  // orphelin (plus de lien avec l'extension). Il se tait ; le pont posé par la
+  // nouvelle instance (cf. background.js, onInstalled) répond à sa place.
+  const alive = () => {
+    try {
+      return Boolean(chrome.runtime?.id);
+    } catch {
+      return false;
+    }
+  };
   reply({ type: "ready", version });
   window.addEventListener("message", async (e) => {
+    if (!alive()) return;
     if (e.source !== window || e.origin !== location.origin) return;
     const m = e.data;
     if (!m || m.source !== "azerit-app") return;

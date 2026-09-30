@@ -44,7 +44,24 @@ async function authHeaders() {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(ALARM, { periodInMinutes: 1 });
+  injectAzeritBridge();
 });
+
+/**
+ * Chrome n'injecte les content scripts que dans les pages chargées APRÈS
+ * l'installation (ou le rechargement) de l'extension : un onglet Azerit déjà
+ * ouvert ne la verrait pas (« Receiving end does not exist »). On y pose le
+ * pont à la main — il n'a pas de déclaration globale, une double pose est sans
+ * effet de bord.
+ */
+async function injectAzeritBridge() {
+  const tabs = await chrome.tabs.query({
+    url: ["https://app.azerit.tech/*", "http://localhost/*", "http://127.0.0.1/*"],
+  });
+  for (const tab of tabs) {
+    chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["azerit-bridge.js"] }).catch(() => {});
+  }
+}
 chrome.runtime.onStartup.addListener(() => {
   chrome.alarms.create(ALARM, { periodInMinutes: 1 });
 });
@@ -274,7 +291,16 @@ async function captureLinkedIn() {
   }
   try {
     const tab = await ensureTab();
-    const me = await sendToTab(tab.id, { type: "li-action", action: { type: "whoami" } }, 10);
+    const whoami = { type: "li-action", action: { type: "whoami" } };
+    let me = await sendToTab(tab.id, whoami, 3);
+    if (!me.ok && me.error === "content script injoignable") {
+      // Onglet LinkedIn ouvert avant l'installation (ou le rechargement) de
+      // l'extension : content.js n'y est pas. Un rechargement l'y remet (pas de
+      // ré-injection : content.js, partagé avec le runner, déclare des globales).
+      await chrome.tabs.reload(tab.id);
+      await waitForLoad(tab.id);
+      me = await sendToTab(tab.id, whoami, 10);
+    }
     if (!me.ok) return { ok: false, error: `Profil LinkedIn connecté illisible : ${me.error}` };
     return { ok: true, cookies, user_agent: navigator.userAgent, member: me.data };
   } catch (e) {
