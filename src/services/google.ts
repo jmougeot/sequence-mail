@@ -270,6 +270,47 @@ export interface ForeignMessage {
   hasAutoReplyHeader: boolean;
 }
 
+/** Un message d'un fil Gmail, entrant ou sortant (lecture complète du fil). */
+export interface ThreadMessage extends ForeignMessage {
+  to: string;
+  /** En-tête Message-ID RFC822 (In-Reply-To / References d'une réponse) */
+  messageId: string;
+  /** internalDate Gmail, epoch ms */
+  date: number;
+  /** Envoyé par le compte (From = adresse du compte) */
+  outgoing: boolean;
+}
+
+/** Tous les messages du fil (envois du compte compris), dans l'ordre chronologique. */
+export async function getThreadMessages(account: AccountRow, threadId: string): Promise<ThreadMessage[]> {
+  const gmail = google.gmail({ version: "v1", auth: clientForAccount(account) });
+  const { data } = await gmail.users.threads.get({
+    userId: "me",
+    id: threadId,
+    format: "full",
+  });
+  return (data.messages ?? []).map((msg) => {
+    const header = (name: string) =>
+      msg.payload?.headers?.find((h) => h.name?.toLowerCase() === name)?.value ?? "";
+    const from = header("from");
+    return {
+      id: msg.id ?? "",
+      from,
+      to: header("to"),
+      subject: header("subject"),
+      messageId: header("message-id"),
+      date: Number(msg.internalDate ?? 0),
+      outgoing: from.toLowerCase().includes(account.email.toLowerCase()),
+      text: extractPart(msg.payload as GmailPart, "text/plain") || msg.snippet || "",
+      contentType: header("content-type"),
+      deliveryStatus: extractPart(msg.payload as GmailPart, "message/delivery-status"),
+      autoSubmitted: header("auto-submitted"),
+      precedence: header("precedence"),
+      hasAutoReplyHeader: Boolean(header("x-autoreply") || header("x-autorespond")),
+    };
+  });
+}
+
 /**
  * Retourne tous les messages du fil ne venant pas du compte (réponses, bounces,
  * réponses automatiques…), dans l'ordre chronologique.
@@ -278,30 +319,34 @@ export async function getForeignMessages(
   account: AccountRow,
   threadId: string
 ): Promise<ForeignMessage[]> {
-  const gmail = google.gmail({ version: "v1", auth: clientForAccount(account) });
-  const { data } = await gmail.users.threads.get({
-    userId: "me",
-    id: threadId,
-    format: "full",
-  });
-  const result: ForeignMessage[] = [];
-  for (const msg of data.messages ?? []) {
-    const header = (name: string) =>
-      msg.payload?.headers?.find((h) => h.name?.toLowerCase() === name)?.value ?? "";
-    const from = header("from");
-    if (from && !from.toLowerCase().includes(account.email.toLowerCase())) {
-      result.push({
-        id: msg.id ?? "",
-        from,
-        subject: header("subject"),
-        text: extractPart(msg.payload as GmailPart, "text/plain") || msg.snippet || "",
-        contentType: header("content-type"),
-        deliveryStatus: extractPart(msg.payload as GmailPart, "message/delivery-status"),
-        autoSubmitted: header("auto-submitted"),
-        precedence: header("precedence"),
-        hasAutoReplyHeader: Boolean(header("x-autoreply") || header("x-autorespond")),
-      });
-    }
+  return (await getThreadMessages(account, threadId))
+    .filter((m) => m.from && !m.outgoing)
+    .map((m) => ({
+      id: m.id,
+      from: m.from,
+      subject: m.subject,
+      text: m.text,
+      contentType: m.contentType,
+      deliveryStatus: m.deliveryStatus,
+      autoSubmitted: m.autoSubmitted,
+      precedence: m.precedence,
+      hasAutoReplyHeader: m.hasAutoReplyHeader,
+    }));
+}
+
+/** Accès Google révoqué ou expiré (jeton de rafraîchissement refusé). */
+export function isGoogleAuthError(msg: string): boolean {
+  return msg.includes("invalid_grant") || msg.includes("invalid_rapt");
+}
+
+/**
+ * Message d'erreur lisible pour un appel Gmail : un accès expiré devient une
+ * consigne de reconnexion plutôt qu'une trace de la librairie.
+ */
+export function googleErrorMessage(err: unknown, accountEmail: string): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (isGoogleAuthError(msg)) {
+    return `accès Google expiré pour ${accountEmail}, reconnectez le compte via /auth/google`;
   }
-  return result;
+  return `Gmail (${accountEmail}) : ${msg}`;
 }

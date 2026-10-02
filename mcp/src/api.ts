@@ -9,9 +9,27 @@
  *   SEQUENCE_MAIL_BASE_URL   URL de l'app (défaut http://localhost:3000)
  *   SEQUENCE_MAIL_BASIC_AUTH "user:pass" si l'app est protégée par basic auth
  *                            (cas de la prod derrière Caddy, ex. admin:motdepasse)
+ *   SEQUENCE_MAIL_PUBLIC_URL URL de l'app vue d'un navigateur, pour les liens
+ *                            donnés à l'utilisateur (OAuth Google, extension).
+ *                            Défaut : SEQUENCE_MAIL_BASE_URL. À renseigner quand le
+ *                            MCP parle à l'app par un réseau interne (docker :
+ *                            http://sequence-app:3000).
  */
 
 export const BASE_URL = (process.env.SEQUENCE_MAIL_BASE_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+export const PUBLIC_URL = (process.env.SEQUENCE_MAIL_PUBLIC_URL || BASE_URL).replace(/\/+$/, "");
+
+/** Réponse non 2xx de l'API : statut et corps décodé conservés (ex. rendered_body d'un 400). */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly data: unknown
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
 
 function authHeaders(): Record<string, string> {
   const basic = process.env.SEQUENCE_MAIL_BASIC_AUTH;
@@ -29,7 +47,7 @@ type ApiOptions = {
 };
 
 /**
- * Appelle l'API et renvoie le JSON décodé. Lève une Error explicite (statut +
+ * Appelle l'API et renvoie le JSON décodé. Lève une ApiError explicite (statut +
  * message d'erreur de l'API) si la réponse n'est pas 2xx, pour que le tool MCP
  * la remonte telle quelle au client.
  */
@@ -70,7 +88,7 @@ export async function api(method: string, path: string, opts: ApiOptions = {}): 
         : typeof data === "string" && data
           ? data.slice(0, 300)
           : res.statusText;
-    throw new Error(`HTTP ${res.status} sur ${method} ${path} — ${detail}`);
+    throw new ApiError(`HTTP ${res.status} sur ${method} ${path} — ${detail}`, res.status, data);
   }
   return data;
 }

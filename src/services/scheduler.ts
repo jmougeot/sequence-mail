@@ -263,7 +263,7 @@ function resetDailyCounters(): void {
 }
 
 /** Sélection de comptes de la campagne (campaigns.account_ids) ; null = tous. */
-function parseAccountIds(json: string | null): number[] | null {
+export function parseAccountIds(json: string | null): number[] | null {
   if (!json) return null;
   try {
     const ids = JSON.parse(json);

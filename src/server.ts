@@ -12,6 +12,7 @@ import { cancelLinkedInActions } from "./services/outreach.js";
 import { optOutFromCampaignOf } from "./services/opt-out.js";
 import { registerVisitRoutes } from "./services/visits.js";
 import { registerUnsubscribeRoutes } from "./services/unsubscribe.js";
+import { registerInboxRoutes } from "./services/inbox-routes.js";
 import { normalizeLinkedin } from "./services/linkedin-url.js";
 
 export function createServer(): express.Express {
@@ -34,6 +35,9 @@ export function createServer(): express.Express {
 
   // --- Désinscription un-clic (List-Unsubscribe) ---
   registerUnsubscribeRoutes(app);
+
+  // --- Boîte de réception, conversations, recherche, journal, email de test (MCP) ---
+  registerInboxRoutes(app);
 
   // --- Comptes Google ---
   app.get("/auth/google", (_req, res) => res.redirect(authUrl()));
