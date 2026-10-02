@@ -98,6 +98,18 @@ export function registerAccountTools(server: McpServer): void {
   );
 
   server.registerTool(
+    "delete_google_account",
+    {
+      title: "Supprimer un compte d'envoi",
+      description:
+        "Supprime DÉFINITIVEMENT un compte Google, qui doit être désactivé au préalable (update_account active: false). Efface aussi son historique d'envois (le compteur « emails envoyés » des campagnes baisse ; statuts et taux de réponse inchangés), arrête ses contacts encore en séquence (leurs relances ne peuvent partir que de lui), détache son fil Gmail et le retire des sélections de comptes des campagnes (une sélection vidée repasse à « tous les comptes »). Irréversible : annoncer ces effets (nombre d'envois et de contacts, via list_campaign_contacts) et obtenir l'accord explicite de l'utilisateur avant d'appeler.",
+      inputSchema: { account_id: z.number().int().describe("Identifiant du compte (list_accounts).") },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    handler(({ account_id }: { account_id: number }) => api("DELETE", `/api/accounts/${account_id}`))
+  );
+
+  server.registerTool(
     "get_settings",
     {
       title: "Paramètres de l'app",

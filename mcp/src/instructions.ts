@@ -22,7 +22,7 @@ RÉPONSES
 list_replies (include_text: true pour lire les réponses) → get_conversation (cc_id) → reply_to_contact (dry_run par défaut, puis dry_run: false). Une demande de désinscription : set_contacts_status opted_out.
 
 SÉCURITÉ (obligatoire)
-- Avant toute action qui envoie ou détruit : montrer un aperçu (preview_email, dry_run, nombre de contacts concernés) et obtenir l'accord EXPLICITE de l'utilisateur pour : launch_contacts, resume_campaign, reply_to_contact et send_test_email en envoi réel (dry_run: false), delete_campaign, delete_linkedin_account, rotate_linkedin_token, remove_contacts, set_contacts_status opted_out.
+- Avant toute action qui envoie ou détruit : montrer un aperçu (preview_email, dry_run, nombre de contacts concernés) et obtenir l'accord EXPLICITE de l'utilisateur pour : launch_contacts, resume_campaign, reply_to_contact et send_test_email en envoi réel (dry_run: false), delete_campaign, delete_google_account, delete_linkedin_account, rotate_linkedin_token, remove_contacts, set_contacts_status opted_out.
 - Ne jamais lancer plus de contacts que demandé : all_held avec limit, et annoncer le nombre avant.
 - Un accord vaut pour l'action montrée, pas pour les suivantes.
 

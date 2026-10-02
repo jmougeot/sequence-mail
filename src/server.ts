@@ -86,6 +86,53 @@ export function createServer(): express.Express {
     res.json({ ok: true });
   });
 
+  // Suppression d'un compte Google, désactivé au préalable (garde-fou contre la
+  // suppression d'un compte qui envoie). Son historique d'envois (messages) part
+  // avec lui ; ses contacts encore en séquence sont arrêtés — leurs relances ne
+  // peuvent partir que de lui (continuité du fil) ; son fil Gmail, devenu
+  // illisible, est détaché (plus de détection de réponse dessus).
+  app.delete("/api/accounts/:id", (req, res) => {
+    const id = Number(req.params.id);
+    const account = db.prepare("SELECT id, email, active FROM accounts WHERE id = ?").get(id) as
+      | { id: number; email: string; active: number }
+      | undefined;
+    if (!account) return res.status(404).json({ error: "Compte introuvable" });
+    if (account.active) {
+      return res.status(409).json({ error: `${account.email} est actif : désactivez-le d'abord (active: false)` });
+    }
+    const report = db.transaction(() => {
+      const running = db
+        .prepare("SELECT id FROM campaign_contacts WHERE account_id = ? AND status IN ('pending', 'in_progress', 'awaiting_li')")
+        .all(id) as Array<{ id: number }>;
+      db.prepare(
+        `UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL, error = ?
+         WHERE account_id = ? AND status IN ('pending', 'in_progress', 'awaiting_li')`
+      ).run(`compte d'envoi ${account.email} supprimé`, id);
+      for (const r of running) cancelLinkedInActions("campaign_contact_id = ?", r.id, "compte d'envoi supprimé");
+      const detached = db
+        .prepare("UPDATE campaign_contacts SET account_id = NULL, thread_id = NULL WHERE account_id = ?")
+        .run(id).changes;
+      const messages = db.prepare("DELETE FROM messages WHERE account_id = ?").run(id).changes;
+      // Retire le compte des sélections de campagnes ; une sélection vidée repasse à « tous les comptes »
+      const campaigns: Array<{ id: number; name: string; account_ids: number[] | null }> = [];
+      for (const c of db.prepare("SELECT id, name, account_ids FROM campaigns WHERE account_ids IS NOT NULL").all() as Array<{
+        id: number;
+        name: string;
+        account_ids: string;
+      }>) {
+        const ids = JSON.parse(c.account_ids) as number[];
+        if (!ids.includes(id)) continue;
+        const left = ids.filter((x) => x !== id);
+        db.prepare("UPDATE campaigns SET account_ids = ? WHERE id = ?").run(left.length ? JSON.stringify(left) : null, c.id);
+        campaigns.push({ id: c.id, name: c.name, account_ids: left.length ? left : null });
+      }
+      db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
+      return { contacts_stopped: running.length, contacts_detached: detached, messages_deleted: messages, campaigns_updated: campaigns };
+    })();
+    console.log(`[comptes] ${account.email} supprimé (${report.messages_deleted} envois effacés, ${report.contacts_stopped} contacts arrêtés)`);
+    res.json({ ok: true, email: account.email, ...report });
+  });
+
   // --- Campagnes ---
   // Une étape est soit un email (sujet + corps), soit une action LinkedIn
   // (channel='linkedin', li_action='invite'|'message', le corps = note/message).

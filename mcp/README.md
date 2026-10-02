@@ -91,7 +91,8 @@ d'objets JSON), `import_contacts_csv` (texte `csv` ou fichier local `csv_path`),
 Gmail, `dry_run` par défaut).
 
 **Comptes Google** — `list_accounts`, `connect_google_account` (lien OAuth + marche à
-suivre), `update_account`, `get_settings`.
+suivre), `update_account`, `delete_google_account` (compte désactivé au préalable ; efface
+son historique d'envois), `get_settings`.
 
 **LinkedIn** — `linkedin_status`, `linkedin_toggle`, `list_linkedin_accounts`,
 `create_linkedin_account` (jeton en clair + étapes de liaison de l'extension),
@@ -114,7 +115,7 @@ warm-up), `rotate_linkedin_token`, `delete_linkedin_account`.
 - **Envois réels** : `reply_to_contact` et `send_test_email` sont en `dry_run: true`
   par défaut (rendu sans envoi) ; il faut passer `dry_run: false` pour envoyer. Ils sont
   annotés `openWorldHint`, comme `launch_contacts` et `resume_campaign`.
-- Les tools destructifs (`delete_campaign`, `delete_linkedin_account`,
+- Les tools destructifs (`delete_campaign`, `delete_google_account`, `delete_linkedin_account`,
   `rotate_linkedin_token`, `remove_contacts`, `set_contacts_status`, `stop_contacts`,
   `update_campaign`) sont annotés `destructiveHint` — les clients peuvent demander
   confirmation avant exécution.
