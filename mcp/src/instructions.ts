@@ -17,6 +17,7 @@ CAMPAGNE
 5. launch_contacts (cc_ids, ou all_held + limit) : contacts en « pending », la campagne repasse active.
 6. resume_campaign si la campagne est en pause. Les envois suivent la fenêtre d'envoi, les quotas et le warm-up.
 Suivi : list_campaigns, list_campaign_contacts (filtres status/search, paginé : ne pas tout charger), get_activity, export_campaign_contacts.
+Ranger une campagne terminée : archive_campaign (elle reste visible dans l'app, à part ; unarchive_campaign la remet en pause). delete_campaign seulement si l'utilisateur demande explicitement une suppression définitive.
 
 RÉPONSES
 list_replies (include_text: true pour lire les réponses) → get_conversation (cc_id) → reply_to_contact (dry_run par défaut, puis dry_run: false). Une demande de désinscription : set_contacts_status opted_out.

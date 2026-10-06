@@ -48,6 +48,7 @@ const STATUS_LABELS = {
   failed: "échec",
   active: "active",
   paused: "en pause",
+  archived: "archivée",
   held: "non lancé",
 };
 

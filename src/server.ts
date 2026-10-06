@@ -22,7 +22,8 @@ export function createServer(): express.Express {
   app.use(express.json({ limit: "10mb" }));
   app.use(express.text({ type: ["text/csv", "text/plain"], limit: "20mb" }));
   // Relatif au projet, pas au répertoire de lancement
-  app.use(express.static(fileURLToPath(new URL("../public", import.meta.url))));
+  // no-cache : le navigateur revalide à chaque chargement (ETag), pas de CSS/JS périmé après un déploiement
+  app.use(express.static(fileURLToPath(new URL("../public", import.meta.url)), { cacheControl: true, maxAge: 0, setHeaders: (res) => res.setHeader("Cache-Control", "no-cache") }));
 
   // --- Étapes LinkedIn (consommées par l'extension Chrome) ---
   registerOutreachRoutes(app);
@@ -148,9 +149,10 @@ export function createServer(): express.Express {
   /** Valide une séquence ; renvoie un message d'erreur ou null si tout est bon. */
   function validateSteps(name: string, steps: StepInput[]): string | null {
     if (!name || !steps?.length) return "name et steps[] sont requis";
-    const first = steps[0];
-    if ((first.channel ?? "email") !== "linkedin" && !first.subject) {
-      return "La première étape (email) doit avoir un sujet";
+    // Le premier email ouvre le fil : son objet est obligatoire (les relances sans objet suivent en « Re: »)
+    const firstEmail = steps.find((s) => (s.channel ?? "email") !== "linkedin");
+    if (firstEmail && !firstEmail.subject?.trim()) {
+      return "Le premier email de la séquence doit avoir un objet";
     }
     for (const s of steps) {
       const isInvite = s.channel === "linkedin" && (s.li_action ?? "invite") === "invite";
@@ -393,8 +395,25 @@ export function createServer(): express.Express {
     res.json({ ok: true });
   });
 
+  // Une campagne archivée reste consultable mais n'envoie plus rien : elle ne se relance
+  // qu'après désarchivage (retour en pause).
+  const isArchived = (id: string) =>
+    (db.prepare("SELECT status FROM campaigns WHERE id = ?").get(id) as { status: string } | undefined)?.status === "archived";
+  const ARCHIVED = "Campagne archivée : désarchivez-la avant de relancer des envois";
+
   app.post("/api/campaigns/:id/resume", (req, res) => {
+    if (isArchived(req.params.id)) return res.status(409).json({ error: ARCHIVED });
     db.prepare("UPDATE campaigns SET status = 'active' WHERE id = ?").run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  app.post("/api/campaigns/:id/archive", (req, res) => {
+    db.prepare("UPDATE campaigns SET status = 'archived' WHERE id = ?").run(req.params.id);
+    res.json({ ok: true });
+  });
+
+  app.post("/api/campaigns/:id/unarchive", (req, res) => {
+    db.prepare("UPDATE campaigns SET status = 'paused' WHERE id = ? AND status = 'archived'").run(req.params.id);
     res.json({ ok: true });
   });
 
@@ -404,6 +423,7 @@ export function createServer(): express.Express {
     if (!Array.isArray(ids) || !ids.length) {
       return res.status(400).json({ error: "ids[] est requis" });
     }
+    if (isArchived(req.params.id)) return res.status(409).json({ error: ARCHIVED });
     const placeholders = ids.map(() => "?").join(",");
     const launched = db.transaction(() => {
       const { changes } = db

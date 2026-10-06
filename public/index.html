@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Tableau de bord</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
 <div class="wrap">
@@ -19,22 +19,32 @@
     </tr></thead><tbody></tbody></table>
     <p><a class="btn" href="campaigns.html#new">+ Nouvelle campagne</a></p>
   </div>
+
+  <details class="card" id="archived" hidden>
+    <summary>Archivées (<span id="archivedCount"></span>)</summary>
+    <table id="archivedCampaigns"><thead><tr>
+      <th>Campagne</th><th>Statut</th><th>Contacts</th><th>Emails envoyés</th><th>Réponses</th><th>Taux de réponse</th><th>Progression</th><th></th>
+    </tr></thead><tbody></tbody></table>
+  </details>
 </div>
 
-<script src="app.js"></script>
+<script src="app.js?v=3"></script>
 <script>
 renderNav("index.html");
 
 const plural = (n, w) => `${n} ${w}${n > 1 ? "s" : ""}`;
 
 async function refresh() {
-  const [accounts, campaigns] = await Promise.all([api("/api/accounts"), api("/api/campaigns")]);
+  const [accounts, all] = await Promise.all([api("/api/accounts"), api("/api/campaigns")]);
+  // Les campagnes archivées sont rangées à part, sous le tableau, et n'envoient plus rien
+  const campaigns = all.filter(c => c.status !== "archived");
+  const archived = all.filter(c => c.status === "archived");
   const today = new Date().toISOString().slice(0, 10);
   const activeAcc = accounts.filter(a => a.active).length;
   const sentToday = accounts.reduce((n, a) => n + (a.sent_today_date === today ? a.sent_today : 0), 0);
   const quota = accounts.filter(a => a.active).reduce((n, a) => n + a.daily_limit, 0);
   const inProgress = campaigns.reduce((n, c) => n + c.in_progress + c.pending + (c.awaiting_li || 0), 0);
-  const replied = campaigns.reduce((n, c) => n + c.replied, 0);
+  const replied = all.reduce((n, c) => n + c.replied, 0);
 
   const mini = ratio => `<div class="mini"><div style="width:${Math.round(Math.min(1, ratio) * 100)}%"></div></div>`;
   $("#kpis").innerHTML = [
@@ -44,7 +54,7 @@ async function refresh() {
     { v: replied, l: "réponses obtenues" },
   ].map(k => `<div class="kpi"><div class="v">${k.v}</div><div class="l">${k.l}</div>${k.bar != null ? mini(k.bar) : ""}</div>`).join("");
 
-  $("#campaigns tbody").innerHTML = campaigns.map(c => `
+  const row = c => `
     <tr>
       <td>
         <a href="campaigns.html#${c.id}" class="camp-name">${esc(c.name)}</a>
@@ -58,7 +68,11 @@ async function refresh() {
       <td style="min-width:150px"><div class="prog"><div class="bar"><div style="width:${c.progress}%"></div></div><span class="pv">${c.progress}%</span></div></td>
       <td><a class="btn ghost" href="campaigns.html#${c.id}">Gérer</a></td>
     </tr>
-  `).join("") || '<tr><td colspan="8" class="muted">Aucune campagne — créez-en une depuis la page Campagnes.</td></tr>';
+  `;
+  $("#campaigns tbody").innerHTML = campaigns.map(row).join("") || '<tr><td colspan="8" class="muted">Aucune campagne — créez-en une depuis la page Campagnes.</td></tr>';
+  $("#archived").hidden = !archived.length;
+  $("#archivedCount").textContent = archived.length;
+  $("#archivedCampaigns tbody").innerHTML = archived.map(row).join("");
 }
 
 refresh();

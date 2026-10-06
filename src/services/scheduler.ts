@@ -405,8 +405,11 @@ async function processOne(row: DueRow): Promise<void> {
   const subjectFor = (s: StepRow | undefined) =>
     s ? (variant === "B" && s.subject_b ? s.subject_b : s.subject) : "";
 
+  // Une relance sans objet reste dans le fil ouvert par le premier email de la séquence
+  // (qui n'est pas forcément l'étape 1 si la séquence commence sur LinkedIn).
+  const firstEmail = steps.find((s) => s.channel !== "linkedin") ?? firstStep;
   const subject = isFollowUp && !step.subject
-    ? `Re: ${renderTemplate(subjectFor(firstStep), contact, senderVars)}`
+    ? `Re: ${renderTemplate(subjectFor(firstEmail), contact, senderVars)}`
     : renderTemplate(subjectFor(step), contact, senderVars);
 
   const body = renderTemplate(step.body, contact, senderVars);

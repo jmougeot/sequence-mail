@@ -4,22 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Paramètres</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
 <div class="wrap">
   <h1>Paramètres</h1>
 
   <div class="card">
-    <h2>Comptes d'envoi (Google Workspace)</h2>
-    <p id="connectedMsg" class="ok" hidden></p>
+    <div class="inline" style="justify-content:space-between;margin-bottom:12px">
+      <h2 style="margin:0">Comptes email</h2>
+      <a class="btn" href="/auth/google">+ Connecter un compte Google</a>
+    </div>
+    <p class="err" id="googleWarn" hidden>Google OAuth non configuré (.env)</p>
     <table id="accounts"><thead><tr>
-      <th>Email</th><th>Nom d'expéditeur</th><th>Signature</th><th>Envoyés aujourd'hui</th><th>Quota / jour</th><th>Warm-up</th><th>Actif</th>
+      <th>Email</th><th>Nom d'expéditeur</th>
+      <th title="Insérée à l'emplacement de {{signature}} dans les étapes">Signature</th>
+      <th>Envois / jour</th>
+      <th id="warmupTh">Warm-up</th>
+      <th title="Décoché tout seul : accès Google révoqué, reconnecter la même adresse">Actif</th>
+      <th></th>
     </tr></thead><tbody></tbody></table>
-    <p><a class="btn" href="/auth/google">+ Connecter un compte Google</a></p>
-    <p class="muted">Le nom apparaît dans le champ « De » des emails du compte ; la signature (variables acceptées) s'insère à l'emplacement de {{signature}} dans les étapes de vos campagnes.
-    <b>Warm-up</b> : montée en charge automatique — un compte démarre à 10 emails/jour puis gagne +5/semaine jusqu'à son quota (recommandé pour les boîtes récentes ; décochez pour une boîte déjà rodée).
-    Si un compte se décoche tout seul (colonne Actif), son accès Google a été révoqué : reconnectez la même adresse pour le réactiver.</p>
   </div>
 
   <div class="card">
@@ -27,170 +31,174 @@
       <h2 style="margin:0">Comptes LinkedIn</h2>
       <button id="liToggle" class="ghost" hidden onclick="toggleLi()"></button>
     </div>
-    <div id="liStatus"></div>
-    <table id="liAccounts" style="margin-top:12px">
-      <thead><tr><th>Compte</th><th>Exécution</th><th>Invitations</th><th>Messages</th><th>En file</th><th>Contacts</th><th>Plafonds / jour</th><th>Actif</th><th></th></tr></thead>
+    <p class="err" id="liWarn" hidden></p>
+    <table id="liAccounts">
+      <thead><tr><th>Compte</th><th>Exécution</th><th>Invitations / jour</th><th>Messages / jour</th><th id="liQueueTh">En file</th><th>Actif</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
-    <div class="inline" style="gap:8px;margin-top:12px">
-      <input id="liNewName" placeholder="Nom du compte (ex : Jacques)" style="width:220px">
+    <div class="inline" style="margin-top:12px">
+      <input id="liNewName" placeholder="Nom du compte" style="width:220px">
       <button onclick="addLiAccount()">+ Ajouter un compte LinkedIn</button>
     </div>
-    <div id="liToken" class="card" hidden style="margin-top:12px;background:var(--hover)"></div>
-    <p class="muted" style="margin-bottom:0">Chaque compte LinkedIn a son extension Chrome (dossier <code>extension/</code>), dans le Chrome où ce compte est connecté.
-    Collez le <b>jeton</b> du compte dans le popup de l'extension. Quotas, délais et pauses sont propres à chaque compte ; un contact reste au compte qui l'a abordé en premier (un message ne part que d'un compte connecté au destinataire).
-    Plafonds vides = valeurs par défaut du serveur ; le warm-up les atteint progressivement.<br>
-    <b>Navigateur serveur</b> (plus besoin de laisser Chrome ouvert) : dans le popup de l'extension, cliquez « Confier ce compte au serveur » — la session LinkedIn part chiffrée, puis renseignez ici un <b>proxy résidentiel/ISP fixe</b> propre au compte, situé dans la région de son propriétaire (sans proxy, le serveur ne lance rien : une IP de datacenter fait restreindre le compte). Ne vous déconnectez pas de LinkedIn ensuite : cela couperait aussi la session du serveur.
-    Les réponses reçues sur LinkedIn sont détectées (lecture de la messagerie toutes les ~20 min) et arrêtent la séquence, emails compris.</p>
-    <p class="err" id="liServerWarn" hidden style="margin-bottom:0">Mode serveur indisponible : LI_SECRET_KEY et LI_RUNNER_SECRET doivent être définis dans le .env du serveur.</p>
-  </div>
-
-  <div class="card">
-    <h2>Délivrabilité &amp; intégrations</h2>
-    <table id="settings"><tbody></tbody></table>
-    <p class="muted">Ces réglages se modifient dans le fichier <code>.env</code> (puis redémarrer le serveur). Voir <code>.env.example</code>.</p>
+    <div id="liToken" class="card" hidden style="margin:12px 0 0;background:var(--hover)"></div>
   </div>
 </div>
 
-<script src="app.js"></script>
+<script src="app.js?v=3"></script>
 <script>
 renderNav("settings.html");
 
 const connected = new URLSearchParams(location.search).get("connected");
 if (connected) {
-  $("#connectedMsg").textContent = `Compte ${connected} connecté ✓`;
-  $("#connectedMsg").hidden = false;
+  notify(`${connected} connecté`);
+  history.replaceState(null, "", location.pathname);
 }
 
+const jsonPost = (method, body) => ({ method, headers: {"Content-Type":"application/json"}, body: JSON.stringify(body ?? {}) });
+const fail = (e) => notify(e.message || String(e), false);
+
+// Ne pas réécrire un tableau pendant une saisie
+function typingIn(sel) {
+  const el = document.activeElement;
+  return el && $(sel).contains(el) && el.matches("input:not([type=checkbox]), textarea, select");
+}
+
+// --- Comptes email ---
+let accounts = [];
+
 async function updateAccount(id, patch) {
-  await api(`/api/accounts/${id}`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify(patch) });
+  try { await api(`/api/accounts/${id}`, jsonPost("PATCH", patch)); }
+  catch (e) { fail(e); }
+  refresh();
+}
+
+async function deleteAccount(id) {
+  const a = accounts.find(x => x.id === id);
+  if (!a || !confirm(`Supprimer ${a.email} ?\nSon historique d'envois est effacé et ses contacts encore en séquence sont arrêtés.`)) return;
+  try {
+    // L'API ne supprime qu'un compte désactivé
+    if (a.active) await api(`/api/accounts/${id}`, jsonPost("PATCH", { active: false }));
+    const r = await api(`/api/accounts/${id}`, { method: "DELETE" });
+    notify(`${a.email} supprimé` + (r.contacts_stopped ? ` · ${r.contacts_stopped} contact(s) arrêté(s)` : ""));
+  } catch (e) { fail(e); }
   refresh();
 }
 
 async function refresh() {
-  // Ne pas réécrire le tableau pendant une saisie
-  if (document.activeElement && $("#accounts").contains(document.activeElement)) return;
-  const accounts = await api("/api/accounts");
+  if (typingIn("#accounts")) return;
+  accounts = await api("/api/accounts");
   const today = new Date().toISOString().slice(0, 10);
   $("#accounts tbody").innerHTML = accounts.map(a => `
     <tr><td>${esc(a.email)}</td>
-    <td><input value="${esc(a.from_name)}" placeholder="ex: Jacques M." style="width:130px" onchange="updateAccount(${a.id}, {from_name: this.value})"></td>
-    <td><textarea style="min-height:40px; width:220px" placeholder="Cordialement,&#10;Jacques" onchange="updateAccount(${a.id}, {signature: this.value})">${esc(a.signature)}</textarea></td>
-    <td>${a.sent_today_date === today ? a.sent_today : 0} / ${a.effective_limit}</td>
-    <td><input type="number" value="${a.daily_limit}" style="width:70px" onchange="updateAccount(${a.id}, {daily_limit: +this.value})">
-      ${a.warmup && a.effective_limit < a.daily_limit ? `<div class="muted">effectif : ${a.effective_limit}/j (warm-up)</div>` : ""}</td>
-    <td><input type="checkbox" ${a.warmup ? "checked" : ""} title="Montée en charge progressive" onchange="updateAccount(${a.id}, {warmup: this.checked})"></td>
-    <td><input type="checkbox" ${a.active ? "checked" : ""} onchange="updateAccount(${a.id}, {active: this.checked})"></td></tr>
+    <td><input value="${esc(a.from_name)}" placeholder="Jacques M." style="width:150px" onchange="updateAccount(${a.id}, {from_name: this.value})"></td>
+    <td><textarea style="min-height:40px; width:240px" placeholder="Cordialement,&#10;Jacques" onchange="updateAccount(${a.id}, {signature: this.value})">${esc(a.signature)}</textarea></td>
+    <td style="white-space:nowrap">${a.sent_today_date === today ? a.sent_today : 0} / <input type="number" min="0" value="${a.daily_limit}" style="width:70px" onchange="updateAccount(${a.id}, {daily_limit: +this.value})">
+      ${a.warmup && a.effective_limit < a.daily_limit ? `<div class="muted">warm-up : ${a.effective_limit}/j</div>` : ""}</td>
+    <td><input type="checkbox" ${a.warmup ? "checked" : ""} onchange="updateAccount(${a.id}, {warmup: this.checked})"></td>
+    <td><input type="checkbox" ${a.active ? "checked" : ""} onchange="updateAccount(${a.id}, {active: this.checked})"></td>
+    <td><button class="icon-btn danger" title="Supprimer" onclick="deleteAccount(${a.id})">✕</button></td></tr>
   `).join("") || '<tr><td colspan="7" class="muted">Aucun compte connecté</td></tr>';
 }
 
 async function loadSettings() {
   const s = await api("/api/settings");
   const d = s.deliverability;
-  const rows = [
-    ["Fenêtre d'envoi", `${d.sendWindowStart}h – ${d.sendWindowEnd}h ${d.weekdaysOnly ? "(lundi–vendredi)" : "(7j/7)"}`],
-    ["Délai entre 2 envois d'un même compte", `${d.minGapSeconds} à ${d.maxGapSeconds} secondes (aléatoire)`],
-    ["Quota quotidien par défaut", `${d.defaultDailyLimit} emails / compte (modifiable ci-dessus par compte)`],
-    ["Google OAuth", s.google_configured ? "✅ configuré" : "❌ GOOGLE_CLIENT_ID/SECRET manquants dans .env"],
-    ["Attio (import)", s.attio_configured ? "✅ configuré" : "— ATTIO_API_KEY non renseigné (optionnel)"],
-    ["Attio (suivi d'avancement)", s.attio_stage_attribute ? `✅ écrit dans l'attribut « ${esc(s.attio_stage_attribute)} »` : "— ATTIO_STAGE_ATTRIBUTE non renseigné (optionnel)"],
-  ];
-  $("#settings tbody").innerHTML = rows.map(([k, v]) => `<tr><th style="width:280px">${k}</th><td>${v}</td></tr>`).join("");
+  $("#googleWarn").hidden = s.google_configured;
+  $("#warmupTh").title = `Montée en charge : ${d.warmupStart} emails/jour au départ, +${d.warmupRamp} par semaine jusqu'au quota`;
 }
 
 // --- Comptes LinkedIn (une extension Chrome par compte) ---
+let li = { enabled: true, accounts: [] };
+
+function liWarn(lines) {
+  $("#liWarn").innerHTML = lines.map(esc).join("<br>");
+  $("#liWarn").hidden = !lines.length;
+}
+
 async function loadLi() {
-  let s;
-  try { s = await api("/api/li/status"); }
-  catch { $("#liStatus").innerHTML = `<span class="muted">Statut indisponible.</span>`; return; }
+  try { li = await api("/api/li/status"); }
+  catch { return liWarn(["Statut LinkedIn indisponible."]); }
+  const s = li;
 
-  const online = s.accounts.filter(a => a.connected).length;
-  $("#liStatus").innerHTML = `
-    <div class="stat-grid" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr))">
-      <div class="stat-card"><div class="sv">${online} / ${s.accounts.length}</div><div class="sl">Comptes connectés</div></div>
-      <div class="stat-card"><div class="sv">${s.today.invite.sent} / ${s.today.invite.cap}</div><div class="sl">Invitations aujourd'hui</div></div>
-      <div class="stat-card"><div class="sv">${s.today.message.sent} / ${s.today.message.cap}</div><div class="sl">Messages aujourd'hui</div></div>
-      <div class="stat-card"><div class="sv">${s.queue.pending}</div><div class="sl">Actions en file${s.queue.unassigned ? ` (${s.queue.unassigned} non attribuées)` : ""}</div></div>
-      <div class="stat-card"><div class="sv">${s.queue.failed}</div><div class="sl">Échecs</div></div>
-    </div>`;
-
-  $("#liServerWarn").hidden = s.server_mode_ready || !s.accounts.some(a => a.mode === "server");
+  liWarn(!s.server_mode_ready && s.accounts.some(a => a.mode === "server")
+    ? ["Mode serveur indisponible : LI_SECRET_KEY / LI_RUNNER_SECRET manquants (.env)"] : []);
+  $("#liQueueTh").textContent = "En file" + (s.queue.unassigned ? ` (+${s.queue.unassigned} sans compte)` : "");
   const btn = $("#liToggle");
   btn.hidden = !s.accounts.length;
   btn.textContent = s.enabled ? "⏸ Tout mettre en pause" : "▶ Tout réactiver";
 
-  // Ne pas réécrire le tableau pendant une saisie
-  if (document.activeElement && $("#liAccounts").contains(document.activeElement)) return;
+  if (typingIn("#liAccounts")) return;
   $("#liAccounts tbody").innerHTML = s.accounts.map(a => {
-    const dot = a.connected ? "var(--ok)" : "var(--bad)";
+    const server = a.mode === "server";
     const state = a.paused_until ? `<div class="err">pause jusqu'à ${new Date(a.paused_until).toLocaleString("fr-FR", {weekday:"short", hour:"2-digit", minute:"2-digit"})}</div>` : "";
-    const who = a.mode === "server" ? "navigateur serveur" : "extension";
-    const sess = a.mode !== "server" ? ""
-      : a.session.state === "ok" ? `<div class="ok">session ✓ (${timeAgo(a.session.updated_at)})</div>`
-      : a.session.state === "wrong_account" ? `<div class="err" title="${esc(a.session.error)}">mauvais profil LinkedIn connecté — rien envoyé ; session du bon compte à renvoyer</div>`
-      : a.session.state ? `<div class="err" title="${esc(a.session.error)}">session ${a.session.state === "expired" ? "expirée" : "bloquée (contrôle de sécurité)"} — à renvoyer depuis l'extension</div>`
-      : `<div class="err">session à envoyer depuis l'extension</div>`;
-    const proxy = a.mode !== "server" ? "" : `<div><input value="" placeholder="${a.has_proxy ? "proxy configuré ✓ (remplacer…)" : "⚠️ proxy http://user:mdp@hôte:port"}" style="width:220px" onchange="patchLi(${a.id}, {proxy: this.value})"></div>`;
+    // Session du navigateur serveur : seuls les problèmes s'affichent
+    const sessLabel = { wrong_account: "mauvais profil connecté", expired: "session expirée", checkpoint: "session bloquée" }[a.session.state] || "session manquante";
+    const sess = !server || a.session.state === "ok" ? ""
+      : `<div class="err" title="${esc([a.session.error, "À renvoyer depuis l'extension"].filter(Boolean).join(" — "))}">${sessLabel}</div>`;
+    const proxy = !server ? "" : `<div><input value="" title="Proxy résidentiel ou ISP fixe, propre au compte : sans proxy, le serveur ne lance rien" placeholder="${a.has_proxy ? "proxy configuré ✓ (remplacer…)" : "⚠️ proxy http://user:mdp@hôte:port"}" style="width:220px" onchange="patchLi(${a.id}, {proxy: this.value})"></div>`;
+    const quota = (kind, field, label) => `<td style="white-space:nowrap">${a.today[kind].sent} / <input type="number" min="0" value="${a[field]}" title="${label} / jour" style="width:60px" onchange="patchLi(${a.id}, {${field}: this.value})">
+        ${a.today[kind].cap < a[field] ? `<div class="muted">warm-up : ${a.today[kind].cap}/j</div>` : ""}</td>`;
     return `<tr>
-      <td><input value="${esc(a.name)}" style="width:130px" onchange="patchLi(${a.id}, {name: this.value})">
-        ${a.member ? `<div><a href="${esc(a.member.url)}" target="_blank" rel="noopener" title="Profil vérifié avant chaque action">✓ ${esc(a.member.name || a.member.slug)}</a></div>` : `<div class="muted">profil pas encore vérifié</div>`}
+      <td><input value="${esc(a.name)}" style="width:150px" onchange="patchLi(${a.id}, {name: this.value})">
+        ${a.member ? `<div><a href="${esc(a.member.url)}" target="_blank" rel="noopener" title="Profil vérifié avant chaque action">✓ ${esc(a.member.name || a.member.slug)}</a></div>` : `<div class="muted">profil non vérifié</div>`}
         ${a.owner_ref ? `<div class="muted" title="Compte d'un utilisateur Azerit : ses campagnes seulement">client ${esc(a.owner_ref)}</div>` : ""}</td>
-      <td><select onchange="patchLi(${a.id}, {mode: this.value})">
-          <option value="extension" ${a.mode === "extension" ? "selected" : ""}>Extension Chrome</option>
-          <option value="server" ${a.mode === "server" ? "selected" : ""}>Navigateur serveur</option></select>
-        <div><span style="width:9px;height:9px;border-radius:50%;background:${dot};display:inline-block"></span>
-        <span class="muted">${who} ${a.last_seen_at ? `vu ${timeAgo(a.last_seen_at)}` : "jamais vu"}${a.watching ? ` · surveille ${a.watching} réponse(s)` : ""}</span></div>${sess}${proxy}${state}</td>
-      <td>${a.today.invite.sent} / ${a.today.invite.cap}</td>
-      <td>${a.today.message.sent} / ${a.today.message.cap}</td>
+      <td><select style="width:170px" onchange="patchLi(${a.id}, {mode: this.value})">
+          <option value="extension" ${server ? "" : "selected"}>Extension Chrome</option>
+          <option value="server" ${server ? "selected" : ""}>Navigateur serveur</option></select>
+        <div><span style="width:9px;height:9px;border-radius:50%;background:var(--${a.connected ? "ok" : "bad"});display:inline-block"></span>
+        <span class="muted">${a.last_seen_at ? `vu ${timeAgo(a.last_seen_at)}` : "jamais vu"}</span></div>${sess}${proxy}${state}</td>
+      ${quota("invite", "invites_per_day", "Invitations")}
+      ${quota("message", "messages_per_day", "Messages")}
       <td>${a.queue.pending}${a.queue.failed ? ` <span class="err">· ${a.queue.failed} échec(s)</span>` : ""}</td>
-      <td>${a.contacts}</td>
-      <td><input type="number" min="0" value="${a.invites_per_day}" title="Invitations / jour" style="width:56px" onchange="patchLi(${a.id}, {invites_per_day: this.value})">
-          <input type="number" min="0" value="${a.messages_per_day}" title="Messages / jour" style="width:56px" onchange="patchLi(${a.id}, {messages_per_day: this.value})"></td>
       <td><input type="checkbox" ${a.active ? "checked" : ""} onchange="patchLi(${a.id}, {active: this.checked})"></td>
       <td style="white-space:nowrap"><button class="ghost" onclick="rotateLi(${a.id})" title="Générer un nouveau jeton (l'ancien cesse de fonctionner)">Jeton</button>
-          <button class="danger" onclick="deleteLi(${a.id})" title="Supprimer (seulement si le compte n'a encore rien fait)">✕</button></td>
+          <button class="icon-btn danger" onclick="deleteLi(${a.id})" title="Supprimer (seulement si le compte n'a encore rien fait)">✕</button></td>
     </tr>`;
-  }).join("") || '<tr><td colspan="9" class="muted">Aucun compte LinkedIn — ajoutez-en un ci-dessous.</td></tr>';
+  }).join("") || '<tr><td colspan="7" class="muted">Aucun compte LinkedIn</td></tr>';
 }
 
-const jsonPost = (method, body) => ({ method, headers: {"Content-Type":"application/json"}, body: JSON.stringify(body ?? {}) });
+let shownToken = "";
 
 function showToken(name, token) {
+  shownToken = token;
   const box = $("#liToken");
   box.hidden = false;
-  box.innerHTML = `<b>Jeton du compte « ${esc(name)} »</b> — copiez-le maintenant, il ne sera plus affiché :
-    <div class="inline" style="gap:8px;margin-top:8px"><code style="user-select:all;word-break:break-all">${esc(token)}</code>
-    <button class="ghost" onclick="navigator.clipboard.writeText('${esc(token)}')">Copier</button>
-    <button class="ghost" onclick="$('#liToken').hidden = true">Fermer</button></div>
-    <div class="muted" style="margin-top:6px">À coller dans le popup de l'extension Chrome de ce compte (champ « Jeton du compte LinkedIn »).</div>`;
+  box.innerHTML = `<b>Jeton de « ${esc(name)} »</b> <span class="muted">affiché une seule fois</span>
+    <div class="inline" style="margin-top:8px"><code style="user-select:all;word-break:break-all">${esc(token)}</code>
+    <button class="ghost" onclick="copyText(shownToken).then(ok => ok && notify('Jeton copié'))">Copier</button>
+    <button class="ghost" onclick="$('#liToken').hidden = true">Fermer</button></div>`;
 }
 
 async function addLiAccount() {
   const name = $("#liNewName").value.trim();
   if (!name) return $("#liNewName").focus();
-  const a = await api("/api/li/accounts", jsonPost("POST", { name }));
-  $("#liNewName").value = "";
-  showToken(a.name, a.token);
+  try {
+    const a = await api("/api/li/accounts", jsonPost("POST", { name }));
+    $("#liNewName").value = "";
+    showToken(a.name, a.token);
+  } catch (e) { fail(e); }
   loadLi();
 }
 
 async function patchLi(id, patch) {
   try { await api(`/api/li/accounts/${id}`, jsonPost("PATCH", patch)); }
-  catch (e) { alert(e.message || e); }
+  catch (e) { fail(e); }
   loadLi();
 }
 
 async function rotateLi(id) {
   if (!confirm("Générer un nouveau jeton ? L'extension qui utilise l'ancien sera refusée jusqu'à ce que vous y colliez le nouveau.")) return;
-  const r = await api(`/api/li/accounts/${id}/token`, jsonPost("POST"));
-  const a = (await api("/api/li/accounts")).find(x => x.id === id);
-  showToken(a ? a.name : `#${id}`, r.token);
+  try {
+    const r = await api(`/api/li/accounts/${id}/token`, jsonPost("POST"));
+    const a = li.accounts.find(x => x.id === id);
+    showToken(a ? a.name : `#${id}`, r.token);
+  } catch (e) { fail(e); }
 }
 
 async function deleteLi(id) {
   if (!confirm("Supprimer ce compte LinkedIn ?")) return;
   try { await api(`/api/li/accounts/${id}`, { method: "DELETE" }); }
-  catch (e) { alert(e.message || e); }
+  catch (e) { fail(e); }
   loadLi();
 }
 
@@ -203,8 +211,8 @@ function timeAgo(ts) {
 }
 
 async function toggleLi() {
-  const s = await api("/api/li/status");
-  await api("/api/li/toggle", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ enabled: !s.enabled }) });
+  try { await api("/api/li/toggle", jsonPost("POST", { enabled: !li.enabled })); }
+  catch (e) { fail(e); }
   loadLi();
 }
 

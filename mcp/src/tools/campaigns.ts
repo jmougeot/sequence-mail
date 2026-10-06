@@ -1,6 +1,6 @@
 /**
  * Campagnes : lecture, activité, aperçu et email de test, création, édition,
- * pause/reprise, suppression.
+ * pause/reprise, archivage, suppression.
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -85,7 +85,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Lister les campagnes",
       description:
-        "Liste toutes les campagnes avec leurs statistiques : statut (active/paused), nombre de contacts par état, emails envoyés, visites du lien {{link}}, taux de réponse (global et par variante A/B), progression. À utiliser pour avoir une vue d'ensemble avant toute action.",
+        "Liste toutes les campagnes avec leurs statistiques : statut (active/paused/archived), nombre de contacts par état, emails envoyés, visites du lien {{link}}, taux de réponse (global et par variante A/B), progression. À utiliser pour avoir une vue d'ensemble avant toute action.",
       inputSchema: {},
       annotations: READ,
     },
@@ -283,5 +283,28 @@ export function registerCampaignTools(server: McpServer): void {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     handler(({ campaign_id }: { campaign_id: number }) => api("POST", `/api/campaigns/${campaign_id}/resume`))
+  );
+
+  server.registerTool(
+    "archive_campaign",
+    {
+      title: "Archiver une campagne",
+      description:
+        "Passe la campagne en statut 'archived' : elle reste consultable (séquence, contacts, statistiques) et rangée à part dans l'app, mais n'envoie plus rien et ne peut être ni reprise ni relancée tant qu'elle est archivée. Rien n'est supprimé. À préférer à delete_campaign pour ranger une campagne terminée.",
+      inputSchema: { campaign_id: z.number().int().describe("Identifiant de la campagne.") },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    handler(({ campaign_id }: { campaign_id: number }) => api("POST", `/api/campaigns/${campaign_id}/archive`))
+  );
+
+  server.registerTool(
+    "unarchive_campaign",
+    {
+      title: "Désarchiver une campagne",
+      description: "Sort la campagne des archives : elle revient en statut 'paused', sans aucun envoi (resume_campaign pour la reprendre).",
+      inputSchema: { campaign_id: z.number().int().describe("Identifiant de la campagne.") },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    handler(({ campaign_id }: { campaign_id: number }) => api("POST", `/api/campaigns/${campaign_id}/unarchive`))
   );
 }

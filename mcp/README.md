@@ -77,7 +77,7 @@ MCP les charge.
 **Campagnes** — `list_campaigns`, `get_campaign`, `get_activity` (journal : totaux et
 événements sur N jours), `preview_email`, `send_test_email` (email `[TEST]` d'une étape,
 `dry_run` par défaut), `create_campaign`, `update_campaign`, `delete_campaign`,
-`pause_campaign`, `resume_campaign`.
+`pause_campaign`, `resume_campaign`, `archive_campaign`, `unarchive_campaign`.
 
 **Contacts** — `list_campaign_contacts` (filtres `status`/`search`, paginé `limit`/`offset`,
 renvoie `{ total, returned, offset, contacts }`), `search_contacts` (toutes campagnes),

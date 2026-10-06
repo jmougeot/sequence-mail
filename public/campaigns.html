@@ -4,162 +4,118 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Campagnes</title>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
 <div class="wrap wide">
-  <div class="inline" style="justify-content:space-between;margin-bottom:16px">
-    <div class="inline" style="gap:8px">
-      <h1 style="margin:0">Campagnes</h1>
-      <select id="campSelect" style="width:220px" onchange="if(this.value) selectCampaign(+this.value)">
-        <option value="">— Sélectionner —</option>
-      </select>
-    </div>
-    <button onclick="newCampaign()">+ Nouvelle campagne</button>
+  <div class="topbar">
+    <h1>Campagnes</h1>
+    <select id="campSelect" style="width:240px" onchange="if(this.value) selectCampaign(+this.value)">
+      <option value="">— Sélectionner —</option>
+    </select>
+    <span id="statusZone" class="inline"></span>
+    <span class="spacer"></span>
+    <button class="ghost" onclick="newCampaign()">+ Nouvelle campagne</button>
   </div>
-  <div id="campContent">
-      <!-- Onglets (cachés en mode création) -->
-      <div id="campTabs" hidden class="camp-tabs">
-        <button class="tab-btn active" id="tab-seq"      onclick="showTab('seq')">Séquence</button>
-        <button class="tab-btn"        id="tab-stats"    onclick="showTab('stats')">Stats</button>
-        <button class="tab-btn"        id="tab-contacts" onclick="showTab('contacts')">Contacts</button>
-        <button class="tab-btn"        id="tab-import"   onclick="showTab('import')">Import</button>
-      </div>
 
-      <!-- Onglet Séquence -->
-      <div id="paneSeq">
-        <div class="row" style="align-items:flex-start;gap:16px">
-          <div style="flex:1;min-width:0">
-            <div id="editorCard" class="editor">
-              <div class="inline" style="justify-content:space-between">
-                <h2 id="editorTitle" style="margin:0">Nouvelle campagne</h2>
-                <span id="statusZone"></span>
-              </div>
-              <input id="campName" class="camp-name-input" placeholder="Nom de la campagne">
-              <div class="inline" style="gap:10px;flex-wrap:wrap;margin:2px 0 12px" title="Les emails de cette campagne ne partiront que depuis les comptes cochés (tous par défaut)">
-                <span class="muted">Comptes d'envoi :</span>
-                <span id="senderList" class="inline" style="gap:12px;flex-wrap:wrap"></span>
-              </div>
-              <div id="steps"></div>
-              <p class="inline" style="gap:10px;flex-wrap:wrap">
-                <span class="add-step">
-                  <button class="ghost" onclick="toggleAddMenu(event)">+ Ajouter une étape</button>
-                  <span class="add-menu" id="addMenu" hidden>
-                    <button type="button" onclick="addStepOfType('email')">
-                      <span class="mic">✉️</span><span class="ml">Email<small>Message ou relance par email</small></span>
-                    </button>
-                    <button type="button" onclick="addStepOfType('invite')">
-                      <span class="mic">🔗</span><span class="ml">Invitation LinkedIn<small>Demande de connexion (note optionnelle)</small></span>
-                    </button>
-                    <button type="button" onclick="addStepOfType('message')">
-                      <span class="mic">💬</span><span class="ml">Message LinkedIn<small>Message à un contact déjà connecté</small></span>
-                    </button>
-                  </span>
-                </span>
-                <button onclick="saveCampaign()" id="saveBtn">Créer la campagne</button>
-                <span id="campMsg"></span>
-              </p>
-            </div>
-          </div>
-          <div class="card" id="previewCard" hidden style="flex:0 0 380px;position:sticky;top:24px;align-self:flex-start">
-            <div class="inline" style="justify-content:space-between">
-              <h2 style="margin:0">Aperçu</h2>
-              <div class="inline">
-                <span class="muted">Compte :</span>
-                <select id="previewAccount" style="width:auto" onchange="rerunPreview()"></select>
-                <button class="ghost" onclick="$('#previewCard').hidden = true">Fermer</button>
-              </div>
-            </div>
-            <div class="preview" id="previewBody" style="margin-top:10px"></div>
-            <p class="muted" id="previewNote"></p>
-          </div>
-        </div>
-      </div>
+  <div id="campTabs" hidden class="camp-tabs">
+    <button class="tab-btn active" id="tab-seq"      onclick="showTab('seq')">Séquence</button>
+    <button class="tab-btn"        id="tab-stats"    onclick="showTab('stats')">Stats</button>
+    <button class="tab-btn"        id="tab-contacts" onclick="showTab('contacts')">Contacts</button>
+    <button class="tab-btn"        id="tab-import"   onclick="showTab('import')">Import</button>
+  </div>
 
-      <!-- Onglet Stats -->
-      <div id="paneStats" hidden>
-        <div class="card">
-          <div class="inline" style="justify-content:space-between;margin-bottom:16px">
-            <h2 style="margin:0">Statistiques</h2>
-            <span id="statsStatusZone"></span>
-          </div>
-          <div id="statsContent"></div>
-        </div>
-      </div>
+  <!-- Séquence -->
+  <div id="paneSeq" class="editor">
+    <input id="campName" class="camp-name-input" placeholder="Nom de la campagne">
+    <div class="senders">
+      <span class="muted">Comptes d'envoi</span>
+      <span id="senderList" class="chips"></span>
+    </div>
+    <div id="steps"></div>
+    <div class="add-row">
+      <span class="muted">Ajouter</span>
+      <button class="ghost" onclick="addStepOfType('email')">✉️ Email</button>
+      <button class="ghost" onclick="addStepOfType('invite')">🔗 Invitation LinkedIn</button>
+      <button class="ghost" onclick="addStepOfType('message')">💬 Message LinkedIn</button>
+    </div>
+    <div class="editor-foot">
+      <button onclick="saveCampaign()" id="saveBtn">Créer la campagne</button>
+      <span id="campMsg"></span>
+    </div>
+  </div>
 
-      <!-- Onglet Contacts -->
-      <div id="paneContacts" hidden>
-        <div class="row" style="align-items:flex-start;gap:16px">
-          <div style="flex:1;min-width:0">
-            <div class="card" style="overflow-x:auto">
-              <div class="inline" style="justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:8px">
-                <h2 style="margin:0">Contacts</h2>
-                <div class="inline" style="gap:8px">
-                  <span class="muted"><span id="selCount">0</span> sélectionné(s)</span>
-                  <button id="launchBtn" onclick="launchSelected()" disabled style="background:var(--ok);color:#fff">▶ Lancer les envois</button>
-                  <button id="stopBtn" class="ghost" onclick="stopSelected()" disabled>⏸ Arrêter la séquence</button>
-                  <select id="statusSet" style="width:auto;margin:0" disabled onchange="setStatusSelected(this)">
-                    <option value="">Changer le statut…</option>
-                  </select>
-                  <button id="removeBtn" class="danger" onclick="removeSelected()" disabled>Retirer</button>
-                </div>
-              </div>
-              <div class="inline" style="gap:8px;margin-bottom:10px;flex-wrap:wrap">
-                <input id="contactSearch" placeholder="Rechercher (email, nom…)" style="width:230px;margin:0" oninput="renderContacts()">
-                <div id="statusChips" class="inline" style="gap:6px;flex-wrap:wrap"></div>
-              </div>
-              <table id="contacts"><thead><tr>
-                <th style="width:36px"><input type="checkbox" id="selectAll" title="Tout sélectionner" onchange="toggleSelectAll(this)"></th>
-                <th>Email</th><th>Nom</th><th>Statut</th><th>Étape</th><th title="A ouvert son lien personnalisé {{link}}">Visite</th><th>Variante</th><th>Compte d'envoi</th><th>Prochain envoi</th>
-              </tr></thead><tbody></tbody></table>
-            </div>
-          </div>
-          <div id="contactPreviewPanel" hidden style="flex:0 0 380px;position:sticky;top:24px;align-self:flex-start">
-            <div class="card">
-              <div class="inline" style="justify-content:space-between;margin-bottom:10px">
-                <h2 style="margin:0" id="contactPreviewTitle">Aperçu</h2>
-                <button class="ghost" onclick="$('#contactPreviewPanel').hidden=true">Fermer</button>
-              </div>
-              <div class="inline" style="margin-bottom:8px">
-                <span class="muted" style="white-space:nowrap">Compte :</span>
-                <select id="previewAccount2" style="width:auto" onchange="rerunContactPreview()"></select>
-              </div>
-              <details id="contactFields" style="margin-bottom:10px">
-                <summary class="muted" style="cursor:pointer;font-size:13px">✏️ Champs du contact (variables)</summary>
-                <div id="contactFieldsBody" style="margin-top:8px"></div>
-                <p class="muted" style="font-size:12px;margin:8px 0 0">Accord en genre : <code>{{genre:intéressé|intéressée}}</code> affiche la 1re forme au masculin, la 2e au féminin (colonne <code>genre</code> = H/F).</p>
-              </details>
-              <div class="preview" id="contactPreviewBody"></div>
-              <p class="muted" id="contactPreviewNote" style="margin-bottom:0"></p>
-            </div>
-          </div>
-        </div>
-      </div>
+  <!-- Stats -->
+  <div id="paneStats" hidden>
+    <div class="card" id="statsContent"></div>
+  </div>
 
-      <!-- Onglet Import -->
-      <div id="paneImport" hidden>
-        <div class="card">
-          <h2>Ajouter des contacts à « <span id="importName"></span> »</h2>
-          <div class="row">
-            <div class="grow">
-              <h3 style="margin-top:0">Import CSV</h3>
-              <input id="csvFile" type="file" accept=".csv">
-              <p class="muted">Colonnes : email et/ou linkedin (au moins l'un des deux), first_name, last_name, company, … — un contact sans email saute les étapes email, un contact sans profil saute les étapes LinkedIn.</p>
-              <button onclick="importCsv(this)">Importer</button> <span id="csvMsg" class="muted"></span>
-            </div>
-            <div class="grow">
-              <h3 style="margin-top:0">Synchroniser depuis Attio</h3>
-              <input id="attioAttr" placeholder="Slug de l'attribut statut (ex: stage)">
-              <input id="attioStatuses" placeholder="Statuts, séparés par des virgules">
-              <button onclick="attioSync(this)">Synchroniser</button> <span id="attioMsg" class="muted"></span>
-            </div>
-          </div>
-        </div>
+  <!-- Contacts -->
+  <div id="paneContacts" hidden>
+    <div class="card" style="overflow-x:auto">
+      <div class="toolbar">
+        <input id="contactSearch" placeholder="Rechercher (email, nom, société…)" style="width:240px" oninput="renderContacts()">
+        <div id="statusChips" class="chips"></div>
       </div>
+      <div class="toolbar bulk" id="bulkBar" hidden>
+        <b><span id="selCount">0</span> sélectionné(s)</b>
+        <button id="launchBtn" onclick="launchSelected()" style="background:var(--ok)">▶ Lancer les envois</button>
+        <button id="stopBtn" class="ghost" onclick="stopSelected()">⏸ Arrêter la séquence</button>
+        <select id="statusSet" style="width:auto" onchange="setStatusSelected(this)">
+          <option value="">Changer le statut…</option>
+        </select>
+        <button id="removeBtn" class="ghost" onclick="removeSelected()">Retirer de la campagne</button>
+      </div>
+      <table id="contacts"><thead><tr>
+        <th style="width:36px"><input type="checkbox" id="selectAll" title="Tout sélectionner" onchange="toggleSelectAll(this)"></th>
+        <th>Contact</th><th>Statut</th><th>Étape</th><th title="A ouvert son lien personnalisé {{link}}">Visite</th><th>Variante</th><th>Compte d'envoi</th><th>Prochain envoi</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+  <!-- Import -->
+  <div id="paneImport" hidden>
+    <div class="row">
+      <div class="card grow">
+        <h2>Import CSV</h2>
+        <input id="csvFile" type="file" accept=".csv">
+        <p class="muted">Colonnes : email et/ou linkedin (au moins l'un des deux), first_name, last_name, company, … — un contact sans email saute les étapes email, un contact sans profil saute les étapes LinkedIn.</p>
+        <button onclick="importCsv(this)">Importer</button> <span id="csvMsg" class="muted"></span>
+      </div>
+      <div class="card grow">
+        <h2>Synchroniser depuis Attio</h2>
+        <input id="attioAttr" placeholder="Slug de l'attribut statut (ex: stage)">
+        <input id="attioStatuses" placeholder="Statuts, séparés par des virgules">
+        <button onclick="attioSync(this)">Synchroniser</button> <span id="attioMsg" class="muted"></span>
+      </div>
+    </div>
   </div>
 </div>
 
-<script src="app.js"></script>
+<!-- Panneau latéral : aperçu d'une étape (👁) ou d'un contact (clic dans le tableau) -->
+<aside id="drawer" class="drawer" hidden>
+  <div class="drawer-head">
+    <div style="min-width:0">
+      <div id="drawerTitle" class="drawer-title"></div>
+      <div id="drawerSub" class="muted"></div>
+    </div>
+    <button class="icon-btn" title="Fermer (Échap)" onclick="closeDrawer()">✕</button>
+  </div>
+  <div class="drawer-scroll">
+    <div class="inline" style="margin-bottom:12px">
+      <span class="muted" style="white-space:nowrap">Compte</span>
+      <select id="previewAccount" onchange="rerunPreview()"></select>
+    </div>
+    <details id="contactFields" hidden>
+      <summary>Champs du contact</summary>
+      <div id="contactFieldsBody"></div>
+    </details>
+    <div id="drawerBody"></div>
+    <p class="muted" id="drawerNote" style="margin:10px 0 0"></p>
+  </div>
+</aside>
+
+<script src="app.js?v=3"></script>
 <script>
 renderNav("campaigns.html");
 
@@ -171,17 +127,26 @@ async function loadList() {
   const campaigns = await api("/api/campaigns");
   const sel = $("#campSelect");
   const cur = sel.value;
+  // Les campagnes archivées sont masquées du sélecteur (on les retrouve depuis le tableau de bord),
+  // sauf celle qui est ouverte.
   sel.innerHTML = `<option value="">— Sélectionner —</option>` +
-    campaigns.map(c => `<option value="${c.id}" ${c.id === selectedId ? "selected" : ""}>${esc(c.name)} (${STATUS_LABELS[c.status] || c.status})</option>`).join("");
+    campaigns.filter(c => c.status !== "archived" || c.id === selectedId)
+      .map(c => `<option value="${c.id}" ${c.id === selectedId ? "selected" : ""}>${esc(c.name)} (${STATUS_LABELS[c.status] || c.status})</option>`).join("");
   if (!sel.value && cur) sel.value = cur;
   return campaigns;
 }
 
-// Type d'étape encodé en une valeur : email | invite | message
+// Campagne ouverte par défaut : la plus récente qui n'est pas archivée
+const firstCampaign = campaigns => campaigns.find(c => c.status !== "archived") ?? campaigns[0];
+
+// ---------------------------------------------------------------------------
+// Éditeur de séquence. Une étape = { channel, li_action, subject, subject_b, body, wait_days } ;
+// son type est encodé en une valeur : email | invite | message.
+// ---------------------------------------------------------------------------
 const STEP_TYPES = {
-  email:   { icon: "✉️", label: "Email",                tag: "Email" },
-  invite:  { icon: "🔗", label: "Invitation LinkedIn",  tag: "LinkedIn" },
-  message: { icon: "💬", label: "Message LinkedIn",     tag: "LinkedIn" },
+  email:   { icon: "✉️", label: "Email" },
+  invite:  { icon: "🔗", label: "Invitation LinkedIn" },
+  message: { icon: "💬", label: "Message LinkedIn" },
 };
 
 function stepChannel(s) {
@@ -194,40 +159,34 @@ function bodyPlaceholder(chan) {
     : "Bonjour {{first_name}},\n...";
 }
 
-function stepHtml(n, s) {
-  s = s || {};
+// n = numéro (1..), firstEmail = cette étape est le premier email de la séquence
+// (objet obligatoire, A/B test possible), single = seule étape (non supprimable).
+function stepHtml(n, s, { firstEmail, single }) {
   const chan = stepChannel(s);
   const t = STEP_TYPES[chan];
   const isEmail = chan === "email";
   return `<div class="step" data-chan="${chan}">
     ${n > 1 ? `<div class="step-delay">
-      <span class="muted">⏱ Attendre</span>
-      <input class="wait" type="number" value="${s.wait_days ?? 3}" min="1">
-      <span class="muted">jour(s) après l’étape précédente</span>
+      <span>Attendre</span>
+      <input class="wait" type="number" value="${s.wait_days || 3}" min="1">
+      <span>jour(s)</span>
     </div>` : ""}
     <div class="step-card">
       <div class="step-head">
-        <span class="step-type">
-          <span class="step-ic">${t.icon}</span>
-          <b>Étape ${n}</b>
-          <span class="step-tag">${t.tag}</span>
-        </span>
-        <span class="inline" style="gap:4px">
-          <button class="icon-btn" title="Aperçu" onclick="previewStep(this.closest('.step'))">👁</button>
-          ${n > 1 ? `<button class="icon-btn danger" title="Supprimer l’étape" onclick="this.closest('.step').remove(); renumberSteps()">✕</button>` : ""}
-        </span>
+        <span class="step-ic">${t.icon}</span>
+        <b>Étape ${n}</b>
+        <select class="step-kind" title="Type de l’étape" onchange="changeStepType(this)">
+          ${Object.entries(STEP_TYPES).map(([k, v]) => `<option value="${k}" ${k === chan ? "selected" : ""}>${v.label}</option>`).join("")}
+        </select>
+        <span class="spacer"></span>
+        <button class="icon-btn" title="Aperçu" onclick="previewStep(this)">👁</button>
+        <button class="icon-btn danger" title="Supprimer l’étape" onclick="removeStep(this)" ${single ? "disabled" : ""}>✕</button>
       </div>
-      ${isEmail ? `<input class="subject" placeholder="${n === 1 ? "Objet (obligatoire)" : "Objet (vide = même fil, Re:)"}" value="${esc(s.subject)}">` : ""}
-      ${isEmail && n === 1 ? `<input class="subjectB" placeholder="Objet B (optionnel — A/B test 50/50)" value="${esc(s.subject_b)}">` : ""}
+      ${isEmail ? `<input class="subject" placeholder="${firstEmail ? "Objet" : "Objet (vide = même fil, Re:)"}" value="${esc(s.subject)}">` : ""}
+      ${isEmail && firstEmail ? `<input class="subjectB" placeholder="Objet B (optionnel — A/B test 50/50)" value="${esc(s.subject_b)}">` : ""}
       <textarea class="body" rows="1" placeholder="${esc(bodyPlaceholder(chan))}">${esc(s.body)}</textarea>
     </div>
   </div>`;
-}
-
-function renumberSteps() {
-  $$("#steps .step").forEach((div, i) => {
-    div.querySelector(".step-type b").textContent = `Étape ${i + 1}`;
-  });
 }
 
 // Le corps grandit tout seul avec le texte (pas de redimensionnement manuel).
@@ -236,28 +195,13 @@ function autosize(el) {
   el.style.height = Math.max(el.scrollHeight, 96) + "px";
 }
 
-function addStep(s) {
-  const n = $$("#steps .step").length + 1;
-  $("#steps").insertAdjacentHTML("beforeend", stepHtml(n, s));
-  autosize($("#steps .step:last-child .body"));
+// Rend toute la séquence à partir d'une liste d'étapes : seule source de vérité du DOM.
+function setSteps(list) {
+  const firstEmailIdx = list.findIndex(s => stepChannel(s) === "email");
+  $("#steps").innerHTML = list.map((s, i) =>
+    stepHtml(i + 1, s, { firstEmail: i === firstEmailIdx, single: list.length === 1 })).join("");
+  $$("#steps .body").forEach(autosize);
 }
-
-// --- Menu « + » : choix du type d'étape à ajouter (façon builder) ---
-function toggleAddMenu(e) {
-  e.stopPropagation();
-  $("#addMenu").hidden = !$("#addMenu").hidden;
-}
-function closeAddMenu() { const m = $("#addMenu"); if (m) m.hidden = true; }
-
-function addStepOfType(chan) { // email | invite | message
-  closeAddMenu();
-  addStep(chan === "email" ? { channel: "email" } : { channel: "linkedin", li_action: chan });
-  $("#steps .step:last-child")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-
-document.addEventListener("click", e => {
-  if (!e.target.closest(".add-step")) closeAddMenu();
-});
 
 function readSteps() {
   return $$("#steps .step").map(div => {
@@ -274,13 +218,43 @@ function readSteps() {
   });
 }
 
+const stepIndex = el => $$("#steps .step").indexOf(el.closest(".step"));
+
+function addStepOfType(chan) { // email | invite | message
+  const list = readSteps();
+  list.push(chan === "email" ? { channel: "email" } : { channel: "linkedin", li_action: chan });
+  setSteps(list);
+  const last = $("#steps .step:last-child");
+  last.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  (last.querySelector(".subject") || last.querySelector(".body")).focus();
+}
+
+// Changer le type garde le corps ; l'objet est perdu si l'étape cesse d'être un email.
+function changeStepType(sel) {
+  const i = stepIndex(sel);
+  const list = readSteps();
+  const chan = sel.value;
+  list[i] = { ...list[i], channel: chan === "email" ? "email" : "linkedin", li_action: chan === "email" ? undefined : chan };
+  setSteps(list);
+  $$("#steps .step")[i].querySelector(".step-kind").focus();
+}
+
+function removeStep(btn) {
+  const i = stepIndex(btn);
+  const list = readSteps();
+  if (list.length <= 1) return;
+  list.splice(i, 1);
+  setSteps(list);
+  if (preview?.kind === "step") closeDrawer();
+}
+
 // --- Comptes d'envoi de la campagne : tous cochés par défaut (null = tous) ---
 function renderSenders(selectedIds) {
   $("#senderList").innerHTML = accounts.map(a => `
-    <label class="inline" style="gap:5px;cursor:pointer;font-size:13px;white-space:nowrap">
-      <input type="checkbox" class="senderChk" value="${a.id}" ${!selectedIds || selectedIds.includes(a.id) ? "checked" : ""} onchange="refreshPreviewAccounts()">
-      ${esc(a.email)}${a.active ? "" : ' <span class="muted">(inactif)</span>'}
-    </label>`).join("") || '<span class="muted">Aucun compte connecté — voir Réglages</span>';
+    <label class="chip ${!selectedIds || selectedIds.includes(a.id) ? "active" : ""}" title="${a.active ? "" : "Compte inactif"}">
+      <input type="checkbox" class="senderChk" value="${a.id}" ${!selectedIds || selectedIds.includes(a.id) ? "checked" : ""} onchange="this.closest('.chip').classList.toggle('active', this.checked); refreshPreviewAccounts()" hidden>
+      ${esc(a.email)}${a.active ? "" : " (inactif)"}
+    </label>`).join("") || '<span class="muted">Aucun compte connecté — voir Paramètres</span>';
 }
 
 // null = tous cochés (la campagne suivra aussi les comptes connectés plus tard)
@@ -291,37 +265,33 @@ function readSenderIds() {
   return sel.length === checks.length ? null : sel;
 }
 
-// Les menus « Compte » d'aperçu ne proposent que les comptes d'envoi cochés de la
-// campagne — pas tous les comptes connectés. Conserve la sélection si toujours valide.
+// Le menu « Compte » de l'aperçu ne propose que les comptes d'envoi cochés de la
+// campagne. Conserve la sélection si toujours valide.
 function refreshPreviewAccounts() {
   const ids = readSenderIds();                 // null = tous
   const pool = ids ? accounts.filter(a => ids.includes(a.id)) : accounts;
-  const opts = `<option value="">(1er compte actif)</option>` +
+  const el = $("#previewAccount");
+  const prev = el.value;
+  el.innerHTML = `<option value="">(1er compte actif)</option>` +
     pool.map(a => `<option value="${a.id}">${esc(a.email)}</option>`).join("");
-  for (const sel of ["#previewAccount", "#previewAccount2"]) {
-    const el = $(sel);
-    const prev = el.value;
-    el.innerHTML = opts;
-    el.value = [...el.options].some(o => o.value === prev) ? prev : "";
-  }
+  el.value = [...el.options].some(o => o.value === prev) ? prev : "";
 }
 
 function newCampaign() {
   selectedId = null;
   location.hash = "new";
-  $("#editorTitle").textContent = "Nouvelle campagne";
   $("#saveBtn").textContent = "Créer la campagne";
   $("#statusZone").innerHTML = "";
   $("#campName").value = "";
   $("#campMsg").textContent = "";
   renderSenders(null);
   refreshPreviewAccounts();
-  $("#steps").innerHTML = "";
-  addStep();
+  setSteps([{ channel: "email" }]);
   $("#campTabs").hidden = true;
   showPane("paneSeq");
-  $("#previewCard").hidden = true;
+  closeDrawer();
   loadList();
+  $("#campName").focus();
 }
 
 function showTab(name) {
@@ -338,8 +308,7 @@ function showTab(name) {
 
 function showPane(id) {
   ["paneSeq","paneStats","paneContacts","paneImport"].forEach(p => {
-    const el = $("#" + p);
-    if (el) el.hidden = p !== id;
+    $("#" + p).hidden = p !== id;
   });
 }
 
@@ -356,7 +325,7 @@ function renderStats(c) {
     </div>`;
 
   $("#statsContent").innerHTML = `
-    <div class="stat-section">Prospects</div>
+    <div class="stat-section" style="margin-top:0">Prospects</div>
     <div class="stat-grid">
       ${card(c.contacts, null, "Total dans la campagne")}
       ${card(launched, pct(launched, c.contacts), "Lancés")}
@@ -393,41 +362,66 @@ function renderStats(c) {
 async function loadStats() {
   const campaigns = await api("/api/campaigns");
   const c = campaigns.find(x => x.id === selectedId);
-  if (!c) return;
-  renderStats(c);
-  $("#statsStatusZone").innerHTML = `${pill(c.status)}
-    <button class="ghost" onclick="toggleStatus(${selectedId}, '${c.status}')">${c.status === "active" ? "⏸ Mettre en pause" : "▶ Lancer les envois"}</button>`;
+  if (c) renderStats(c);
 }
+
+// Statut et actions de la campagne, dans l'en-tête (visibles sur tous les onglets).
+// Une campagne archivée ne se relance qu'après désarchivage.
+function renderStatusZone(c) {
+  const main = c.status === "archived"
+    ? `<button class="ghost" onclick="setArchived(${c.id}, false)">Désarchiver</button>`
+    : `<button class="ghost" onclick="toggleStatus(${c.id}, '${c.status}')">${c.status === "active" ? "⏸ Mettre en pause" : "▶ Lancer les envois"}</button>`;
+  $("#statusZone").innerHTML = `${pill(c.status)} ${main}
+    <span class="menu">
+      <button class="icon-btn" title="Plus d’actions" onclick="toggleMenu(event)">⋯</button>
+      <span class="menu-list" hidden>
+        ${c.status === "archived" ? "" : `<button type="button" onclick="setArchived(${c.id}, true)">🗄 Archiver</button>`}
+        <button type="button" class="danger" onclick="deleteCampaign()">🗑 Supprimer</button>
+      </span>
+    </span>`;
+}
+
+function toggleMenu(e) {
+  e.stopPropagation();
+  const list = e.currentTarget.nextElementSibling;
+  list.hidden = !list.hidden;
+}
+document.addEventListener("click", e => {
+  if (!e.target.closest(".menu")) $$(".menu-list").forEach(m => m.hidden = true);
+});
 
 async function selectCampaign(id, tab = "seq") {
   selectedId = id;
   const c = await api(`/api/campaigns/${id}`);
-  $("#editorTitle").textContent = `Modifier « ${c.name} »`;
-  $("#saveBtn").textContent = "Enregistrer les modifications";
-  $("#statusZone").innerHTML = `${pill(c.status)}
-    <button class="ghost" onclick="toggleStatus(${id}, '${c.status}')">${c.status === "active" ? "⏸ Mettre en pause" : "▶ Lancer les envois"}</button>
-    <button class="danger" onclick="deleteCampaign()">🗑 Supprimer</button>`;
+  $("#saveBtn").textContent = "Enregistrer";
+  renderStatusZone(c);
   $("#campName").value = c.name;
   $("#campMsg").textContent = "";
   renderSenders(c.account_ids);
   refreshPreviewAccounts();
-  $("#steps").innerHTML = "";
-  c.steps.forEach(s => addStep(s));
-  $("#importName").textContent = c.name;
+  setSteps(c.steps.length ? c.steps : [{ channel: "email" }]);
   $("#campTabs").hidden = false;
   $("#tab-contacts").textContent = "Contacts";
   statusFilter = "";
   $("#contactSearch").value = "";
-  $("#contactPreviewPanel").hidden = true;
+  closeDrawer();
   showTab(tab);
   if (tab !== "contacts") loadContacts(); // alimente aussi l'autocomplétion des variables
-  $("#previewCard").hidden = true;
   loadList();
 }
 
 async function toggleStatus(id, status) {
   await api(`/api/campaigns/${id}/${status === "active" ? "pause" : "resume"}`, { method: "POST" });
-  selectCampaign(id);
+  const c = await api(`/api/campaigns/${id}`);
+  renderStatusZone(c);
+  loadList();
+}
+
+async function setArchived(id, archived) {
+  await api(`/api/campaigns/${id}/${archived ? "archive" : "unarchive"}`, { method: "POST" });
+  const c = await api(`/api/campaigns/${id}`);
+  renderStatusZone(c);
+  loadList();
 }
 
 async function deleteCampaign() {
@@ -438,7 +432,7 @@ async function deleteCampaign() {
     selectedId = null;
     location.hash = "";
     const campaigns = await loadList();
-    if (campaigns.length) selectCampaign(campaigns[0].id);
+    if (campaigns.length) selectCampaign(firstCampaign(campaigns).id);
     else newCampaign();
   } catch (e) { alert(e.message); }
 }
@@ -457,91 +451,150 @@ async function saveCampaign() {
   try {
     if (selectedId) {
       await api(`/api/campaigns/${selectedId}`, { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
-      msg.textContent = "Modifications enregistrées ✓";
+      msg.textContent = "Enregistré ✓";
       notify("Modifications enregistrées — les prochains envois utiliseront le nouveau contenu");
+      loadList();
     } else {
       const { id } = await api("/api/campaigns", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
-      msg.textContent = `Campagne « ${payload.name} » créée ✓`;
       notify("Campagne créée — ajoutez des contacts via l'onglet Import");
       await selectCampaign(id, "import");
     }
     msg.className = "ok";
-    loadList();
   } catch (e) { msg.textContent = e.message; msg.className = "err"; }
   btn.disabled = false;
 }
 
-// --- Aperçu ---
-// Deux entrées : 👁 sur une étape (contact par défaut) ou clic sur un contact
-// (l'email exact que CE prospect recevra à sa prochaine étape).
-async function runPreview({ stepDiv, contact }) {
-  const steps = $$("#steps .step");
-  if (!steps.length) return;
-  let div = stepDiv, note = "";
+// ---------------------------------------------------------------------------
+// Aperçu (panneau latéral). Deux entrées : 👁 sur une étape (contact d'exemple)
+// ou clic sur un contact du tableau (toute la séquence telle que CE prospect la recevra).
+// ---------------------------------------------------------------------------
+let preview = null;          // { kind: "step", index } | { kind: "contact", contact }
+let contactPreviewMsgs = []; // messages bruts (par étape) copiables pour un envoi manuel
 
-  if (contact) {
-    const total = steps.length;
-    const idx = Math.min(contact.current_step, total - 1); // prochaine étape (index 0 = étape 1)
-    div = steps[idx];
-    note = contact.current_step >= total
-      ? `${contact.email || contact.linkedin || "Ce contact"} a déjà reçu toute la séquence — aperçu de la dernière étape (${total}/${total}).`
-      : `Aperçu pour ${contact.email || contact.linkedin || "ce contact"} — prochaine étape : ${idx + 1}/${total}${contact.variant ? ` (variante ${contact.variant})` : ""}.`;
-  }
-  if (!div) return;
+function openDrawer() { $("#drawer").hidden = false; document.body.classList.add("drawer-open"); }
+function closeDrawer() {
+  $("#drawer").hidden = true;
+  document.body.classList.remove("drawer-open");
+  preview = null;
+  $$("#contacts tr.sel").forEach(tr => tr.classList.remove("sel"));
+}
 
+function previewStep(btn) { preview = { kind: "step", index: stepIndex(btn) }; runPreview(); }
+function previewContact(contactId) {
+  const contact = contactRows.find(r => r.contact_id === contactId);
+  if (!contact) return;
+  preview = { kind: "contact", contact };
+  $$("#contacts tr").forEach(tr => tr.classList.toggle("sel", +tr.dataset.contact === contactId));
+  // Présélectionne le compte réellement assigné au contact (fil en cours)
+  if (contact.account_id) $("#previewAccount").value = contact.account_id;
+  renderContactFields(contact);
+  runPreview();
+}
+function rerunPreview() { if (preview) runPreview(); }
+
+// Objet d'une étape email : le premier email de la séquence porte l'objet (A ou B selon
+// la variante du contact) ; une relance sans objet reste dans le fil (« Re: »).
+function subjectOf(steps, i, variant) {
+  const firstEmail = steps.findIndex(d => d.dataset.chan === "email");
+  const first = steps[firstEmail];
+  const subjA = first?.querySelector(".subject")?.value || "";
+  const subjB = first?.querySelector(".subjectB")?.value || "";
+  const firstSubject = variant === "B" && subjB ? subjB : subjA;
+  if (i === firstEmail) return firstSubject;
+  return steps[i].querySelector(".subject")?.value || `Re: ${firstSubject}`;
+}
+
+async function renderStepPreview(steps, i, { contact, accountId }) {
+  const div = steps[i];
   const chan = div.dataset.chan || "email"; // email | invite | message
-
-  // Sujet : étape 1 = A ou B selon la variante du contact ; relance sans sujet = Re: sujet reçu
-  const first = steps[0];
-  const subjA = first.querySelector(".subject").value || "";
-  const subjB = first.querySelector(".subjectB")?.value || "";
-  const firstSubject = contact?.variant === "B" && subjB ? subjB : subjA;
-  const ownSubject = div.querySelector(".subject")?.value || "";
-  const subject = div === first ? firstSubject : (ownSubject || `Re: ${firstSubject}`);
-
   const r = await api("/api/preview", {
     method: "POST", headers: {"Content-Type":"application/json"},
     body: JSON.stringify({
-      subject: chan === "email" ? subject : "",
+      subject: chan === "email" ? subjectOf(steps, i, contact?.variant) : "",
       body: div.querySelector(".body").value,
       campaign_id: selectedId || undefined,
       contact_id: contact?.contact_id,
-      account_id: contact?.account_id || +$("#previewAccount").value || undefined,
+      account_id: accountId,
     }),
   });
-  $("#previewBody").innerHTML = chan === "email" ? `
-    <div class="hline">De : ${esc(r.from)}</div>
-    <div class="hline">À : ${esc(r.to)}</div>
-    <div class="hline"><b style="color:var(--text)">Objet : ${esc(r.subject)}</b></div>
-    <pre>${fmtBody(r.body)}</pre>` : `
-    <div class="hline"><b style="color:var(--text)">${chan === "invite" ? "🔗 Invitation LinkedIn" : "💬 Message LinkedIn"}</b></div>
-    <pre>${fmtBody(r.body) || '<span class="muted">(invitation sans note)</span>'}</pre>`;
-  $("#previewNote").textContent = note || (r.sample_contact
-    ? "Aperçu avec un contact d'exemple (la campagne n'a pas encore de contacts)."
-    : "Aperçu avec le premier contact de la campagne — cliquez sur un contact du tableau pour le personnaliser.");
-  $("#previewCard").hidden = false;
+  // Un contact sans email saute les étapes email, un contact sans profil saute les étapes LinkedIn
+  const skipped = contact && (chan === "email" ? !contact.email : !contact.linkedin);
+  const header = chan === "email"
+    ? `<div class="hline">De : ${esc(r.from)}</div>
+       ${skipped ? `<div class="hline skip">Pas d’email — cette étape sera sautée</div>` : `<div class="hline">À : ${esc(r.to)}</div>`}
+       <div class="hline"><b>Objet : ${esc(r.subject)}</b></div>`
+    : `<div class="hline"><b>${STEP_TYPES[chan].icon} ${STEP_TYPES[chan].label}</b></div>
+       ${skipped ? `<div class="hline skip">Pas de profil LinkedIn — cette étape sera sautée</div>` : ""}`;
+  const body = chan === "invite" && !r.body ? '<span class="muted">(invitation sans note)</span>' : fmtBody(r.body);
+  return { r, skipped, html: `${header}<pre>${body}</pre>` };
 }
 
-let lastPreview = null;
-let lastContactPreview = null;
-let contactPreviewMsgs = []; // messages bruts (par étape) copiables pour un envoi manuel
+async function runPreview() {
+  const steps = $$("#steps .step");
+  if (!steps.length || !preview) return;
+  const p = preview;
+  const title = $("#drawerTitle"), sub = $("#drawerSub"), body = $("#drawerBody"), note = $("#drawerNote");
+  const accountId = +$("#previewAccount").value || p.contact?.account_id || undefined;
+
+  if (p.kind === "step") {
+    const i = Math.min(p.index, steps.length - 1);
+    title.textContent = `Aperçu — étape ${i + 1}`;
+    sub.textContent = "";
+    $("#contactFields").hidden = true;
+  } else {
+    const c = p.contact;
+    const name = [c.first_name, c.last_name].filter(Boolean).join(" ");
+    title.textContent = c.email || name || c.linkedin;
+    sub.textContent = [name !== title.textContent ? name : "", c.company].filter(Boolean).join(" · ");
+    $("#contactFields").hidden = false;
+  }
+  body.innerHTML = '<p class="muted" style="margin:0">Chargement de l’aperçu…</p>';
+  note.textContent = "";
+  openDrawer();
+
+  try {
+    if (p.kind === "step") {
+      const i = Math.min(p.index, steps.length - 1);
+      const { r, html } = await renderStepPreview(steps, i, { accountId });
+      if (preview !== p) return; // un autre aperçu a été demandé entre-temps
+      body.innerHTML = `<div class="preview">${html}</div>`;
+      note.textContent = r.sample_contact
+        ? "Aperçu avec un contact d'exemple (la campagne n'a pas encore de contacts)."
+        : "Aperçu avec le premier contact de la campagne — cliquez sur un contact du tableau pour le personnaliser.";
+      return;
+    }
+
+    const contact = p.contact, total = steps.length;
+    const renders = await Promise.all(steps.map((div, i) => renderStepPreview(steps, i, { contact, accountId })));
+    if (preview !== p) return;
+    // Prochaine étape : la première, à partir de l'avancement du contact, qui ne sera pas sautée
+    const next = renders.findIndex((x, i) => i >= contact.current_step && !x.skipped);
+    const current = next >= 0 ? next : Math.min(contact.current_step, total - 1);
+    contactPreviewMsgs = renders.map(x => x.r.body || "");
+    body.innerHTML = renders.map(({ r, html, skipped }, i) => {
+      const waitDays = steps[i].querySelector(".wait")?.value;
+      return `${i ? `<div class="pv-wait">↓ J+${waitDays || "?"}</div>` : ""}
+        <div class="preview ${i === current ? "current" : ""} ${skipped ? "skipped" : ""}">
+          <div class="pv-head">
+            <span>Étape ${i + 1}/${total}${i === current && contact.current_step < total ? " · prochaine" : ""}</span>
+            ${r.body && !skipped ? `<button class="ghost" title="Copier le message" onclick="copyStepMsg(${i})">Copier</button>` : ""}
+          </div>
+          ${html}
+        </div>`;
+    }).join("");
+    note.textContent = contact.current_step >= total ? "Ce contact a reçu toute la séquence." :
+      contact.variant ? `Variante ${contact.variant}.` : "";
+  } catch (e) {
+    if (preview !== p) return;
+    body.innerHTML = `<p class="err" style="margin:0">${esc(e.message)}</p>`;
+  }
+}
+
 async function copyStepMsg(i) {
   const msg = contactPreviewMsgs[i];
   if (!msg) return;
   const ok = await copyText(msg);
   notify(ok ? "Message copié — prêt à coller" : "Impossible de copier le message", ok);
-}
-function previewStep(stepDiv) { lastPreview = { stepDiv }; runPreview(lastPreview); }
-function rerunPreview() { if (lastPreview) runPreview(lastPreview); }
-function rerunContactPreview() { if (lastContactPreview) runContactPreview(lastContactPreview); }
-function previewContact(contactId) {
-  const contact = contactRows.find(r => r.contact_id === contactId);
-  if (!contact) return;
-  lastContactPreview = contact;
-  // Présélectionne le compte réellement assigné au contact (fil en cours)
-  if (contact.account_id) $("#previewAccount2").value = contact.account_id;
-  renderContactFields(contact);
-  runContactPreview(contact);
 }
 
 // --- Champs du contact (standards + colonnes CSV personnalisées) ---
@@ -549,9 +602,9 @@ function renderContactFields(contact) {
   let extra = {};
   try { extra = contact.extra ? JSON.parse(contact.extra) : {}; } catch {}
   const row = (attr, key, val) => `
-    <div class="inline" style="gap:6px;margin-bottom:4px">
-      <span class="muted" style="flex:0 0 115px;font-size:12px;overflow:hidden;text-overflow:ellipsis" title="{{${esc(key)}}}">{{${esc(key)}}}</span>
-      <input ${attr}="${esc(key)}" value="${esc(val ?? "")}" style="margin:0">
+    <div class="field-row">
+      <span class="muted" title="{{${esc(key)}}}">${esc(key)}</span>
+      <input ${attr}="${esc(key)}" value="${esc(val ?? "")}">
     </div>`;
   $("#contactFieldsBody").innerHTML =
     row("data-field", "first_name", contact.first_name) +
@@ -559,16 +612,15 @@ function renderContactFields(contact) {
     row("data-field", "company", contact.company) +
     row("data-field", "linkedin", contact.linkedin) +
     Object.entries(extra).map(([k, v]) => row("data-extra", k, v)).join("") + `
-    <div class="inline" style="gap:6px;margin:10px 0 6px">
-      <input id="newFieldName" placeholder="nouveau_champ" style="margin:0;flex:0 0 115px">
-      <input id="newFieldValue" placeholder="valeur" style="margin:0">
+    <div class="field-row">
+      <input id="newFieldName" placeholder="nouveau_champ" style="flex:0 0 110px">
+      <input id="newFieldValue" placeholder="valeur">
     </div>
-    <button class="ghost" onclick="saveContactFields()" style="width:100%">Enregistrer les champs</button>
-   `;
+    <button class="ghost" onclick="saveContactFields()" style="width:100%;margin-top:4px">Enregistrer les champs</button>`;
 }
 
 async function saveContactFields() {
-  const c = lastContactPreview;
+  const c = preview?.contact;
   if (!c) return;
   const body = { extra: {} };
   $$("#contactFieldsBody [data-field]").forEach(i => body[i.getAttribute("data-field")] = i.value);
@@ -581,72 +633,10 @@ async function saveContactFields() {
     await loadContacts();
     const updated = contactRows.find(r => r.contact_id === c.contact_id);
     if (updated) {
-      lastContactPreview = updated;
-      renderContactFields(updated);
       $("#contactFields").open = true;
-      runContactPreview(updated);
+      previewContact(updated.contact_id);
     }
   } catch (e) { notify(e.message, false); }
-}
-
-async function runContactPreview(contact) {
-  const steps = $$("#steps .step");
-  if (!steps.length) return;
-  $("#contactPreviewTitle").textContent = contact.email || [contact.first_name, contact.last_name].filter(Boolean).join(" ") || contact.linkedin;
-  $("#contactPreviewBody").innerHTML = '<p class="muted" style="margin:0">Chargement de l\'aperçu…</p>';
-  $("#contactPreviewNote").textContent = "";
-  $("#contactPreviewPanel").hidden = false;
-  const total = steps.length;
-  const accountId = +$("#previewAccount2").value || contact.account_id || undefined;
-
-  const first = steps[0];
-  const subjA = first.querySelector(".subject").value || "";
-  const subjB = first.querySelector(".subjectB")?.value || "";
-  const firstSubject = contact?.variant === "B" && subjB ? subjB : subjA;
-
-  // Render all steps in parallel
-  const renders = await Promise.all(steps.map(async (div, i) => {
-    const chan = div.dataset.chan || "email"; // email | invite | message
-    const ownSubject = div.querySelector(".subject")?.value || "";
-    const subject = i === 0 ? firstSubject : (ownSubject || `Re: ${firstSubject}`);
-    const r = await api("/api/preview", {
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ subject: chan === "email" ? subject : "", body: div.querySelector(".body").value, campaign_id: selectedId, contact_id: contact.contact_id, account_id: accountId }),
-    });
-    const isCurrent = i === Math.min(contact.current_step, total - 1);
-    const waitDays = div.querySelector(".wait")?.value;
-    const waitLabel = i === 0 ? "" : `<div class="muted" style="text-align:center;padding:6px 0;font-size:12px">↓ J+${waitDays || "?"}</div>`;
-    const header = chan === "email"
-      ? `<div class="hline">De : ${esc(r.from)}</div>
-         <div class="hline"><b style="color:var(--text)">Objet : ${esc(r.subject)}</b></div>`
-      : `<div class="hline"><b style="color:var(--text)">${chan === "invite" ? "🔗 Invitation LinkedIn" : "💬 Message LinkedIn"}</b></div>`;
-    const bodyHtml = chan === "invite" && !r.body
-      ? '<span class="muted">(invitation sans note)</span>'
-      : fmtBody(r.body);
-    // Message brut (tel qu'il sera envoyé) copié dans le presse-papiers pour un envoi manuel.
-    const msg = r.body || "";
-    const copyBtn = r.body
-      ? `<button class="ghost" style="font-size:11px;padding:2px 9px;margin:0" title="Copier le message" onclick="copyStepMsg(${i})">Copier</button>`
-      : "";
-    const html = `${waitLabel}<div class="preview" style="margin-bottom:0;${isCurrent ? "border-color:var(--accent)" : "opacity:0.6"}">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-        <span class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.05em">Étape ${i + 1}/${total}</span>
-        <span class="inline" style="gap:4px">
-          ${isCurrent ? `<span class="pill active" style="font-size:10px">prochaine</span>` : ""}
-          ${copyBtn}
-        </span>
-      </div>
-      ${header}
-      <pre style="max-height:180px;overflow-y:auto">${bodyHtml}</pre>
-    </div>`;
-    return { html, msg };
-  }));
-
-  contactPreviewMsgs = renders.map(x => x.msg);
-  $("#contactPreviewTitle").textContent = contact.email || [contact.first_name, contact.last_name].filter(Boolean).join(" ") || contact.linkedin;
-  $("#contactPreviewBody").innerHTML = renders.map(x => x.html).join("");
-  $("#contactPreviewNote").textContent = contact.current_step >= total ? "Séquence terminée." : "";
-  $("#contactPreviewPanel").hidden = false;
 }
 
 // --- Contacts & import ---
@@ -658,11 +648,14 @@ function renderContacts() {
   const q = $("#contactSearch").value.trim().toLowerCase();
   const rows = contactRows.filter(r =>
     (!statusFilter || r.status === statusFilter) &&
-    (!q || [r.email, r.first_name, r.last_name, r.linkedin].filter(Boolean).join(" ").toLowerCase().includes(q))
+    (!q || [r.email, r.first_name, r.last_name, r.company, r.linkedin].filter(Boolean).join(" ").toLowerCase().includes(q))
   );
 
   // La campagne utilise-t-elle des étapes LinkedIn ? (alors une URL de profil est requise)
   const hasLiSteps = $$("#steps .step").some(d => d.dataset.chan !== "email");
+  // Sélection et contact ouvert conservés à travers les rendus
+  const checked = new Set($$("#contacts .contactChk:checked").map(c => +c.dataset.id));
+  const openId = preview?.kind === "contact" ? preview.contact.contact_id : null;
 
   const counts = {};
   contactRows.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
@@ -673,12 +666,14 @@ function renderContacts() {
     ).join("") : "";
 
   $("#contacts tbody").innerHTML = rows.map(r => `
-    <tr style="cursor:pointer" title="Voir l'aperçu personnalisé pour ce contact" onclick="previewContact(${r.contact_id})">
-      <td onclick="event.stopPropagation()"><input type="checkbox" class="contactChk" data-id="${r.cc_id}" data-status="${r.status}" onchange="updateSelection()"></td>
-      <td>${r.email ? esc(r.email) : `<span class="muted">LinkedIn seul</span>`}${r.linkedin
-        ? ` <a class="li-link" href="${esc(liUrl(r.linkedin))}" target="_blank" rel="noopener" title="Profil LinkedIn : ${esc(r.linkedin)}" onclick="event.stopPropagation()">in</a>`
-        : (hasLiSteps ? ` <span class="err" title="Aucune URL LinkedIn — les étapes LinkedIn échoueront">⚠️</span>` : "")}</td>
-      <td>${esc([r.first_name, r.last_name].filter(Boolean).join(" "))}</td>
+    <tr class="${r.contact_id === openId ? "sel" : ""}" data-contact="${r.contact_id}" title="Voir l'aperçu personnalisé pour ce contact" onclick="previewContact(${r.contact_id})">
+      <td onclick="event.stopPropagation()"><input type="checkbox" class="contactChk" data-id="${r.cc_id}" data-status="${r.status}" ${checked.has(r.cc_id) ? "checked" : ""} onchange="updateSelection()"></td>
+      <td class="contact-cell">
+        <div class="contact-name">${esc([r.first_name, r.last_name].filter(Boolean).join(" ") || r.email || r.linkedin)}${r.linkedin
+          ? ` <a class="li-link" href="${esc(liUrl(r.linkedin))}" target="_blank" rel="noopener" title="Profil LinkedIn : ${esc(r.linkedin)}" onclick="event.stopPropagation()">in</a>`
+          : (hasLiSteps ? ` <span class="err" title="Aucune URL LinkedIn — les étapes LinkedIn seront sautées">⚠️</span>` : "")}</div>
+        <div class="muted">${esc([r.company, r.email || "pas d’email"].filter(Boolean).join(" · "))}</div>
+      </td>
       <td>${pill(r.status)}${r.li_thread_url ? ` <a href="${esc(r.li_thread_url)}" target="_blank" rel="noopener" title="Réponse sur LinkedIn — ouvrir la conversation" onclick="event.stopPropagation()">💬</a>` : ""}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
       <td>${r.current_step || "—"}</td>
       <td>${r.visit_count ? `<span title="${new Date(r.last_visit_at).toLocaleString("fr-FR")} — ${r.visit_count} visite(s)">🌐 ${r.visit_count}</span>` : "—"}</td>
@@ -686,7 +681,7 @@ function renderContacts() {
       <td class="muted">${esc([r.sender, r.li_sender && `in: ${r.li_sender}`].filter(Boolean).join(" · ") || "—")}</td>
       <td class="muted">${r.next_send_at ? new Date(r.next_send_at).toLocaleString("fr-FR") : "—"}</td>
     </tr>
-  `).join("") || `<tr><td colspan="9" class="muted">${contactRows.length
+  `).join("") || `<tr><td colspan="8" class="muted">${contactRows.length
     ? "Aucun contact ne correspond à la recherche."
     : `Aucun contact — <a href="#" onclick="showTab('import');return false">ajoutez-en via l'onglet Import</a>.`}</td></tr>`;
   updateSelection();
@@ -702,18 +697,12 @@ function updateSelection() {
   const all = $$("#contacts .contactChk");
   const checked = $$("#contacts .contactChk:checked");
   $("#selCount").textContent = checked.length;
+  $("#bulkBar").hidden = checked.length === 0;
   // Lancer : uniquement des contacts non lancés ; arrêter : au moins une séquence active
   $("#launchBtn").disabled = !checked.some(c => c.dataset.status === "held");
   $("#stopBtn").disabled = !checked.some(c => ["held", "pending", "in_progress"].includes(c.dataset.status));
-  $("#removeBtn").disabled = checked.length === 0;
-  $("#statusSet").disabled = checked.length === 0;
-  if (all.length > 0) {
-    $("#selectAll").indeterminate = checked.length > 0 && checked.length < all.length;
-    $("#selectAll").checked = checked.length === all.length;
-  } else {
-    $("#selectAll").indeterminate = false;
-    $("#selectAll").checked = false;
-  }
+  $("#selectAll").indeterminate = all.length > 0 && checked.length > 0 && checked.length < all.length;
+  $("#selectAll").checked = all.length > 0 && checked.length === all.length;
 }
 
 function toggleSelectAll(cb) {
@@ -734,6 +723,7 @@ async function bulkContacts(action, confirmMsg, toastOf) {
     const [msg, ok] = toastOf(r);
     notify(msg, ok);
     loadContacts(); loadList();
+    if (selectedId) api(`/api/campaigns/${selectedId}`).then(renderStatusZone);
   } catch (e) { notify(e.message, false); }
 }
 
@@ -829,18 +819,15 @@ async function attioSync(btn) {
   if (hid && hid !== "new" && campaigns.some(c => c.id === +hid)) {
     selectCampaign(+hid, tab);
   } else if (hid !== "new" && campaigns.length) {
-    selectCampaign(campaigns[0].id);
+    selectCampaign(firstCampaign(campaigns).id);
   } else {
     newCampaign();
   }
 })();
 
-// Échap ferme les panneaux d'aperçu
+// Échap ferme le panneau d'aperçu
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape") {
-    $("#contactPreviewPanel").hidden = true;
-    $("#previewCard").hidden = true;
-  }
+  if (e.key === "Escape" && !$("#drawer").hidden) closeDrawer();
 });
 
 // --- Autocomplétion des variables : taper {{ propose les choix disponibles ---
