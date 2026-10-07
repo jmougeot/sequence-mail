@@ -837,7 +837,10 @@ let acBox = null, acItems = [], acIndex = 0, acField = null;
 function availableVars() {
   const extras = new Set();
   contactRows.forEach(r => {
-    if (r.extra) { try { Object.keys(JSON.parse(r.extra)).forEach(k => extras.add(k)); } catch {} }
+    // champs du contact (extra) et variables propres à la campagne (vars)
+    for (const json of [r.extra, r.vars]) {
+      if (json) { try { Object.keys(JSON.parse(json)).forEach(k => extras.add(k)); } catch {} }
+    }
   });
   return [...BASE_VARS, ...extras];
 }

@@ -225,6 +225,25 @@ function inSendWindow(now = new Date()): boolean {
   return h >= d.sendWindowStart && h < d.sendWindowEnd;
 }
 
+/** Début de la prochaine fenêtre d'envoi après `ts` (heure du serveur). */
+function nextSendWindowOpen(ts: number): number {
+  for (let i = 0; i < 8; i++) {
+    const open = new Date(ts);
+    open.setDate(open.getDate() + i);
+    open.setHours(d.sendWindowStart, 0, 0, 0);
+    if (open.getTime() > ts && inSendWindow(open)) return open.getTime();
+  }
+  return ts + 24 * 3600 * 1000;
+}
+
+/** Fenêtre d'envoi des emails : ouverte jusqu'à closes_at, ou fermée jusqu'à opens_at (epoch ms). */
+export function sendWindowState(ts = Date.now()): { open: boolean; opens_at?: number; closes_at?: number } {
+  if (!inSendWindow(new Date(ts))) return { open: false, opens_at: nextSendWindowOpen(ts) };
+  const close = new Date(ts);
+  close.setHours(d.sendWindowEnd, 0, 0, 0);
+  return { open: true, closes_at: close.getTime() };
+}
+
 interface DueRow {
   cc_id: number;
   campaign_id: number;
@@ -500,6 +519,48 @@ const DUE_SELECT = `
 
 const NEXT_IS_LINKEDIN = `EXISTS (SELECT 1 FROM steps s
   WHERE s.campaign_id = cc.campaign_id AND s.step_number = cc.current_step + 1 AND s.channel = 'linkedin')`;
+
+/**
+ * Estimation du prochain envoi d'email, au plus tôt : contacts dus ou planifiés
+ * des campagnes actives, fenêtre d'envoi, quota et repos des comptes. Ne tient
+ * pas compte de la sélection de comptes de chaque campagne ni du tick (1 à 2 min).
+ */
+export function nextEmailEstimate(ts = Date.now()): { earliest_at: number | null; due_now: number; reason?: string } {
+  const dueNow = (
+    db
+      .prepare(`SELECT COUNT(*) AS n FROM (${DUE_SELECT} AND NOT ${NEXT_IS_LINKEDIN}) WHERE email IS NOT NULL`)
+      .get({ now: ts }) as { n: number }
+  ).n;
+  const scheduled = (
+    db
+      .prepare(
+        `SELECT MIN(cc.next_send_at) AS t
+         FROM campaign_contacts cc
+         JOIN contacts c ON c.id = cc.contact_id
+         JOIN campaigns cp ON cp.id = cc.campaign_id
+         WHERE cp.status = 'active' AND ${NOT_OPTED_OUT} AND c.email IS NOT NULL
+           AND cc.status IN ('pending', 'in_progress') AND cc.next_send_at > @now
+           AND NOT ${NEXT_IS_LINKEDIN}`
+      )
+      .get({ now: ts }) as { t: number | null }
+  ).t;
+  if (!dueNow && scheduled == null) {
+    return { earliest_at: null, due_now: 0, reason: "aucun email en attente dans une campagne active" };
+  }
+  const accounts = db.prepare("SELECT * FROM accounts WHERE active = 1").all() as AccountRow[];
+  if (!accounts.length) return { earliest_at: null, due_now: dueNow, reason: "aucun compte Google actif" };
+
+  let at = dueNow ? ts : scheduled!;
+  // sent_today n'est remis à zéro qu'au premier tick du jour (date UTC)
+  const underQuota = accounts.filter((a) => (a.sent_today_date === today() ? a.sent_today : 0) < effectiveDailyLimit(a));
+  if (underQuota.length) {
+    at = Math.max(at, Math.min(...underQuota.map((a) => a.next_allowed_at ?? 0)));
+  } else {
+    at = Math.max(at, Date.parse(`${today()}T00:00:00Z`) + 24 * 3600 * 1000);
+  }
+  if (!inSendWindow(new Date(at))) at = nextSendWindowOpen(at);
+  return { earliest_at: at, due_now: dueNow, ...(underQuota.length ? {} : { reason: "quota du jour atteint sur tous les comptes actifs" }) };
+}
 
 /**
  * Un tick d'envoi. Deux files séparées, pour qu'aucune ne bloque l'autre :

@@ -4,7 +4,13 @@ import { db } from "../db.js";
 import { normalizeLinkedin } from "./linkedin-url.js";
 import { isOptedOut } from "./opt-out.js";
 
-const KNOWN_COLUMNS = new Set(["email", "first_name", "last_name", "company", "linkedin"]);
+export const KNOWN_COLUMNS = new Set(["email", "first_name", "last_name", "company", "linkedin"]);
+
+// Champs personnalisés vus par un template : ceux de l'inscription (cc.vars, propres
+// à une campagne) priment sur ceux du contact (c.extra, partagés entre campagnes).
+// Même fusion que le scheduler (DUE_SELECT).
+export const MERGED_EXTRA = `CASE WHEN cc.vars IS NULL THEN c.extra WHEN c.extra IS NULL THEN cc.vars
+  ELSE json_patch(c.extra, cc.vars) END`;
 
 export interface ImportReport {
   imported: number;
@@ -48,10 +54,12 @@ export async function domainAcceptsMail(domain: string): Promise<boolean> {
 export async function importContacts(
   campaignId: number,
   rows: Array<Record<string, string>>,
-  source: { attioRecordIds?: Record<string, string>; withIds?: boolean } = {}
+  source: { attioRecordIds?: Record<string, string>; withIds?: boolean; campaignVars?: string[] } = {}
 ): Promise<ImportReport> {
   const report: ImportReport = { imported: 0, updated: 0, skipped: 0, errors: [] };
   const ids: Array<number | null> = [];
+  // Colonnes rattachées à l'inscription (campaign_contacts.vars) plutôt qu'au contact
+  const campaignVars = new Set(source.campaignVars ?? []);
 
   // Vérification MX par domaine, en amont de la transaction (résolution DNS asynchrone)
   const domains = new Set(
@@ -92,6 +100,11 @@ export async function importContacts(
     INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, status)
     VALUES (?, ?, 'held')
   `);
+  // Même fusion que les champs du contact : les nouvelles valeurs écrasent les anciennes
+  const setVars = db.prepare(`
+    UPDATE campaign_contacts SET vars = CASE WHEN vars IS NULL THEN @vars ELSE json_patch(vars, @vars) END
+    WHERE campaign_id = @campaign AND contact_id = @contact
+  `);
 
   const run = db.transaction(() => {
     for (const row of rows) {
@@ -112,8 +125,9 @@ export async function importContacts(
         continue;
       }
       const extra: Record<string, string> = {};
+      const vars: Record<string, string> = {};
       for (const [k, v] of Object.entries(row)) {
-        if (!KNOWN_COLUMNS.has(k) && v) extra[k] = v;
+        if (!KNOWN_COLUMNS.has(k) && v) (campaignVars.has(k) ? vars : extra)[k] = v;
       }
       const fields = {
         email,
@@ -146,6 +160,7 @@ export async function importContacts(
       const r = enroll.run(campaignId, id);
       if (r.changes > 0) report.imported++;
       else report.updated++; // déjà inscrit : ses champs viennent d'être mis à jour
+      if (Object.keys(vars).length) setVars.run({ vars: JSON.stringify(vars), campaign: campaignId, contact: id });
     }
   });
   run();
@@ -153,11 +168,15 @@ export async function importContacts(
   return report;
 }
 
+/** Nom de colonne normalisé en snake_case minuscule (« Prénom du contact » → prénom_du_contact). */
+export function normalizeColumn(name: string): string {
+  return name.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
 /** Parse un CSV (entêtes en première ligne, normalisées en snake_case). */
 export function parseCsv(content: string): Array<Record<string, string>> {
   return parse(content, {
-    columns: (header: string[]) =>
-      header.map((h) => h.trim().toLowerCase().replace(/[\s-]+/g, "_")),
+    columns: (header: string[]) => header.map(normalizeColumn),
     delimiter: detectDelimiter(content),
     skip_empty_lines: true,
     trim: true,
@@ -216,4 +235,17 @@ export function renderTemplate(
     )
     // Variables simples : {{first_name}}
     .replace(/\{\{\s*([\p{L}\p{N}_]+)\s*\}\}/gu, (_, key: string) => vars[key] ?? "");
+}
+
+/**
+ * Variables référencées par un template, avec les mêmes motifs que
+ * renderTemplate. La valeur indique si la variable n'apparaît que dans un accord
+ * en genre ({{genre:masculin|féminin}}) : absente, elle donne le masculin, pas un trou.
+ */
+export function templateVariables(template: string): Map<string, boolean> {
+  const out = new Map<string, boolean>();
+  for (const m of template.matchAll(/\{\{\s*([\p{L}\p{N}_]+)\s*(:\s*[^|{}]*\|[^{}]*)?\}\}/gu)) {
+    out.set(m[1], (out.get(m[1]) ?? true) && m[2] !== undefined);
+  }
+  return out;
 }

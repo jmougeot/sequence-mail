@@ -3,9 +3,9 @@ import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { db } from "./db.js";
 import { authUrl, handleOAuthCallback } from "./services/google.js";
-import { importContacts, parseCsv, renderTemplate } from "./services/contacts.js";
+import { importContacts, KNOWN_COLUMNS, MERGED_EXTRA, normalizeColumn, parseCsv, renderTemplate } from "./services/contacts.js";
 import { syncFromAttio } from "./services/attio.js";
-import { effectiveDailyLimit } from "./services/scheduler.js";
+import { effectiveDailyLimit, nextEmailEstimate, sendWindowState } from "./services/scheduler.js";
 import { registerOutreachRoutes } from "./services/outreach-routes.js";
 import { registerServiceRoutes } from "./services/service-routes.js";
 import { cancelLinkedInActions } from "./services/outreach.js";
@@ -325,6 +325,90 @@ export function createServer(): express.Express {
     res.json({ ok: true });
   });
 
+  // Modification partielle (serveur MCP) : seuls les champs fournis changent.
+  // `steps`, s'il est fourni, remplace toute la séquence comme le PUT.
+  app.patch("/api/campaigns/:id", (req, res) => {
+    const campaign = db.prepare("SELECT id, name FROM campaigns WHERE id = ?").get(req.params.id) as
+      | { id: number; name: string }
+      | undefined;
+    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    const body = (req.body ?? {}) as {
+      name?: unknown;
+      steps?: StepInput[];
+      account_ids?: number[] | null;
+      li_account_ids?: number[] | null;
+    };
+    if (body.name !== undefined && (typeof body.name !== "string" || !body.name.trim())) {
+      return res.status(400).json({ error: "name ne peut pas être vide" });
+    }
+    const name = typeof body.name === "string" ? body.name.trim() : campaign.name;
+    if (body.steps !== undefined) {
+      const err = validateSteps(name, body.steps);
+      if (err) return res.status(400).json({ error: err });
+    }
+    const senders = "account_ids" in body ? normalizeAccountIds(body.account_ids) : null;
+    if (senders && "error" in senders) return res.status(400).json({ error: senders.error });
+    const liSenders = "li_account_ids" in body ? normalizeAccountIds(body.li_account_ids, "li_account_ids") : null;
+    if (liSenders && "error" in liSenders) return res.status(400).json({ error: liSenders.error });
+    if (body.name === undefined && body.steps === undefined && !senders && !liSenders) {
+      return res.status(400).json({ error: "Aucun champ à modifier" });
+    }
+    db.transaction(() => {
+      db.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run(name, campaign.id);
+      if (senders) db.prepare("UPDATE campaigns SET account_ids = ? WHERE id = ?").run(senders.value, campaign.id);
+      if (liSenders) db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(liSenders.value, campaign.id);
+      if (body.steps !== undefined) {
+        db.prepare("DELETE FROM steps WHERE campaign_id = ?").run(campaign.id);
+        insertSteps(campaign.id, body.steps);
+      }
+    })();
+    res.json({ ok: true });
+  });
+
+  // Modification d'une seule étape : seuls les champs fournis changent, puis la
+  // séquence obtenue est validée et réécrite comme le PUT (mêmes règles : sujet
+  // du premier email, variante B à l'étape 1, délai nul à l'étape 1).
+  app.patch("/api/campaigns/:id/steps/:n", (req, res) => {
+    const campaign = db.prepare("SELECT id, name FROM campaigns WHERE id = ?").get(req.params.id) as
+      | { id: number; name: string }
+      | undefined;
+    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    const selectSteps = db.prepare(
+      "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action FROM steps WHERE campaign_id = ? ORDER BY step_number"
+    );
+    const steps = selectSteps.all(campaign.id) as Array<{ step_number: number } & Record<string, unknown>>;
+    const n = Number(req.params.n);
+    const index = steps.findIndex((s) => s.step_number === n);
+    if (index < 0) return res.status(404).json({ error: `Étape ${req.params.n} introuvable (la campagne en a ${steps.length})` });
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const patch: Record<string, unknown> = {};
+    for (const key of ["subject", "subject_b", "body", "channel", "li_action"]) {
+      if (body[key] === undefined) continue;
+      if (typeof body[key] !== "string") return res.status(400).json({ error: `${key} doit être un texte` });
+      patch[key] = body[key];
+    }
+    if (body.wait_days !== undefined) {
+      if (!Number.isInteger(body.wait_days) || (body.wait_days as number) < 0) {
+        return res.status(400).json({ error: "wait_days doit être un entier positif ou nul" });
+      }
+      patch.wait_days = body.wait_days;
+    }
+    if (!Object.keys(patch).length) return res.status(400).json({ error: "Aucun champ à modifier" });
+
+    // null en base (subject_b, li_action) = champ absent pour insertSteps
+    const next = steps.map((s, i) =>
+      Object.fromEntries(Object.entries(i === index ? { ...s, ...patch } : s).filter(([, v]) => v !== null))
+    ) as StepInput[];
+    const err = validateSteps(campaign.name, next);
+    if (err) return res.status(400).json({ error: err });
+    db.transaction(() => {
+      db.prepare("DELETE FROM steps WHERE campaign_id = ?").run(campaign.id);
+      insertSteps(campaign.id, next);
+    })();
+    res.json({ ok: true, step: (selectSteps.all(campaign.id) as Array<{ step_number: number }>)[index] });
+  });
+
   // Aperçu d'un email : rendu des variables avec un vrai contact de la campagne
   // (le premier) ou un contact d'exemple, signature du compte incluse.
   app.post("/api/preview", (req, res) => {
@@ -335,14 +419,19 @@ export function createServer(): express.Express {
       campaign_id?: number;
       contact_id?: number;
     };
+    // Variables de l'inscription à la campagne (cc.vars) prioritaires, comme à l'envoi
     const contact = (contact_id
       ? db
-          .prepare("SELECT email, first_name, last_name, company, extra FROM contacts WHERE id = ?")
-          .get(contact_id)
+          .prepare(
+            `SELECT c.email, c.first_name, c.last_name, c.company, ${MERGED_EXTRA} AS extra
+             FROM contacts c LEFT JOIN campaign_contacts cc ON cc.contact_id = c.id AND cc.campaign_id = ?
+             WHERE c.id = ?`
+          )
+          .get(campaign_id ?? null, contact_id)
       : campaign_id
       ? db
           .prepare(
-            `SELECT c.email, c.first_name, c.last_name, c.company, c.extra
+            `SELECT c.email, c.first_name, c.last_name, c.company, ${MERGED_EXTRA} AS extra
              FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id
              WHERE cc.campaign_id = ? ORDER BY cc.id LIMIT 1`
           )
@@ -381,7 +470,19 @@ export function createServer(): express.Express {
 
   // Paramètres effectifs (lecture seule, issus du .env)
   app.get("/api/settings", (_req, res) => {
+    // La fenêtre d'envoi se lit à l'heure du serveur : son fuseau est donné avec elle
+    const now = new Date();
+    const offset = -now.getTimezoneOffset(); // minutes à ajouter à UTC
+    const pad = (n: number) => String(Math.abs(n)).padStart(2, "0");
     res.json({
+      server: {
+        now: now.getTime(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        utc_offset: `${offset < 0 ? "-" : "+"}${pad(Math.trunc(offset / 60))}:${pad(offset % 60)}`,
+        local_time: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`,
+      },
+      send_window: sendWindowState(now.getTime()),
+      next_email: nextEmailEstimate(now.getTime()),
       deliverability: config.deliverability,
       google_configured: Boolean(config.google.clientId),
       attio_configured: Boolean(config.attioApiKey),
@@ -565,7 +666,18 @@ export function createServer(): express.Express {
       if (!("email" in rows[0]) && !("linkedin" in rows[0])) {
         return res.status(400).json({ error: "Le CSV doit contenir une colonne 'email' ou 'linkedin'" });
       }
-      res.json(await importContacts(Number(req.params.id), rows));
+      // ?campaign_vars=a,b : ces colonnes deviennent des variables propres à cette
+      // campagne (campaign_contacts.vars) au lieu de champs du contact, partagés.
+      const campaignVars = [...new Set(String(req.query.campaign_vars ?? "").split(",").map(normalizeColumn).filter(Boolean))];
+      const reserved = campaignVars.filter((k) => KNOWN_COLUMNS.has(k));
+      if (reserved.length) {
+        return res.status(400).json({ error: `campaign_vars : ${reserved.join(", ")} sont des champs du contact, pas des variables de campagne` });
+      }
+      const unknown = campaignVars.filter((k) => !(k in rows[0]));
+      if (unknown.length) {
+        return res.status(400).json({ error: `campaign_vars : colonne(s) absente(s) du CSV : ${unknown.join(", ")}` });
+      }
+      res.json(await importContacts(Number(req.params.id), rows, { campaignVars }));
     } catch (err) {
       res.status(400).json({ error: `CSV invalide : ${err instanceof Error ? err.message : err}` });
     }
@@ -593,7 +705,7 @@ export function createServer(): express.Express {
     const rows = db
       .prepare(
         `SELECT c.id AS contact_id, c.email, c.first_name, c.last_name, c.company, c.linkedin, c.extra,
-                cc.id AS cc_id, cc.status, cc.current_step, cc.variant, cc.account_id,
+                cc.id AS cc_id, cc.vars, cc.status, cc.current_step, cc.variant, cc.account_id,
                 cc.next_send_at, cc.replied_at, cc.error, a.email AS sender,
                 li.name AS li_sender, cc.li_thread_url,
                 (SELECT COUNT(*) FROM visits v WHERE v.cc_id = cc.id AND v.is_bot = 0) AS visit_count,

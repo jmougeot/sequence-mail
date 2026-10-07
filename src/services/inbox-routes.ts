@@ -7,7 +7,9 @@
  *   - /api/campaign-contacts/:ccId/reply : répondre à la main dans le fil email ;
  *   - /api/contacts : recherche globale de contacts ;
  *   - /api/activity : journal d'activité (envois, réponses, LinkedIn, visites) ;
- *   - /api/test-email : email de test d'une étape, rendu comme au scheduler.
+ *   - /api/test-email : email de test d'une étape, rendu comme au scheduler ;
+ *   - /api/campaigns/:id/preview : variables manquantes sur tous les contacts
+ *     d'une campagne, avec le rendu des étapes pour quelques-uns.
  *
  * Toutes les campagnes sont visibles, y compris celles des clients Azerit
  * (owner_ref renvoyé). Une lecture Gmail qui échoue ne fait jamais échouer une
@@ -16,7 +18,7 @@
 import type express from "express";
 import { config } from "../config.js";
 import { db } from "../db.js";
-import { renderTemplate } from "./contacts.js";
+import { MERGED_EXTRA, renderTemplate, templateVariables } from "./contacts.js";
 import {
   getThreadMessages,
   googleErrorMessage,
@@ -34,11 +36,11 @@ const GMAIL_CONCURRENCY = 5; // lectures Gmail simultanées au plus (include_tex
 const REPLY_TEXT_MAX = 2000;
 const THREAD_TEXT_MAX = 8000;
 const EVENTS_MAX = 300;
-
-// Variables de l'inscription (message écrit pour CE candidat sur CE poste)
-// prioritaires sur contacts.extra : même fusion que le scheduler (DUE_SELECT).
-const MERGED_EXTRA = `CASE WHEN cc.vars IS NULL THEN c.extra WHEN c.extra IS NULL THEN cc.vars
-  ELSE json_patch(c.extra, cc.vars) END`;
+// Aperçu d'une campagne : contacts à qui il reste quelque chose à envoyer
+const PREVIEW_STATUSES = ["held", "pending", "in_progress", "awaiting_li"];
+const CC_STATUSES = [...PREVIEW_STATUSES, "replied", "opted_out", "bounced", "completed", "stopped", "failed"];
+// Variables fournies par le compte d'envoi, pas par le contact
+const SENDER_VARS = new Set(["sender_name", "link", "signature"]);
 
 const SAMPLE_CONTACT = {
   email: "marie.dupont@exemple.fr",
@@ -657,4 +659,187 @@ export function registerInboxRoutes(app: express.Express): void {
       res.json({ ...out, sent: true });
     })
   );
+
+  // --- Aperçu d'une campagne sur tous ses contacts : variables manquantes, étapes sautées ---
+  // Même résolution des variables que le scheduler (celles de l'inscription
+  // comprises). Seules les étapes restant à envoyer à chaque contact comptent.
+  app.get("/api/campaigns/:id/preview", (req, res) => {
+    const campaign = db.prepare("SELECT id, name, status, account_ids FROM campaigns WHERE id = ?").get(req.params.id) as
+      | { id: number; name: string; status: string; account_ids: string | null }
+      | undefined;
+    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    const statuses = String(req.query.status ?? PREVIEW_STATUSES.join(","))
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    if (!statuses.length || statuses.some((x) => !CC_STATUSES.includes(x))) {
+      return res.status(400).json({ error: `status : valeurs possibles ${CC_STATUSES.join(", ")} (séparées par des virgules)` });
+    }
+    const samples = optInt(req.query.samples) ?? 1;
+    const limit = optInt(req.query.limit) ?? 50;
+    if (Number.isNaN(samples) || Number.isNaN(limit)) return res.status(400).json({ error: "samples et limit doivent être des entiers" });
+
+    type Step = { step_number: number; subject: string; subject_b: string | null; body: string; channel: string; li_action: string | null };
+    const steps = db
+      .prepare("SELECT step_number, subject, subject_b, body, channel, li_action FROM steps WHERE campaign_id = ? ORDER BY step_number")
+      .all(campaign.id) as Step[];
+    const rows = db
+      .prepare(
+        `SELECT cc.id AS cc_id, c.id AS contact_id, cc.status, cc.current_step, cc.variant, cc.account_id,
+                c.email, c.first_name, c.last_name, c.company, c.linkedin, ${MERGED_EXTRA} AS extra
+         FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id
+         WHERE cc.campaign_id = ? AND cc.status IN (SELECT value FROM json_each(?))
+         ORDER BY cc.id`
+      )
+      .all(campaign.id, JSON.stringify(statuses)) as Array<
+        ContactVars & { cc_id: number; contact_id: number; status: string; current_step: number; variant: string | null; account_id: number | null; linkedin: string | null }
+      >;
+
+    // Variables de chaque étape (un email : sujets + corps ; LinkedIn : corps seul)
+    const stepVars = new Map(
+      steps.map((s) => [
+        s.step_number,
+        templateVariables(s.channel === "linkedin" ? s.body : [s.subject, s.subject_b ?? "", s.body].join("\n")),
+      ])
+    );
+    const stats = new Map<string, { steps: number[]; genderOnly: boolean; used: number; missing: number }>();
+    for (const s of steps) {
+      for (const [key, genderOnly] of stepVars.get(s.step_number)!) {
+        if (SENDER_VARS.has(key)) continue;
+        const st = stats.get(key) ?? { steps: [], genderOnly: true, used: 0, missing: 0 };
+        st.steps.push(s.step_number);
+        st.genderOnly &&= genderOnly;
+        stats.set(key, st);
+      }
+    }
+
+    // Un contact sans email saute les étapes email ; sans profil, les étapes LinkedIn
+    const unreachable = (s: Step, r: { email: string | null; linkedin: string | null }) => (s.channel === "linkedin" ? !r.linkedin : !r.email);
+    const skipped = new Map<number, number>();
+    const checked = rows.map((r) => {
+      const values: Record<string, unknown> = {
+        email: r.email,
+        first_name: r.first_name,
+        last_name: r.last_name,
+        company: r.company,
+        ...parseJsonObject(r.extra),
+      };
+      const used = new Set<string>();
+      const missing = new Set<string>();
+      for (const s of steps) {
+        if (s.step_number <= r.current_step) continue; // déjà envoyée
+        if (unreachable(s, r)) {
+          skipped.set(s.step_number, (skipped.get(s.step_number) ?? 0) + 1);
+          continue;
+        }
+        for (const key of stepVars.get(s.step_number)!.keys()) {
+          if (SENDER_VARS.has(key)) continue;
+          used.add(key);
+          if (!String(values[key] ?? "").trim()) missing.add(key);
+        }
+      }
+      for (const key of used) stats.get(key)!.used++;
+      for (const key of missing) stats.get(key)!.missing++;
+      return { row: r, missing: [...missing] };
+    });
+    // Une variable vide chez tous ses contacts est signalée une fois, pas contact par contact
+    const nowhere = new Set([...stats].filter(([, st]) => st.used > 0 && st.missing === st.used).map(([key]) => key));
+    const incomplete = checked
+      .map(({ row, missing }) => ({ row, missing: missing.filter((key) => !nowhere.has(key)) }))
+      .filter((c) => c.missing.length);
+
+    // Comptes qui porteront les premiers envois : actifs et autorisés par la campagne
+    const allowed = parseAccountIds(campaign.account_ids);
+    const senders = (db.prepare("SELECT * FROM accounts WHERE active = 1 ORDER BY id").all() as AccountRow[]).filter(
+      (a) => !allowed || allowed.includes(a.id)
+    );
+    const emailSteps = steps.filter((s) => s.channel !== "linkedin");
+    const usedIn = (list: Step[], key: string) => list.filter((s) => stepVars.get(s.step_number)!.has(key));
+    const warnings: string[] = [];
+    if (emailSteps.length && !senders.length) {
+      warnings.push("Aucun compte Google actif autorisé pour cette campagne : les emails ne partiront pas.");
+    }
+    const unsigned = senders.filter((a) => !a.signature?.trim()).map((a) => a.email);
+    if (usedIn(emailSteps, "signature").length && unsigned.length) {
+      warnings.push(`{{signature}} sera vide pour ${unsigned.join(", ")} (compte sans signature).`);
+    }
+    if (usedIn(emailSteps, "link").length && !config.visit.enabled) {
+      warnings.push("{{link}} sera vide : le lien de suivi est désactivé (VISIT_ENABLED=false).");
+    }
+    for (const s of steps.filter((x) => x.channel === "linkedin")) {
+      const empty = [...SENDER_VARS].filter((key) => stepVars.get(s.step_number)!.has(key));
+      if (empty.length) {
+        warnings.push(`Étape ${s.step_number} (LinkedIn) : ${empty.map((k) => `{{${k}}}`).join(", ")} toujours vide dans un message LinkedIn.`);
+      }
+    }
+
+    // Rendu des étapes restantes pour les premiers contacts, tel qu'il partira
+    const link = config.visit.enabled ? `${config.visit.baseUrl}/p/exemple` : "";
+    const firstEmail = emailSteps[0];
+    const rendered = rows.slice(0, Math.min(Math.max(samples, 0), 5)).map((r) => {
+      const account = r.account_id != null ? accountById(r.account_id) : senders[0];
+      const vars = senderVars(account, r, link);
+      const subjectOf = (s: Step) => (r.variant === "B" && s.subject_b ? s.subject_b : s.subject);
+      return {
+        cc_id: r.cc_id,
+        contact_id: r.contact_id,
+        to: r.email ?? r.linkedin,
+        from: account ? fromLabel(account) : null,
+        steps: steps
+          .filter((s) => s.step_number > r.current_step && !unreachable(s, r))
+          .map((s) =>
+            s.channel === "linkedin"
+              ? {
+                  step_number: s.step_number,
+                  channel: s.channel,
+                  li_action: s.li_action,
+                  body: s.body?.trim() ? renderTemplate(s.body, r, { sender_name: "", signature: "" }) : "",
+                }
+              : {
+                  step_number: s.step_number,
+                  channel: s.channel,
+                  // Relance sans sujet : même fil que le premier email
+                  subject: s !== firstEmail && !s.subject ? `Re: ${renderTemplate(subjectOf(firstEmail), r, vars)}` : renderTemplate(subjectOf(s), r, vars),
+                  body: renderTemplate(s.body, r, vars),
+                }
+          ),
+      };
+    });
+
+    res.json({
+      campaign: { id: campaign.id, name: campaign.name, status: campaign.status },
+      statuses,
+      checked: rows.length,
+      ready: checked.filter((c) => !c.missing.length).length,
+      steps: steps.map((s) => ({
+        step_number: s.step_number,
+        channel: s.channel,
+        li_action: s.li_action,
+        variables: [...stepVars.get(s.step_number)!.keys()],
+        // contacts qui sauteront l'étape (sans email / sans profil LinkedIn)
+        ...(skipped.has(s.step_number) ? { skipped: skipped.get(s.step_number) } : {}),
+      })),
+      missing: [...stats]
+        .filter(([, st]) => st.missing > 0)
+        .map(([variable, st]) => ({
+          variable,
+          steps: st.steps,
+          contacts: st.missing,
+          ...(nowhere.has(variable) ? { all: true } : {}),
+          ...(st.genderOnly ? { gender_form: true } : {}),
+        })),
+      incomplete_total: incomplete.length,
+      incomplete: incomplete.slice(0, Math.min(Math.max(limit, 1), 500)).map(({ row, missing }) => ({
+        cc_id: row.cc_id,
+        contact_id: row.contact_id,
+        name: [row.first_name, row.last_name].filter(Boolean).join(" ") || null,
+        email: row.email,
+        linkedin: row.email ? null : row.linkedin,
+        status: row.status,
+        missing,
+      })),
+      warnings,
+      samples: rendered,
+    });
+  });
 }

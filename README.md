@@ -164,7 +164,10 @@ les profils bien référencés, pas l'organigramme complet.
 | GET | `/api/campaigns` | Campagnes + statistiques (taux de réponse, progression, volume) |
 | POST | `/api/campaigns` | Créer une campagne `{ name, steps: [{subject, body, wait_days}] }` |
 | POST | `/api/campaigns/:id/pause` · `/resume` | Mettre en pause / reprendre |
-| POST | `/api/campaigns/:id/import` | Importer un CSV (body brut, `Content-Type: text/csv`) |
+| PATCH | `/api/campaigns/:id` | Modifier les champs fournis `{ name?, steps?, account_ids?, li_account_ids? }` |
+| PATCH | `/api/campaigns/:id/steps/:n` | Modifier une étape `{ subject?, subject_b?, body?, wait_days?, channel?, li_action? }` |
+| GET | `/api/campaigns/:id/preview` | Variables vides sur tous les contacts, étapes sautées, rendu (`status`, `samples`, `limit`) |
+| POST | `/api/campaigns/:id/import` | Importer un CSV (body brut, `Content-Type: text/csv`) ; `?campaign_vars=a,b` : colonnes propres à cette campagne |
 | POST | `/api/campaigns/:id/attio-sync` | `{ status_attribute, statuses[] }` |
 | GET | `/api/campaigns/:id/contacts` | Détail par contact (statut, étape, émetteur, erreurs) |
 | GET | `/api/b2b/search` | Recherche d'entreprises (`q`, `section`, `naf`, `effectifs`, `departements`, `code_postal`, `ca_min/max`, `page`) |
