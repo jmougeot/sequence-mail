@@ -5,13 +5,14 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { api } from "../api.js";
-import type { CampaignContactRow } from "../lib.js";
+import { compact, summarizeImport, type CampaignContactRow } from "../lib.js";
 
 // --- Réponses MCP -------------------------------------------------------------
 export type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
+/** JSON sur une ligne, champs vides omis (voir compact) : moins de texte à lire pour le client. */
 export function ok(data: unknown): ToolResult {
-  const text = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+  const text = typeof data === "string" ? data : JSON.stringify(compact(data));
   return { content: [{ type: "text", text: text || "(vide)" }] };
 }
 export function fail(err: unknown): ToolResult {
@@ -63,7 +64,42 @@ export const ccIds = z
   .min(1)
   .describe("Identifiants « cc_id » (inscription campagne) issus de list_campaign_contacts — PAS les contact_id globaux.");
 
+// --- Contacts à importer --------------------------------------------------------
+const contactValue = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+
+export const contactsList = z
+  .array(
+    z
+      .object({
+        email: z.string().optional().describe("Email (clé de dédoublonnage)."),
+        linkedin: z.string().optional().describe("URL du profil LinkedIn (https://www.linkedin.com/in/…)."),
+        first_name: z.string().optional(),
+        last_name: z.string().optional(),
+        company: z.string().optional(),
+      })
+      .catchall(contactValue)
+  )
+  .min(1)
+  .max(5000)
+  .describe(
+    "Contacts à importer. Chaque objet : email et/ou linkedin (au moins l'un des deux), first_name, last_name, company, et tout autre champ (ex. poste, ville, accroche) qui devient une variable de template {{poste}}. Noms de champs : lettres, chiffres, _ (espaces et tirets convertis en _, majuscules en minuscules)."
+  );
+
+export const campaignVars = z
+  .array(z.string())
+  .min(1)
+  .optional()
+  .describe(
+    "Champs personnalisés à rattacher à l'inscription à CETTE campagne plutôt qu'au contact (ex. [\"phrase\"]). Un champ de contact est partagé entre toutes ses campagnes ; une variable de campagne ne vaut que pour celle-ci, donc le même nom {{phrase}} sert dans chaque campagne sans écraser les autres. À l'envoi elle prime sur le champ du contact de même nom."
+  );
+
 // --- Données ------------------------------------------------------------------
+/** Importe un CSV dans une campagne (contacts en 'held') ; rapport d'import résumé. */
+export async function importCsv(campaignId: number, csv: string, vars: string[] = []): Promise<unknown> {
+  const query = vars.length ? `?campaign_vars=${encodeURIComponent(vars.join(","))}` : "";
+  return summarizeImport(await api("POST", `/api/campaigns/${campaignId}/import${query}`, { csv }));
+}
+
 /** Toutes les lignes contacts d'une campagne (l'API ne pagine pas : filtre et page côté MCP). */
 export async function fetchCampaignContacts(campaignId: number): Promise<CampaignContactRow[]> {
   const rows = await api("GET", `/api/campaigns/${campaignId}/contacts`);

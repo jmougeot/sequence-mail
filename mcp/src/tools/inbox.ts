@@ -94,7 +94,7 @@ export function registerInboxTools(server: McpServer): void {
     {
       title: "Conversation d'un contact",
       description:
-        "Fil complet d'UN contact dans UNE campagne (clé cc_id, PAS contact_id) : campagne, contact, statut, étape, erreur ; email_thread = messages du fil Gmail dans l'ordre (direction out/in, kind sent/reply/auto_reply/bounce, from, to, date, subject, text) ou null sans fil email ; steps_sent (étapes email envoyées) ; linkedin (invitations/messages LinkedIn de la séquence) et li_thread_url. Par défaut, le texte des messages reçus est nettoyé des citations (full_text: true pour le brut). À lire avant de rédiger une réponse avec reply_to_contact. Dates en ISO 8601 (UTC).",
+        "Fil complet d'UN contact dans UNE campagne (clé cc_id, PAS contact_id) : campagne, contact, statut, étape, erreur ; email_thread = messages du fil Gmail dans l'ordre (direction out/in, kind sent/reply/auto_reply/bounce, from, to, date, subject, text), absent sans fil email ; steps_sent (étapes email envoyées) ; linkedin (invitations/messages LinkedIn de la séquence) et li_thread_url. Par défaut, le texte des messages reçus est nettoyé des citations (full_text: true pour le brut). À lire avant de rédiger une réponse avec reply_to_contact. Dates en ISO 8601 (UTC).",
       inputSchema: conversationShape,
       annotations: READ,
     },

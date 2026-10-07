@@ -71,28 +71,34 @@ Redémarre le client : les tools `sequence-mail` apparaissent.
 ## Tools exposés
 
 Le serveur envoie aussi des **instructions** à l'initialisation (`src/instructions.ts`) :
-flux d'une campagne et des réponses, identifiants, règles de sécurité. Tout client
-MCP les charge.
+règles de sécurité d'abord, puis identifiants, flux d'une campagne et des réponses. Tout
+client MCP les charge — à garder sous 2 000 caractères : Claude Code tronque à 2 048.
 
-**Campagnes** — `list_campaigns`, `get_campaign`, `get_activity` (journal : totaux et
-événements sur N jours), `preview_email`, `send_test_email` (email `[TEST]` d'une étape,
-`dry_run` par défaut), `create_campaign`, `update_campaign`, `delete_campaign`,
-`pause_campaign`, `resume_campaign`, `archive_campaign`, `unarchive_campaign`.
+**Campagnes** — `list_campaigns` (archives masquées par défaut, `include_archived`),
+`get_campaign`, `get_activity` (journal : totaux et événements sur N jours),
+`preview_campaign` (variables vides sur tous les contacts d'une campagne, étapes sautées,
+rendu des étapes), `preview_email`, `send_test_email` (email `[TEST]` d'une étape,
+`dry_run` par défaut), `create_campaign` (avec `contacts` : création et import en un
+appel), `update_campaign` (seuls les champs fournis changent), `update_step` (une seule
+étape), `delete_campaign`, `pause_campaign`, `resume_campaign`, `archive_campaign`,
+`unarchive_campaign`.
 
 **Contacts** — `list_campaign_contacts` (filtres `status`/`search`, paginé `limit`/`offset`,
 renvoie `{ total, returned, offset, contacts }`), `search_contacts` (toutes campagnes),
 `export_campaign_contacts` (CSV en texte ou fichier local), `import_contacts` (liste
 d'objets JSON), `import_contacts_csv` (texte `csv` ou fichier local `csv_path`),
-`attio_sync`, `launch_contacts` (`cc_ids`, ou `all_held` + `limit`), `stop_contacts`,
-`set_contacts_status`, `remove_contacts`, `update_contact`.
+`attio_sync`, `launch_contacts` (`cc_ids`, ou `all_held` + `limit` ; `campaign_id` accepte
+une liste de campagnes), `stop_contacts`, `set_contacts_status`, `remove_contacts`,
+`update_contact`.
 
 **Réponses** — `list_replies` (boîte de réception unifiée, texte des réponses en option),
 `get_conversation` (fil complet d'un contact), `reply_to_contact` (réponse dans le fil
 Gmail, `dry_run` par défaut).
 
 **Comptes Google** — `list_accounts`, `connect_google_account` (lien OAuth + marche à
-suivre), `update_account`, `delete_google_account` (compte désactivé au préalable ; efface
-son historique d'envois), `get_settings`.
+suivre), `update_account` (`account_id` accepte une liste), `delete_google_account` (compte
+désactivé au préalable ; efface son historique d'envois), `get_settings` (réglages, fuseau
+du serveur, fenêtre d'envoi ouverte ou non, prochain envoi estimé).
 
 **LinkedIn** — `linkedin_status`, `linkedin_toggle`, `list_linkedin_accounts`,
 `create_linkedin_account` (jeton en clair + étapes de liaison de l'extension),
@@ -101,11 +107,23 @@ warm-up), `rotate_linkedin_token`, `delete_linkedin_account`.
 
 ### À savoir
 
-- **Aucun envoi à la création.** Une campagne naît `paused`, sans contact. Le flux
-  complet : `create_campaign` → `import_contacts` / `import_contacts_csv` (contacts en
-  `held`) → `preview_email` / `send_test_email` → `launch_contacts` (passe en `pending`
-  et réactive la campagne) → `resume_campaign` si elle est en pause. Les envois
+- **Aucun envoi à la création.** Une campagne naît `paused`, ses contacts en `held`. Le
+  flux complet : `create_campaign` (contacts compris, ou `import_contacts` /
+  `import_contacts_csv` ensuite) → `preview_campaign` → `launch_contacts` (passe en
+  `pending` et réactive la campagne) → `resume_campaign` si elle est en pause. Les envois
   respectent ensuite la fenêtre d'envoi, les quotas et le warm-up de l'app.
+- **Réponses compactes.** Les résultats sont du JSON sur une ligne, sans les champs
+  vides (`null`, `""`, liste ou objet vide) : un champ absent est vide. `false` et `0`
+  sont gardés, sauf les compteurs et taux de `list_campaigns` et les compteurs de visites
+  de `list_campaign_contacts`, absents quand ils valent 0.
+- **Variables de campagne.** Un champ personnalisé appartient au contact et vaut dans
+  toutes ses campagnes. `campaign_vars` (sur `create_campaign`, `import_contacts`,
+  `import_contacts_csv`) rattache les champs nommés à l'inscription : `{{phrase}}` peut
+  alors différer d'une campagne à l'autre pour un même contact, et prime à l'envoi sur le
+  champ du contact de même nom. `list_campaign_contacts` les rend dans `vars`.
+- **Fenêtre d'envoi.** Ses heures se lisent à l'heure du serveur : `get_settings` donne
+  son fuseau (`server.timezone`, `utc_offset`), si la fenêtre est ouverte et l'heure du
+  prochain envoi au plus tôt.
 - **Réponses** : `list_replies` → `get_conversation` → `reply_to_contact`.
 - **Deux identifiants distincts** :
   - `contact_id` = le contact **global** → `update_contact`, `preview_email`,

@@ -44,7 +44,7 @@ import { registerLinkedinTools } from "./tools/linkedin.js";
  * client à l'initialisation.
  */
 function buildServer(): McpServer {
-  const server = new McpServer({ name: "sequence-mail", version: "0.2.0" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "sequence-mail", version: "0.3.0" }, { instructions: INSTRUCTIONS });
   registerCampaignTools(server); // campagnes, activité, aperçu, email de test
   registerContactTools(server); // contacts : liste, recherche, export, imports, lancement, statuts
   registerInboxTools(server); // réponses : boîte de réception, conversation, réponse

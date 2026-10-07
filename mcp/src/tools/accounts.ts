@@ -4,6 +4,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api, PUBLIC_URL } from "../api.js";
+import { isoDates } from "../lib.js";
 import { handler, READ } from "./common.js";
 
 /** Hôte joignable seulement depuis un réseau interne (ex. http://sequence-app:3000) ? */
@@ -81,9 +82,11 @@ export function registerAccountTools(server: McpServer): void {
     {
       title: "Modifier un compte d'envoi",
       description:
-        "Met à jour un compte Google connecté : quota quotidien, actif/inactif, nom d'expéditeur, signature, warm-up on/off. Seuls les champs fournis sont modifiés.",
+        "Met à jour un compte Google connecté : quota quotidien, actif/inactif, nom d'expéditeur, signature, warm-up on/off. Seuls les champs fournis sont modifiés. account_id accepte une liste pour appliquer les mêmes réglages à plusieurs comptes en un appel.",
       inputSchema: {
-        account_id: z.number().int().describe("Identifiant du compte (list_accounts)."),
+        account_id: z
+          .union([z.number().int(), z.array(z.number().int()).min(1)])
+          .describe("Identifiant du compte (list_accounts), ou liste d'identifiants à régler de la même façon."),
         daily_limit: z.number().int().optional().describe("Quota d'envoi quotidien."),
         active: z.boolean().optional().describe("Activer/désactiver le compte pour les envois."),
         from_name: z.string().optional().describe("Nom affiché dans le champ « De »."),
@@ -92,9 +95,14 @@ export function registerAccountTools(server: McpServer): void {
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    handler(({ account_id, ...body }: { account_id: number } & Record<string, unknown>) =>
-      api("PATCH", `/api/accounts/${account_id}`, { json: body })
-    )
+    handler(async ({ account_id, ...fields }: { account_id: number | number[] } & Record<string, unknown>) => {
+      const body = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
+      if (!Object.keys(body).length) throw new Error("Aucun champ à modifier.");
+      if (!Array.isArray(account_id)) return api("PATCH", `/api/accounts/${account_id}`, { json: body });
+      const ids = [...new Set(account_id)];
+      for (const id of ids) await api("PATCH", `/api/accounts/${id}`, { json: body });
+      return { ok: true, updated: ids };
+    })
   );
 
   server.registerTool(
@@ -114,10 +122,10 @@ export function registerAccountTools(server: McpServer): void {
     {
       title: "Paramètres de l'app",
       description:
-        "Paramètres effectifs (lecture seule, issus du .env) : réglages de délivrabilité (fenêtre d'envoi, quotas, délais, warm-up), si Google et Attio sont configurés.",
+        "Paramètres effectifs (lecture seule, issus du .env) et horloge des envois. server : heure du serveur, son fuseau (timezone, utc_offset) et local_time — les heures de la fenêtre d'envoi (deliverability.sendWindowStart / sendWindowEnd) se lisent dans CE fuseau, pas dans celui de l'utilisateur. send_window : open, avec closes_at si elle est ouverte ou opens_at sinon. next_email : earliest_at = prochain envoi d'email au plus tôt (estimation : contacts dus, fenêtre, quotas et repos des comptes), due_now = emails dus dès maintenant, reason s'il n'y a rien à envoyer ou si un quota bloque. Puis deliverability (quotas, délais, warm-up) et si Google et Attio sont configurés. Dates en ISO 8601 (UTC).",
       inputSchema: {},
       annotations: READ,
     },
-    handler(async () => api("GET", "/api/settings"))
+    handler(async () => isoDates(await api("GET", "/api/settings")))
   );
 }

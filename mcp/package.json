@@ -1,6 +1,6 @@
 {
   "name": "sequence-mail-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Serveur MCP pour Sequence Mail : expose campagnes, contacts et comptes (lecture/écriture) aux clients MCP (Claude Desktop, Claude Code…).",
   "type": "module",
   "bin": {

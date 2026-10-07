@@ -1,32 +1,32 @@
 /**
  * Guide d'utilisation envoyé à tout client MCP à l'initialisation
- * (champ `instructions`) : flux, identifiants, règles de sécurité.
+ * (champ `instructions`) : règles de sécurité, identifiants, flux.
+ *
+ * Rester sous 2 000 caractères, sécurité en tête : les clients tronquent un
+ * guide plus long (Claude Code le coupe à 2 048) et la fin n'est alors pas lue.
  */
-export const INSTRUCTIONS = `Sequence Mail : prospection multicanale (emails Gmail + LinkedIn), pilotable entièrement par ces tools, comme lemlist.
-
-IDENTIFIANTS
-- contact_id = le contact global (update_contact, preview_email, send_test_email).
-- cc_id = l'inscription d'un contact à UNE campagne (launch_contacts, stop_contacts, set_contacts_status, remove_contacts, get_conversation, reply_to_contact).
-- list_campaign_contacts, list_replies et search_contacts donnent les deux. Ne jamais inventer un id : le relire avec un tool de lecture.
-
-CAMPAGNE
-1. list_accounts / list_linkedin_accounts : comptes d'envoi disponibles.
-2. create_campaign : naît en pause, sans contact.
-3. import_contacts (liste JSON) ou import_contacts_csv (texte ou fichier local) : contacts en « held », rien ne part.
-4. preview_email, puis send_test_email (dry_run d'abord) pour valider le rendu.
-5. launch_contacts (cc_ids, ou all_held + limit) : contacts en « pending », la campagne repasse active.
-6. resume_campaign si la campagne est en pause. Les envois suivent la fenêtre d'envoi, les quotas et le warm-up.
-Suivi : list_campaigns, list_campaign_contacts (filtres status/search, paginé : ne pas tout charger), get_activity, export_campaign_contacts.
-Ranger une campagne terminée : archive_campaign (elle reste visible dans l'app, à part ; unarchive_campaign la remet en pause). delete_campaign seulement si l'utilisateur demande explicitement une suppression définitive.
-
-RÉPONSES
-list_replies (include_text: true pour lire les réponses) → get_conversation (cc_id) → reply_to_contact (dry_run par défaut, puis dry_run: false). Une demande de désinscription : set_contacts_status opted_out.
+export const INSTRUCTIONS = `Sequence Mail : prospection multicanale (emails Gmail + LinkedIn), pilotable par ces tools.
 
 SÉCURITÉ (obligatoire)
-- Avant toute action qui envoie ou détruit : montrer un aperçu (preview_email, dry_run, nombre de contacts concernés) et obtenir l'accord EXPLICITE de l'utilisateur pour : launch_contacts, resume_campaign, reply_to_contact et send_test_email en envoi réel (dry_run: false), delete_campaign, delete_google_account, delete_linkedin_account, rotate_linkedin_token, remove_contacts, set_contacts_status opted_out.
-- Ne jamais lancer plus de contacts que demandé : all_held avec limit, et annoncer le nombre avant.
+- Accord EXPLICITE de l'utilisateur, après un aperçu (preview_campaign, dry_run, nombre de contacts), avant : launch_contacts, resume_campaign, reply_to_contact et send_test_email en dry_run: false, remove_contacts, set_contacts_status opted_out, rotate_linkedin_token, tout delete_*.
+- Jamais plus de contacts lancés que demandé (all_held avec limit) ; annoncer le nombre avant.
 - Un accord vaut pour l'action montrée, pas pour les suivantes.
+- Ranger une campagne : archive_campaign. delete_campaign seulement sur demande explicite de suppression définitive.
 
-HORS CLAUDE (gestes de l'utilisateur)
-- Compte Google : connect_google_account donne un lien ; un clic d'autorisation OAuth par compte (le même lien reconnecte un compte expiré).
-- Compte LinkedIn : create_linkedin_account donne un jeton ; installer l'extension Chrome une fois par compte et y coller le jeton.`;
+IDENTIFIANTS
+- contact_id = contact global (update_contact, preview_email, send_test_email).
+- cc_id = inscription d'un contact à UNE campagne (launch/stop/remove_contacts, set_contacts_status, get_conversation, reply_to_contact).
+- Ne jamais inventer un id : le lire (list_campaign_contacts, list_replies, search_contacts).
+
+CAMPAGNE
+1. list_accounts, list_linkedin_accounts : comptes d'envoi.
+2. create_campaign, contacts compris : naît en pause, contacts en « held », rien ne part. Ajouts : import_contacts, import_contacts_csv.
+3. preview_campaign : variables vides sur tous les contacts, rendu des étapes.
+4. launch_contacts (une ou plusieurs campagnes) ; resume_campaign si elle est en pause.
+get_settings : fuseau du serveur, fenêtre d'envoi, prochain envoi. Modifier : update_step (une étape), update_campaign. Suivi : list_campaigns, list_campaign_contacts (paginé), get_activity.
+
+RÉPONSES
+list_replies (include_text) → get_conversation → reply_to_contact (dry_run d'abord).
+
+Résultats : champ absent = vide ; compteur absent de list_campaigns = 0.
+Hors Claude : connect_google_account donne un lien OAuth à ouvrir ; create_linkedin_account, un jeton à coller dans l'extension Chrome.`;

@@ -9,6 +9,8 @@ import { z } from "zod";
 import { api } from "../api.js";
 import {
   buildImportCsv,
+  checkCampaignVars,
+  contactSummary,
   decodeCsvBytes,
   exportTable,
   filterContacts,
@@ -16,10 +18,20 @@ import {
   paginate,
   parseExtra,
   pickHeld,
-  summarizeImport,
   toCsv,
 } from "../lib.js";
-import { assertLocalPath, ccIds, fetchCampaignContacts, handler, READ, STATUSES, statusFilter } from "./common.js";
+import {
+  assertLocalPath,
+  campaignVars,
+  ccIds,
+  contactsList,
+  fetchCampaignContacts,
+  handler,
+  importCsv,
+  READ,
+  STATUSES,
+  statusFilter,
+} from "./common.js";
 
 type StatusFilter = z.infer<typeof statusFilter>;
 
@@ -54,26 +66,10 @@ const exportShape = {
 };
 type ExportArgs = z.infer<z.ZodObject<typeof exportShape>>;
 
-const contactValue = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 const importShape = {
   campaign_id: z.number().int().describe("Campagne cible."),
-  contacts: z
-    .array(
-      z
-        .object({
-          email: z.string().optional().describe("Email (clé de dédoublonnage)."),
-          linkedin: z.string().optional().describe("URL du profil LinkedIn (https://www.linkedin.com/in/…)."),
-          first_name: z.string().optional(),
-          last_name: z.string().optional(),
-          company: z.string().optional(),
-        })
-        .catchall(contactValue)
-    )
-    .min(1)
-    .max(5000)
-    .describe(
-      "Contacts à importer. Chaque objet : email et/ou linkedin (au moins l'un des deux), first_name, last_name, company, et tout autre champ (ex. poste, ville, accroche) qui devient une variable de template {{poste}}. Noms de champs : lettres, chiffres, _ (espaces et tirets convertis en _, majuscules en minuscules)."
-    ),
+  contacts: contactsList,
+  campaign_vars: campaignVars,
 };
 type ImportArgs = z.infer<z.ZodObject<typeof importShape>>;
 
@@ -89,11 +85,14 @@ const importCsvShape = {
     .describe(
       "Chemin ABSOLU d'un fichier CSV local, lu par le process MCP (UTF-8, ou Windows-1252 des exports Excel). Ne marche que si le MCP tourne en local en stdio sur la machine où se trouve le fichier ; refusé par un MCP hébergé. Exclusif avec csv."
     ),
+  campaign_vars: campaignVars,
 };
 type ImportCsvArgs = z.infer<z.ZodObject<typeof importCsvShape>>;
 
 const launchShape = {
-  campaign_id: z.number().int().describe("Campagne concernée."),
+  campaign_id: z
+    .union([z.number().int(), z.array(z.number().int()).min(1)])
+    .describe("Campagne concernée, ou liste de campagnes à lancer en un seul appel."),
   cc_ids: ccIds.optional(),
   all_held: z
     .boolean()
@@ -104,7 +103,7 @@ const launchShape = {
     .int()
     .min(1)
     .optional()
-    .describe("Avec all_held : ne lancer que les N premiers contacts 'held' (par cc_id croissant)."),
+    .describe("Avec all_held : ne lancer que les N premiers contacts 'held' (par cc_id croissant) — N par campagne s'il y en a plusieurs."),
 };
 type LaunchArgs = z.infer<z.ZodObject<typeof launchShape>>;
 
@@ -120,6 +119,23 @@ async function launch(campaignId: number, ids: number[]): Promise<number> {
   return launched;
 }
 
+/** Lance dans UNE campagne les cc_ids donnés, ou ses contacts 'held' (les `limit` premiers). */
+async function launchIn(campaignId: number, ids: number[] | undefined, limit?: number): Promise<Record<string, unknown>> {
+  if (ids) return { launched: await launch(campaignId, ids) };
+  const rows = await fetchCampaignContacts(campaignId);
+  const heldBefore = rows.filter((r) => r.status === "held").length;
+  const chosen = pickHeld(rows, limit).map((r) => r.cc_id);
+  if (!chosen.length) return { launched: 0, held_before: 0, note: "Aucun contact en attente ('held') dans cette campagne." };
+  const launched = await launch(campaignId, chosen);
+  return {
+    launched,
+    held_before: heldBefore,
+    held_remaining: heldBefore - launched,
+    first_cc_id: chosen[0],
+    last_cc_id: chosen[chosen.length - 1],
+  };
+}
+
 export function registerContactTools(server: McpServer): void {
   // ---------------------------------------------------------------- lecture
 
@@ -128,14 +144,14 @@ export function registerContactTools(server: McpServer): void {
     {
       title: "Contacts d'une campagne",
       description:
-        "Liste les contacts d'une campagne avec leur état, filtrés (status, search) et paginés (limit défaut 100, offset). Renvoie { total, returned, offset, contacts } : total = nombre de lignes APRÈS filtre ; s'il dépasse offset + returned, appelle à nouveau avec offset augmenté. IMPORTANT : chaque ligne a deux identifiants — « contact_id » (le contact global, utilisé par update_contact) et « cc_id » (l'inscription à CETTE campagne, utilisée par launch_contacts, stop_contacts, set_contacts_status, remove_contacts, get_conversation, reply_to_contact). Inclut statut, étape courante, variante A/B, compte émetteur, prochain envoi et replied_at (epoch ms), nombre de visites du lien, extra (champs personnalisés, JSON). Pour les compteurs par statut, list_campaigns suffit.",
+        "Liste les contacts d'une campagne avec leur état, filtrés (status, search) et paginés (limit défaut 100, offset). Renvoie { total, returned, offset, contacts } : total = nombre de lignes APRÈS filtre ; s'il dépasse offset + returned, appelle à nouveau avec offset augmenté. IMPORTANT : chaque ligne a deux identifiants — « contact_id » (le contact global, utilisé par update_contact) et « cc_id » (l'inscription à CETTE campagne, utilisée par launch_contacts, stop_contacts, set_contacts_status, remove_contacts, get_conversation, reply_to_contact). Inclut statut, étape courante, variante A/B, compte émetteur, prochain envoi et replied_at (epoch ms), visites du lien, extra (champs personnalisés du contact) et vars (variables propres à cette campagne, prioritaires). Un champ absent est vide, un compteur de visites absent vaut 0. Pour les compteurs par statut, list_campaigns suffit.",
       inputSchema: listShape,
       annotations: READ,
     },
     handler(async ({ campaign_id, status, search, limit, offset }: ListArgs) => {
       const rows = filterContacts(await fetchCampaignContacts(campaign_id), { status, search });
       const page = paginate(rows, offset ?? 0, limit ?? 100);
-      return { total: page.total, returned: page.returned, offset: page.offset, contacts: page.items };
+      return { total: page.total, returned: page.returned, offset: page.offset, contacts: page.items.map(contactSummary) };
     })
   );
 
@@ -165,7 +181,7 @@ export function registerContactTools(server: McpServer): void {
     {
       title: "Exporter les contacts (CSV)",
       description:
-        "Exporte les contacts d'une campagne en CSV : email, first_name, last_name, company, linkedin, status, current_step, variant, sender, li_sender, replied_at et next_send_at (ISO 8601 UTC), visit_count, error, puis une colonne par champ personnalisé (extra ; préfixée extra_ en cas de collision). Filtre optionnel par statut. Avec file_path (MCP local uniquement) : écrit le fichier et renvoie { path, rows, columns }. Sans file_path : renvoie le texte CSV — préfère file_path au-delà de ~200 lignes pour ne pas saturer la conversation.",
+        "Exporte les contacts d'une campagne en CSV : email, first_name, last_name, company, linkedin, status, current_step, variant, sender, li_sender, replied_at et next_send_at (ISO 8601 UTC), visit_count, error, puis une colonne par champ personnalisé (du contact ou propre à la campagne ; préfixée extra_ en cas de collision). Filtre optionnel par statut. Avec file_path (MCP local uniquement) : écrit le fichier et renvoie { path, rows, columns }. Sans file_path : renvoie le texte CSV — préfère file_path au-delà de ~200 lignes pour ne pas saturer la conversation.",
       inputSchema: exportShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -191,7 +207,7 @@ export function registerContactTools(server: McpServer): void {
   // ---------------------------------------------------------------- import
 
   const importNote =
-    "Dédoublonnage par email, sinon par profil LinkedIn ; un contact déjà présent est mis à jour (ses champs personnalisés fusionnés). Un email sans serveur mail (MX) est écarté (la ligne reste si elle a un LinkedIn). Un contact sans email saute les étapes email ; sans profil, les étapes LinkedIn. Un contact désinscrit n'est jamais réinscrit. Les contacts arrivent en statut 'held' : RIEN n'est envoyé avant launch_contacts. Renvoie { imported, updated, skipped, errors } (errors tronqué à 30, errors_total sinon).";
+    "Dédoublonnage par email, sinon par profil LinkedIn ; un contact déjà présent est mis à jour (ses champs personnalisés fusionnés — réimporter corrige donc un champ ou une variable de campagne). Un email sans serveur mail (MX) est écarté (la ligne reste si elle a un LinkedIn). Un contact sans email saute les étapes email ; sans profil, les étapes LinkedIn. Un contact désinscrit n'est jamais réinscrit. Les contacts arrivent en statut 'held' : RIEN n'est envoyé avant launch_contacts. Renvoie { imported, updated, skipped, errors } (errors tronqué à 30, errors_total sinon).";
 
   server.registerTool(
     "import_contacts",
@@ -201,9 +217,9 @@ export function registerContactTools(server: McpServer): void {
       inputSchema: importShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    handler(async ({ campaign_id, contacts }: ImportArgs) => {
-      const { csv } = buildImportCsv(contacts as Array<Record<string, unknown>>);
-      return summarizeImport(await api("POST", `/api/campaigns/${campaign_id}/import`, { csv }));
+    handler(async ({ campaign_id, contacts, campaign_vars }: ImportArgs) => {
+      const { csv, columns } = buildImportCsv(contacts as Array<Record<string, unknown>>);
+      return importCsv(campaign_id, csv, checkCampaignVars(campaign_vars, columns));
     })
   );
 
@@ -215,16 +231,16 @@ export function registerContactTools(server: McpServer): void {
       inputSchema: importCsvShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    handler(async ({ campaign_id, csv, csv_path }: ImportCsvArgs) => {
+    handler(async ({ campaign_id, csv, csv_path, campaign_vars }: ImportCsvArgs) => {
       if ((csv === undefined) === (csv_path === undefined)) {
         throw new Error("Fournis exactement un de csv (texte) ou csv_path (fichier local).");
       }
-      let content = csv;
+      let content = csv ?? "";
       if (csv_path !== undefined) {
         assertLocalPath(csv_path, "csv_path", "Passe le contenu du fichier dans csv.");
         content = decodeCsvBytes(await readFile(csv_path)).text;
       }
-      return summarizeImport(await api("POST", `/api/campaigns/${campaign_id}/import`, { csv: content }));
+      return importCsv(campaign_id, content, campaign_vars);
     })
   );
 
@@ -257,35 +273,36 @@ export function registerContactTools(server: McpServer): void {
     {
       title: "Lancer des contacts",
       description:
-        "Active des contacts en attente ('held') → 'pending' : ils entrent dans la file d'envoi, et la campagne repasse 'active' — les vrais envois partent ensuite dans la fenêtre d'envoi, selon les quotas et le warm-up. Sélection : soit cc_ids (liste précise), soit all_held: true (contacts 'held' par cc_id croissant), avec limit pour n'en lancer que N. all_held sans limit lance TOUS les contacts en attente. Les contacts qui ne sont pas 'held' sont ignorés. N'en lance jamais plus que ce que l'utilisateur a demandé et obtiens son accord explicite avant d'appeler.",
+        "Active des contacts en attente ('held') → 'pending' : ils entrent dans la file d'envoi, et la campagne repasse 'active' — les vrais envois partent ensuite dans la fenêtre d'envoi, selon les quotas et le warm-up. Sélection : soit cc_ids (liste précise), soit all_held: true (contacts 'held' par cc_id croissant), avec limit pour n'en lancer que N. all_held sans limit lance TOUS les contacts en attente. Les contacts qui ne sont pas 'held' sont ignorés. campaign_id accepte une liste pour lancer plusieurs campagnes en un appel (limit vaut alors par campagne ; chaque cc_id est lancé dans la campagne à laquelle il appartient) : le résultat détaille chaque campagne. N'en lance jamais plus que ce que l'utilisateur a demandé et obtiens son accord explicite avant d'appeler.",
       inputSchema: launchShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     handler(async ({ campaign_id, cc_ids, all_held, limit }: LaunchArgs) => {
       if (cc_ids && all_held) throw new Error("Choisis cc_ids OU all_held, pas les deux.");
       if (!cc_ids && !all_held) throw new Error("Précise cc_ids (contacts à lancer) ou all_held: true (avec limit pour en lancer N).");
-      if (cc_ids) {
-        if (limit !== undefined) throw new Error("limit ne s'utilise qu'avec all_held : passe directement les cc_ids voulus.");
-        const launched = await launch(campaign_id, cc_ids);
-        return {
-          ok: true,
-          launched,
-          requested: cc_ids.length,
-          ...(launched < cc_ids.length ? { note: "Les cc_ids non lancés n'étaient pas en 'held' (ou pas dans cette campagne)." } : {}),
-        };
+      if (cc_ids && limit !== undefined) throw new Error("limit ne s'utilise qu'avec all_held : passe directement les cc_ids voulus.");
+      const campaigns = [...new Set(Array.isArray(campaign_id) ? campaign_id : [campaign_id])];
+      const notHeld = `Les cc_ids non lancés n'étaient pas en 'held' (ou pas dans ${campaigns.length === 1 ? "cette campagne" : "ces campagnes"}).`;
+      if (campaigns.length === 1) {
+        const result = await launchIn(campaigns[0], cc_ids, limit);
+        if (!cc_ids) return { ok: true, ...result };
+        return { ok: true, ...result, requested: cc_ids.length, ...(Number(result.launched) < cc_ids.length ? { note: notHeld } : {}) };
       }
-      const rows = await fetchCampaignContacts(campaign_id);
-      const heldBefore = rows.filter((r) => r.status === "held").length;
-      const chosen = pickHeld(rows, limit).map((r) => r.cc_id);
-      if (!chosen.length) return { ok: true, launched: 0, held_before: 0, note: "Aucun contact en attente ('held') dans cette campagne." };
-      const launched = await launch(campaign_id, chosen);
+      // Plusieurs campagnes : une erreur sur l'une (archivée…) n'annule pas les lancements déjà faits
+      const results: Array<Record<string, unknown>> = [];
+      for (const id of campaigns) {
+        try {
+          results.push({ campaign_id: id, ...(await launchIn(id, cc_ids, limit)) });
+        } catch (err) {
+          results.push({ campaign_id: id, launched: 0, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+      const launched = results.reduce((n, r) => n + Number(r.launched), 0);
       return {
-        ok: true,
+        ok: results.every((r) => r.error === undefined),
         launched,
-        held_before: heldBefore,
-        held_remaining: heldBefore - launched,
-        first_cc_id: chosen[0],
-        last_cc_id: chosen[chosen.length - 1],
+        ...(cc_ids ? { requested: cc_ids.length, ...(launched < cc_ids.length ? { note: notHeld } : {}) } : {}),
+        campaigns: results,
       };
     })
   );
