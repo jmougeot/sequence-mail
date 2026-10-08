@@ -20,7 +20,7 @@ const stepSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Corps du message. Variables : {{first_name}}, {{last_name}}, {{company}}, {{email}}, {{sender_name}}, {{link}}, {{signature}} + toute colonne CSV. Une relance email sans sujet part dans le même fil (Re:). Pour une invitation LinkedIn, la note est facultative."
+      "Corps du message. Variables : {{first_name}}, {{last_name}}, {{company}}, {{email}}, {{sender_name}}, {{link}}, {{signature}} + toute colonne CSV. Bloc conditionnel : {{si variable}}texte si elle est remplie{{sinon}}texte sinon{{fin}} ({{sinon}} facultatif, pas d'imbrication), aussi valable dans le sujet. Une relance email sans sujet part dans le même fil (Re:). Pour une invitation LinkedIn, la note est facultative."
     ),
   wait_days: z
     .number()

@@ -19,6 +19,7 @@ import type express from "express";
 import { config } from "../config.js";
 import { db } from "../db.js";
 import { MERGED_EXTRA, renderTemplate, templateVariables } from "./contacts.js";
+import { resolveSections } from "./template-sections.js";
 import {
   getThreadMessages,
   googleErrorMessage,
@@ -696,12 +697,10 @@ export function registerInboxRoutes(app: express.Express): void {
       >;
 
     // Variables de chaque étape (un email : sujets + corps ; LinkedIn : corps seul)
-    const stepVars = new Map(
-      steps.map((s) => [
-        s.step_number,
-        templateVariables(s.channel === "linkedin" ? s.body : [s.subject, s.subject_b ?? "", s.body].join("\n")),
-      ])
-    );
+    const stepText = (s: Step) => (s.channel === "linkedin" ? s.body : [s.subject, s.subject_b ?? "", s.body].join("\n"));
+    const stepVars = new Map(steps.map((s) => [s.step_number, templateVariables(stepText(s))]));
+    // Un bloc {{si …}} commandé par une variable d'expéditeur est tenu pour rempli
+    const senderFilled = Object.fromEntries([...SENDER_VARS].map((key) => [key, "x"]));
     const stats = new Map<string, { steps: number[]; genderOnly: boolean; used: number; missing: number }>();
     for (const s of steps) {
       for (const [key, genderOnly] of stepVars.get(s.step_number)!) {
@@ -732,7 +731,8 @@ export function registerInboxRoutes(app: express.Express): void {
           skipped.set(s.step_number, (skipped.get(s.step_number) ?? 0) + 1);
           continue;
         }
-        for (const key of stepVars.get(s.step_number)!.keys()) {
+        // blocs conditionnels résolus pour ce contact : seules comptent les variables du texte qu'il recevra
+        for (const key of templateVariables(resolveSections(stepText(s), { ...senderFilled, ...values })).keys()) {
           if (SENDER_VARS.has(key)) continue;
           used.add(key);
           if (!String(values[key] ?? "").trim()) missing.add(key);
@@ -765,6 +765,10 @@ export function registerInboxRoutes(app: express.Express): void {
     }
     if (usedIn(emailSteps, "link").length && !config.visit.enabled) {
       warnings.push("{{link}} sera vide : le lien de suivi est désactivé (VISIT_ENABLED=false).");
+    }
+    for (const s of steps) {
+      // un {{si …}} resté après résolution n'a pas de {{fin}} : il partirait tel quel dans le message
+      if (/\{\{\s*si\s/iu.test(resolveSections(stepText(s), {}))) warnings.push(`Étape ${s.step_number} : bloc {{si …}} sans {{fin}}.`);
     }
     for (const s of steps.filter((x) => x.channel === "linkedin")) {
       const empty = [...SENDER_VARS].filter((key) => stepVars.get(s.step_number)!.has(key));

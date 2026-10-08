@@ -66,11 +66,12 @@ Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroni
 ### Campagnes et séquences
 - Chaque campagne est indépendante et contient une séquence d'étapes (email initial + relances avec délai en jours).
 - Les corps et sujets acceptent des variables : `{{first_name}}`, `{{last_name}}`, `{{company}}`, `{{email}}`, `{{sender_name}}` et toute colonne supplémentaire du CSV.
+- Un **bloc conditionnel** adapte le texte aux données du contact : `{{si competences}}Vous cherchez {{competences}}.{{sinon}}Vous recrutez.{{fin}}` garde le premier texte si la variable est remplie, le second sinon (`{{sinon}}` facultatif, pas d'imbrication). L'aperçu d'une campagne ne signale alors une variable vide que chez les contacts qui recevront le texte où elle figure.
 - Une relance **sans sujet** part dans le même fil Gmail (`Re:`, en-têtes `In-Reply-To`/`References`), ce qui améliore la délivrabilité et le taux de réponse.
 - **A/B test** : l'étape 1 peut avoir un « Sujet B ». Chaque contact reçoit alors aléatoirement (50/50) la variante A ou B, conservée pour toute sa séquence, et le tableau de bord affiche le taux de réponse de chaque variante.
 
 ### Import des contacts
-- **CSV** : colonnes `email` et/ou `linkedin` (au moins l'une des deux par ligne), `first_name`, `last_name`, `company` ; toute autre colonne devient une variable de template. Dédoublonnage par email, sinon par profil LinkedIn. Un contact sans email saute les étapes email, un contact sans profil LinkedIn saute les étapes LinkedIn : une même campagne mêle candidats joignables par l'un, l'autre ou les deux.
+- **CSV** : colonnes `email` et/ou `linkedin` (au moins l'une des deux par ligne), `first_name`, `last_name`, `company` ; toute autre colonne devient une variable de template. Une cellule vide laisse le champ tel qu'il est ; la valeur `[vider]` le retire du contact. Dédoublonnage par email, sinon par profil LinkedIn. Un contact sans email saute les étapes email, un contact sans profil LinkedIn saute les étapes LinkedIn : une même campagne mêle candidats joignables par l'un, l'autre ou les deux.
 - **Attio** : import des personnes dont un attribut de statut CRM correspond aux valeurs choisies.
 - **Prospection intégrée** : depuis la page Prospection (voir ci-dessous), sans CSV.
 

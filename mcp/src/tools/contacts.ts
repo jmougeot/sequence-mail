@@ -207,7 +207,7 @@ export function registerContactTools(server: McpServer): void {
   // ---------------------------------------------------------------- import
 
   const importNote =
-    "Dédoublonnage par email, sinon par profil LinkedIn ; un contact déjà présent est mis à jour (ses champs personnalisés fusionnés — réimporter corrige donc un champ ou une variable de campagne). Un email sans serveur mail (MX) est écarté (la ligne reste si elle a un LinkedIn). Un contact sans email saute les étapes email ; sans profil, les étapes LinkedIn. Un contact désinscrit n'est jamais réinscrit. Les contacts arrivent en statut 'held' : RIEN n'est envoyé avant launch_contacts. Renvoie { imported, updated, skipped, errors } (errors tronqué à 30, errors_total sinon).";
+    "Dédoublonnage par email, sinon par profil LinkedIn ; un contact déjà présent est mis à jour (ses champs personnalisés fusionnés — réimporter corrige donc un champ ou une variable de campagne ; une valeur vide laisse le champ tel quel, la valeur « [vider] » le retire). Un email sans serveur mail (MX) est écarté (la ligne reste si elle a un LinkedIn). Un contact sans email saute les étapes email ; sans profil, les étapes LinkedIn. Un contact désinscrit n'est jamais réinscrit. Les contacts arrivent en statut 'held' : RIEN n'est envoyé avant launch_contacts. Renvoie { imported, updated, skipped, errors } (errors tronqué à 30, errors_total sinon).";
 
   server.registerTool(
     "import_contacts",

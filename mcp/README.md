@@ -121,6 +121,10 @@ warm-up), `rotate_linkedin_token`, `delete_linkedin_account`.
   `import_contacts_csv`) rattache les champs nommés à l'inscription : `{{phrase}}` peut
   alors différer d'une campagne à l'autre pour un même contact, et prime à l'envoi sur le
   champ du contact de même nom. `list_campaign_contacts` les rend dans `vars`.
+- **Blocs conditionnels.** `{{si variable}}…{{sinon}}…{{fin}}` dans un sujet ou un corps : le
+  premier texte part si la variable est remplie pour le contact, le second sinon.
+  `preview_campaign` ne compte une variable vide que chez les contacts qui recevront le
+  texte où elle figure, et signale un bloc resté sans `{{fin}}`.
 - **Fenêtre d'envoi.** Ses heures se lisent à l'heure du serveur : `get_settings` donne
   son fuseau (`server.timezone`, `utc_offset`), si la fenêtre est ouverte et l'heure du
   prochain envoi au plus tôt.

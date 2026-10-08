@@ -3,8 +3,13 @@ import { resolveMx } from "node:dns/promises";
 import { db } from "../db.js";
 import { normalizeLinkedin } from "./linkedin-url.js";
 import { isOptedOut } from "./opt-out.js";
+import { resolveSections, splitSections } from "./template-sections.js";
 
 export const KNOWN_COLUMNS = new Set(["email", "first_name", "last_name", "company", "linkedin"]);
+
+// Valeur d'un champ personnalisé qui le retire du contact au lieu de l'écrire : un
+// import ignore une cellule vide, il faut donc le dire explicitement pour vider.
+export const CLEAR_FIELD = "[vider]";
 
 // Champs personnalisés vus par un template : ceux de l'inscription (cc.vars, propres
 // à une campagne) priment sur ceux du contact (c.extra, partagés entre campagnes).
@@ -84,11 +89,11 @@ export async function importContacts(
       company    = COALESCE(@company, company),
       linkedin   = COALESCE(@linkedin, linkedin),
       -- Fusion des champs personnalisés : les nouvelles valeurs écrasent les
-      -- anciennes, les champs absents du nouvel import sont conservés
+      -- anciennes, les champs absents du nouvel import sont conservés, ceux
+      -- marqués CLEAR_FIELD (null dans @extra) sont retirés
       extra      = CASE
         WHEN @extra IS NULL THEN extra
-        WHEN extra IS NULL THEN @extra
-        ELSE json_patch(extra, @extra)
+        ELSE NULLIF(json_patch(COALESCE(extra, '{}'), @extra), '{}')
       END,
       attio_record_id = COALESCE(@attio_record_id, attio_record_id)
     WHERE id = @id
@@ -102,7 +107,7 @@ export async function importContacts(
   `);
   // Même fusion que les champs du contact : les nouvelles valeurs écrasent les anciennes
   const setVars = db.prepare(`
-    UPDATE campaign_contacts SET vars = CASE WHEN vars IS NULL THEN @vars ELSE json_patch(vars, @vars) END
+    UPDATE campaign_contacts SET vars = NULLIF(json_patch(COALESCE(vars, '{}'), @vars), '{}')
     WHERE campaign_id = @campaign AND contact_id = @contact
   `);
 
@@ -124,10 +129,11 @@ export async function importContacts(
         if (label === "(ligne vide)") report.errors.push("Ligne sans email ni profil LinkedIn ignorée");
         continue;
       }
-      const extra: Record<string, string> = {};
-      const vars: Record<string, string> = {};
+      const extra: Record<string, string | null> = {};
+      const vars: Record<string, string | null> = {};
       for (const [k, v] of Object.entries(row)) {
-        if (!KNOWN_COLUMNS.has(k) && v) (campaignVars.has(k) ? vars : extra)[k] = v;
+        if (KNOWN_COLUMNS.has(k) || !v) continue;
+        (campaignVars.has(k) ? vars : extra)[k] = v.trim() === CLEAR_FIELD ? null : v;
       }
       const fields = {
         email,
@@ -150,7 +156,9 @@ export async function importContacts(
         update.run({ ...fields, id: existing.id });
         id = existing.id;
       } else {
-        id = Number(insert.run(fields).lastInsertRowid);
+        // contact nouveau : rien à retirer
+        const created = Object.fromEntries(Object.entries(extra).filter(([, v]) => v !== null));
+        id = Number(insert.run({ ...fields, extra: Object.keys(created).length ? JSON.stringify(created) : null }).lastInsertRowid);
       }
       if (isOptedOut(id, owner)) {
         report.skipped++; // désinscrit : ne jamais le réinscrire
@@ -211,7 +219,8 @@ function isFeminine(value?: string): boolean {
 /**
  * Remplace les variables {{first_name}}, {{company}}, etc. et gère l'accord
  * en genre via {{genre:masculin|féminin}} : la colonne `genre` du contact
- * choisit la 1re forme (masculin) ou la 2e (féminin).
+ * choisit la 1re forme (masculin) ou la 2e (féminin). Les blocs conditionnels
+ * {{si variable}}…{{sinon}}…{{fin}} sont résolus d'abord (template-sections.ts).
  */
 export function renderTemplate(
   template: string,
@@ -226,7 +235,7 @@ export function renderTemplate(
     ...(contact.extra ? (JSON.parse(contact.extra) as Record<string, string>) : {}),
     ...extraVars,
   };
-  return template
+  return resolveSections(template, vars)
     // Accord en genre : {{genre:masculin|féminin}} — placé avant les variables
     // simples car la clé est suivie de « : », exclue du motif générique ci-dessous.
     .replace(
@@ -241,11 +250,16 @@ export function renderTemplate(
  * Variables référencées par un template, avec les mêmes motifs que
  * renderTemplate. La valeur indique si la variable n'apparaît que dans un accord
  * en genre ({{genre:masculin|féminin}}) : absente, elle donne le masculin, pas un trou.
+ * Les deux textes d'un bloc conditionnel comptent ; pour les seules variables
+ * du texte qu'un contact recevra, résoudre d'abord ses blocs (resolveSections).
  */
 export function templateVariables(template: string): Map<string, boolean> {
   const out = new Map<string, boolean>();
-  for (const m of template.matchAll(/\{\{\s*([\p{L}\p{N}_]+)\s*(:\s*[^|{}]*\|[^{}]*)?\}\}/gu)) {
+  const { text, conditions } = splitSections(template);
+  for (const m of text.matchAll(/\{\{\s*([\p{L}\p{N}_]+)\s*(:\s*[^|{}]*\|[^{}]*)?\}\}/gu)) {
     out.set(m[1], (out.get(m[1]) ?? true) && m[2] !== undefined);
   }
+  // une variable qui ne fait que commander un bloc ne laisse pas de trou non plus
+  for (const key of conditions) if (!out.has(key)) out.set(key, true);
   return out;
 }
