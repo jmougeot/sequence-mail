@@ -144,7 +144,7 @@ les profils bien référencés, pas l'organigramme complet.
 ### Délivrabilité
 - **Warm-up automatique** : chaque compte démarre à 10 emails/jour puis gagne +5/semaine jusqu'à son quota configuré (désactivable par compte dans Paramètres pour les boîtes déjà rodées).
 - **Vérification MX à l'import** : les adresses dont le domaine n'a pas de serveur mail sont rejetées avant tout envoi (rapport d'import détaillé), ce qui élimine la majorité des bounces.
-- Fenêtre d'envoi configurable (`SEND_WINDOW_START`/`END`, heures locales), envois en semaine uniquement par défaut.
+- Fenêtre d'envoi configurable (`SEND_WINDOW_START`/`END`, dans le fuseau `SEND_WINDOW_TZ`), envois en semaine uniquement par défaut.
 - Délai aléatoire de 90 à 420 s entre deux envois d'un même compte (`MIN_GAP_SECONDS`/`MAX_GAP_SECONDS`).
 - Jitter de 0 à 4 h sur la planification des relances : aucun envoi à heure fixe.
 - Emails en texte brut, envoyés via l'API Gmail (réputation du domaine préservée, pas de SMTP tiers).

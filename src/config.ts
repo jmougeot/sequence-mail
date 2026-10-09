@@ -34,6 +34,8 @@ export const config = {
     defaultDailyLimit: int("DEFAULT_DAILY_LIMIT", 40),
     sendWindowStart: int("SEND_WINDOW_START", 9),
     sendWindowEnd: int("SEND_WINDOW_END", 18),
+    // Fuseau dans lequel se lisent ces heures et les jours de semaine (défaut : celui du serveur)
+    sendWindowTimezone: process.env.SEND_WINDOW_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone,
     weekdaysOnly: (process.env.WEEKDAYS_ONLY ?? "true") !== "false",
     minGapSeconds: int("MIN_GAP_SECONDS", 90),
     maxGapSeconds: int("MAX_GAP_SECONDS", 420),

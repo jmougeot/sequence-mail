@@ -470,7 +470,7 @@ export function createServer(): express.Express {
 
   // Paramètres effectifs (lecture seule, issus du .env)
   app.get("/api/settings", (_req, res) => {
-    // La fenêtre d'envoi se lit à l'heure du serveur : son fuseau est donné avec elle
+    // La fenêtre d'envoi se lit dans deliverability.sendWindowTimezone, qui peut différer du fuseau du serveur
     const now = new Date();
     const offset = -now.getTimezoneOffset(); // minutes à ajouter à UTC
     const pad = (n: number) => String(Math.abs(n)).padStart(2, "0");

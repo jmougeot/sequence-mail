@@ -216,22 +216,43 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+// La fenêtre d'envoi des emails a son propre fuseau (SEND_WINDOW_TZ) : l'heure du serveur reste celle du flux LinkedIn.
+const windowZone = new Intl.DateTimeFormat("en-US", {
+  timeZone: d.sendWindowTimezone, hourCycle: "h23",
+  year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric",
+});
+
+/** L'instant `ts` dans le fuseau de la fenêtre d'envoi : une Date dont les champs UTC portent l'heure locale. */
+function zoned(ts: number): Date {
+  const p: Record<string, number> = {};
+  for (const part of windowZone.formatToParts(ts)) p[part.type] = Number(part.value);
+  return new Date(Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second));
+}
+
+/** Instant où il est `hour` h 00 dans le fuseau de la fenêtre, `days` jours après le jour de `ts`. */
+function zonedHour(ts: number, days: number, hour: number): number {
+  const z = zoned(ts);
+  const wall = Date.UTC(z.getUTCFullYear(), z.getUTCMonth(), z.getUTCDate() + days, hour);
+  const offset = (at: number): number => zoned(at).getTime() - Math.floor(at / 1000) * 1000;
+  // le décalage du fuseau peut avoir changé entre `ts` et l'instant cherché (heure d'été) : second passage
+  return wall - offset(wall - offset(ts));
+}
+
 function inSendWindow(now = new Date()): boolean {
+  const z = zoned(now.getTime());
   if (d.weekdaysOnly) {
-    const day = now.getDay();
+    const day = z.getUTCDay();
     if (day === 0 || day === 6) return false;
   }
-  const h = now.getHours();
+  const h = z.getUTCHours();
   return h >= d.sendWindowStart && h < d.sendWindowEnd;
 }
 
-/** Début de la prochaine fenêtre d'envoi après `ts` (heure du serveur). */
+/** Début de la prochaine fenêtre d'envoi après `ts` (fuseau de la fenêtre). */
 function nextSendWindowOpen(ts: number): number {
   for (let i = 0; i < 8; i++) {
-    const open = new Date(ts);
-    open.setDate(open.getDate() + i);
-    open.setHours(d.sendWindowStart, 0, 0, 0);
-    if (open.getTime() > ts && inSendWindow(open)) return open.getTime();
+    const open = zonedHour(ts, i, d.sendWindowStart);
+    if (open > ts && inSendWindow(new Date(open))) return open;
   }
   return ts + 24 * 3600 * 1000;
 }
@@ -239,9 +260,7 @@ function nextSendWindowOpen(ts: number): number {
 /** Fenêtre d'envoi des emails : ouverte jusqu'à closes_at, ou fermée jusqu'à opens_at (epoch ms). */
 export function sendWindowState(ts = Date.now()): { open: boolean; opens_at?: number; closes_at?: number } {
   if (!inSendWindow(new Date(ts))) return { open: false, opens_at: nextSendWindowOpen(ts) };
-  const close = new Date(ts);
-  close.setHours(d.sendWindowEnd, 0, 0, 0);
-  return { open: true, closes_at: close.getTime() };
+  return { open: true, closes_at: zonedHour(ts, 0, d.sendWindowEnd) };
 }
 
 interface DueRow {

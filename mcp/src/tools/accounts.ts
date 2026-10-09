@@ -122,7 +122,7 @@ export function registerAccountTools(server: McpServer): void {
     {
       title: "Paramètres de l'app",
       description:
-        "Paramètres effectifs (lecture seule, issus du .env) et horloge des envois. server : heure du serveur, son fuseau (timezone, utc_offset) et local_time — les heures de la fenêtre d'envoi (deliverability.sendWindowStart / sendWindowEnd) se lisent dans CE fuseau, pas dans celui de l'utilisateur. send_window : open, avec closes_at si elle est ouverte ou opens_at sinon. next_email : earliest_at = prochain envoi d'email au plus tôt (estimation : contacts dus, fenêtre, quotas et repos des comptes), due_now = emails dus dès maintenant, reason s'il n'y a rien à envoyer ou si un quota bloque. Puis deliverability (quotas, délais, warm-up) et si Google et Attio sont configurés. Dates en ISO 8601 (UTC).",
+        "Paramètres effectifs (lecture seule, issus du .env) et horloge des envois. server : heure du serveur, son fuseau (timezone, utc_offset) et local_time. Les heures de la fenêtre d'envoi (deliverability.sendWindowStart / sendWindowEnd) se lisent dans le fuseau deliverability.sendWindowTimezone, pas dans celui du serveur ni de l'utilisateur. send_window : open, avec closes_at si elle est ouverte ou opens_at sinon. next_email : earliest_at = prochain envoi d'email au plus tôt (estimation : contacts dus, fenêtre, quotas et repos des comptes), due_now = emails dus dès maintenant, reason s'il n'y a rien à envoyer ou si un quota bloque. Puis deliverability (quotas, délais, warm-up) et si Google et Attio sont configurés. Dates en ISO 8601 (UTC).",
       inputSchema: {},
       annotations: READ,
     },
