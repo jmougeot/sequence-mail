@@ -293,6 +293,8 @@ if ((db.pragma("user_version", { simple: true }) as number) < 4) {
 // (LI_SECRET_KEY). last_inbox_at cadence la lecture de la messagerie qui
 // détecte les réponses.
 addColumnIfMissing("li_accounts", "mode", "mode TEXT NOT NULL DEFAULT 'extension'"); // extension | server
+// 0 = profil LinkedIn déjà chaud : plafonds pleins dès le premier jour, sans montée en charge.
+addColumnIfMissing("li_accounts", "warmup", "warmup INTEGER NOT NULL DEFAULT 1");
 addColumnIfMissing("li_accounts", "proxy_enc", "proxy_enc TEXT");
 addColumnIfMissing("li_accounts", "session_enc", "session_enc TEXT");
 addColumnIfMissing("li_accounts", "session_state", "session_state TEXT"); // NULL | ok | expired | checkpoint

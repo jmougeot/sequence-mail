@@ -247,6 +247,7 @@ export function registerOutreachRoutes(app: express.Express): void {
     if (b.mode === "extension" || b.mode === "server") patch.mode = b.mode;
     if ("invites_per_day" in b) patch.invites_per_day = nullableInt(b.invites_per_day);
     if ("messages_per_day" in b) patch.messages_per_day = nullableInt(b.messages_per_day);
+    if (b.warmup !== undefined) patch.warmup = Boolean(b.warmup);
     if (b.restart_warmup) patch.restart_warmup = true;
     res.json(accountStatus(updateAccount(id, patch)!));
   });

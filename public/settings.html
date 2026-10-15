@@ -141,7 +141,8 @@ async function loadLi() {
     return `<tr>
       <td><input value="${esc(a.name)}" style="width:150px" onchange="patchLi(${a.id}, {name: this.value})">
         ${a.member ? `<div><a href="${esc(a.member.url)}" target="_blank" rel="noopener" title="Profil vérifié avant chaque action">✓ ${esc(a.member.name || a.member.slug)}</a></div>` : `<div class="muted">profil non vérifié</div>`}
-        ${a.owner_ref ? `<div class="muted" title="Compte d'un utilisateur Azerit : ses campagnes seulement">client ${esc(a.owner_ref)}</div>` : ""}</td>
+        ${a.owner_ref ? `<div class="muted" title="Compte d'un utilisateur Azerit : ses campagnes seulement">client ${esc(a.owner_ref)}</div>` : ""}
+        <label class="muted" title="Décocher pour un profil déjà chaud : plafonds pleins tout de suite"><input type="checkbox" ${a.warmup ? "checked" : ""} onchange="patchLi(${a.id}, {warmup: this.checked})"> warm-up</label></td>
       <td><select style="width:170px" onchange="patchLi(${a.id}, {mode: this.value})">
           <option value="extension" ${server ? "" : "selected"}>Extension Chrome</option>
           <option value="server" ${server ? "selected" : ""}>Navigateur serveur</option></select>

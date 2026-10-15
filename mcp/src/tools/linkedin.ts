@@ -36,6 +36,10 @@ const updateShape = {
     .optional()
     .describe("Plafond de messages par jour (avant warm-up). null = défaut de l'app."),
   restart_warmup: z.boolean().optional().describe("true = recommence la montée en charge progressive à partir d'aujourd'hui."),
+  warmup: z
+    .boolean()
+    .optional()
+    .describe("false = profil déjà chaud : plafonds pleins tout de suite, sans montée en charge (vaut pour les comptes du même profil LinkedIn) ; true = montée en charge."),
 };
 type UpdateArgs = z.infer<z.ZodObject<typeof updateShape>>;
 
@@ -116,7 +120,7 @@ export function registerLinkedinTools(server: McpServer): void {
     {
       title: "Modifier un compte LinkedIn",
       description:
-        "Modifie un compte LinkedIn : nom, actif/inactif, mode (extension|server), proxy, plafonds quotidiens d'invitations et de messages (null = défaut de l'app), redémarrage du warm-up. Seuls les champs fournis changent. Renvoie l'état du compte.",
+        "Modifie un compte LinkedIn : nom, actif/inactif, mode (extension|server), proxy, plafonds quotidiens d'invitations et de messages (null = défaut de l'app), warm-up (désactivé ou redémarré). Seuls les champs fournis changent. Renvoie l'état du compte.",
       inputSchema: updateShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
