@@ -753,6 +753,30 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   };
 }
 
+/**
+ * Prochaine action parmi plusieurs comptes servis par le même exécutant : le
+ * compte resté le plus longtemps sans envoyer passe en premier, une action au
+ * plus. Sans action : la plus courte attente, sinon les raisons d'inactivité.
+ * `account` = rang du compte dans la liste reçue.
+ */
+export function nextForAccounts(accounts: LiAccount[], via: LiMode): NextResult & { account?: number } {
+  const lastSent = (a: LiAccount) =>
+    (db.prepare(`SELECT MAX(sent_at) AS t FROM li_log WHERE li_account_id = ?`).get(a.id) as { t: number | null }).t ?? 0;
+  // Tous sont vus à cet appel, même ceux qu'une action servie dispense d'interroger.
+  const now = Date.now();
+  for (const a of accounts) if (a.mode === via) db.prepare("UPDATE li_accounts SET last_seen_at = ? WHERE id = ?").run(now, a.id);
+  const order = accounts.map((a, i) => ({ i, t: lastSent(a) })).sort((x, y) => x.t - y.t || x.i - y.i);
+  const results: NextResult[] = [];
+  for (const { i } of order) {
+    const r = nextAction(accounts[i], via);
+    if ("action" in r) return { ...r, account: i };
+    results.push(r);
+  }
+  const waits = results.filter((r): r is { wait: number; reason: string } => "wait" in r);
+  if (waits.length) return waits.reduce((a, b) => (b.wait < a.wait ? b : a));
+  return { idle: true, reason: [...new Set(results.map((r) => (r as { reason: string }).reason))].join(" · ") };
+}
+
 const NOT_FOUND = /\(404\)/;
 const CHECKPOINT = /contrôle de sécurité|checkpoint|captcha|challenge/i;
 

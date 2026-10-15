@@ -46,11 +46,13 @@ c'est plus lent mais beaucoup moins détectable.
    (Caddy laisse passer `/api/li/{next,result,inbox,status}` porteurs d'un
    jeton). Les étapes 4 et 5 ci-dessous sont alors inutiles.
 
-   Ce jeton s'ajoute à celui du popup (compte Sequence Mail) : l'extension sert
-   les deux comptes à tour de rôle, une action au plus par tick. Comme ils
-   envoient depuis le même profil LinkedIn, le serveur leur impose des quotas
-   du jour, un délai entre deux actions et des pauses de sécurité communs
-   (dès que le profil de chacun est connu, c'est-à-dire après sa première action).
+   Ce jeton s'ajoute à celui du popup (compte Sequence Mail) : l'extension
+   envoie les deux jetons dans chaque requête (`X-LI-Account: a,b`) et c'est le
+   serveur qui choisit le compte qui agit (celui resté le plus longtemps sans
+   envoyer), une action au plus par tick. Comme ils envoient depuis le même
+   profil LinkedIn, il leur impose des quotas du jour, un délai entre deux
+   actions et des pauses de sécurité communs (dès que le profil de chacun est
+   connu, c'est-à-dire après sa première action).
 4. **Adresse du serveur** (champ en bas du popup) : par défaut l'extension vise la
    prod partagée `https://sequence.example.com`. Pour développer en local, lancez
    `cd Sequence-mail && npm run dev` (sert sur `localhost:3000`) et mettez

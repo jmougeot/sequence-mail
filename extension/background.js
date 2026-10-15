@@ -44,8 +44,8 @@ async function authHeaders(token) {
 /**
  * Comptes servis par ce navigateur : celui du popup (jeton collé depuis les
  * Réglages de Sequence Mail) et celui d'Azerit (jeton reçu à l'appairage).
- * Les deux envoient depuis le même profil LinkedIn ; le serveur leur impose
- * des quotas et délais communs.
+ * Le serveur choisit lequel agit et leur impose des quotas et délais communs
+ * (même profil LinkedIn).
  */
 async function accountTokens() {
   const { liToken, azeritToken } = await chrome.storage.local.get(["liToken", "azeritToken"]);
@@ -117,21 +117,7 @@ async function tick() {
   busy = true;
   const SERVER = await getServer();
   try {
-    // Une action au plus par tick ; le compte interrogé en premier alterne
-    // d'une minute à l'autre pour qu'aucun ne passe toujours devant l'autre.
-    const tokens = await accountTokens();
-    const first = Math.floor(Date.now() / 60000) % tokens.length;
-    const statuses = [];
-    for (let i = 0; i < tokens.length; i++) {
-      const s = await serve(SERVER, tokens[(first + i) % tokens.length]);
-      if (s.acted) {
-        await setStatus(s);
-        return; // le finally remet busy = false
-      }
-      statuses.push(s);
-    }
-    const err = statuses.find((s) => s.kind === "err");
-    await setStatus(err || { ...statuses[0], text: [...new Set(statuses.map((s) => s.text))].join(" · ") });
+    await setStatus(await serve(SERVER, await accountTokens()));
   } catch (e) {
     await setStatus({ kind: "err", text: `Serveur injoignable (${SERVER}). Lancez l'app Sequence Mail.` });
   } finally {
@@ -139,16 +125,21 @@ async function tick() {
   }
 }
 
-/** Demande au serveur la prochaine action d'un compte et la joue ; rend l'état à afficher. */
-async function serve(SERVER, token) {
-  const auth = await authHeaders(token);
-  const r = await fetch(`${SERVER}/api/li/next`, { headers: auth });
+/**
+ * Demande au serveur la prochaine action et la joue ; rend l'état à afficher.
+ * Tous les jetons partent ensemble : le serveur choisit le compte qui agit
+ * (quotas, délais, ordre) et dit lequel (`account`, rang du jeton) ; le
+ * verdict repart avec ce seul jeton.
+ */
+async function serve(SERVER, tokens) {
+  const r = await fetch(`${SERVER}/api/li/next`, { headers: await authHeaders(tokens.filter(Boolean).join(",")) });
   if (r.status === 401) {
     const { error } = await r.json().catch(() => ({}));
     return { kind: "err", text: error || "Accès refusé (401) — renseignez le mot de passe d'accès dans le popup." };
   }
   const res = await r.json();
   if (res.error) return { kind: "err", text: res.error };
+  const auth = await authHeaders(tokens[res.account ?? 0]);
   if (res.action && res.action.type === "sync_inbox") {
     // Lecture de la messagerie : le serveur y cherche les réponses des contacts.
     await setStatus({ kind: "run", text: "Lecture de la messagerie…" });
@@ -165,8 +156,8 @@ async function serve(SERVER, token) {
       }),
     });
     return r.ok
-      ? { acted: true, kind: "ok", text: "Messagerie lue" }
-      : { acted: true, kind: "err", text: `Messagerie : ${r.error || "illisible"}` };
+      ? { kind: "ok", text: "Messagerie lue" }
+      : { kind: "err", text: `Messagerie : ${r.error || "illisible"}` };
   }
   if (res.action) {
     await setStatus({ kind: "run", text: `${res.action.type === "invite" ? "Invitation" : "Message"} en cours…` });
@@ -183,8 +174,8 @@ async function serve(SERVER, token) {
       reply_text: verdict.reply_text,
     });
     return verdict.ok
-      ? { acted: true, kind: "ok", text: "Dernière action : réussie" }
-      : { acted: true, kind: "err", text: `Échec : ${verdict.error || "inconnu"}` };
+      ? { kind: "ok", text: "Dernière action : réussie" }
+      : { kind: "err", text: `Échec : ${verdict.error || "inconnu"}` };
   }
   if (res.wait != null) return { kind: "wait", text: `${res.reason} — reprise dans ~${Math.ceil(res.wait / 60)} min` };
   return { kind: "idle", text: res.reason || "File vide" };
