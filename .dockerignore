@@ -1,5 +1,7 @@
 node_modules
 data
+# sauvegardes de la base faites sur le serveur avant un déploiement
+backups
 _tmpdata
 .git
 .env
