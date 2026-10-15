@@ -97,6 +97,9 @@ label.chip { display:inline-flex; align-items:center; cursor:pointer; user-selec
 .step-kind { width:auto; margin:0; padding:4px 26px 4px 8px; font-weight:500; background:transparent; border-color:transparent; cursor:pointer;
   appearance:none; -webkit-appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%2357606a' stroke-width='1.5'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 9px center; }
 .step-kind:hover, .step-kind:focus { border-color:var(--border); background-color:var(--field); box-shadow:none; }
+.step-branch { width:auto; margin:0; padding:4px 26px 4px 8px; font-size:13px; }
+.step[data-branch="accepted"] .step-card { border-left:4px solid var(--ok); }
+.step[data-branch="not_accepted"] .step-card { border-left:4px solid var(--warn); }
 .icon-btn { background:transparent; border:none; color:var(--muted); cursor:pointer; font-size:14px; padding:4px 9px; border-radius:6px; }
 .icon-btn:hover { background:var(--hover); color:var(--text); }
 button.icon-btn.danger { border:none; background:transparent; color:var(--muted); }

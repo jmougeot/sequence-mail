@@ -3,6 +3,7 @@ import { db } from "../db.js";
 import { pushSequenceStatus } from "./attio.js";
 import { renderTemplate } from "./contacts.js";
 import { getForeignMessages, sendEmail, type AccountRow, type ForeignMessage } from "./google.js";
+import { nextStep } from "./branches.js";
 import { cancelLinkedInActions, enqueueStep } from "./outreach.js";
 import { NOT_OPTED_OUT, optOutFromCampaignOf } from "./opt-out.js";
 import { visitLink } from "./visits.js";
@@ -280,6 +281,7 @@ interface DueRow {
   extra: string | null;
   attio_record_id: string | null;
   variant: string | null;
+  li_accepted: number | null;
   campaign_account_ids: string | null;
 }
 
@@ -291,6 +293,7 @@ interface StepRow {
   wait_days: number;
   channel: string;
   li_action: string | null;
+  branch: string | null;
 }
 
 /** Remet à zéro les compteurs quotidiens si la date a changé. */
@@ -330,13 +333,17 @@ function accountById(id: number): AccountRow | undefined {
   return db.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as AccountRow | undefined;
 }
 
-/** Planifie l'étape suivante avec un jitter aléatoire (délivrabilité). */
-function scheduleNext(ccId: number, nextStep: StepRow): void {
+/**
+ * Planifie l'étape suivante avec un jitter aléatoire (délivrabilité). Les
+ * étapes d'une autre branche sont considérées franchies (current_step juste
+ * avant la suivante) : l'étape due reste toujours current_step + 1.
+ */
+function scheduleNext(ccId: number, next: StepRow): void {
   const jitterMs = randBetween(0, 4 * 3600 * 1000); // 0 à 4 h de variabilité
-  const at = Date.now() + nextStep.wait_days * 24 * 3600 * 1000 + jitterMs;
+  const at = Date.now() + next.wait_days * 24 * 3600 * 1000 + jitterMs;
   db.prepare(
-    "UPDATE campaign_contacts SET status = 'in_progress', next_send_at = ? WHERE id = ?"
-  ).run(Math.round(at), ccId);
+    "UPDATE campaign_contacts SET status = 'in_progress', current_step = ?, next_send_at = ? WHERE id = ?"
+  ).run(next.step_number - 1, Math.round(at), ccId);
 }
 
 /**
@@ -345,11 +352,14 @@ function scheduleNext(ccId: number, nextStep: StepRow): void {
  * succès, outreach.ts le fait avancer à l'étape suivante. Sans URL de profil, on
  * ne peut rien faire : le contact est marqué en échec.
  */
-function dispatchLinkedIn(row: DueRow, step: StepRow, totalSteps: number): void {
+function dispatchLinkedIn(row: DueRow, step: StepRow, steps: StepRow[]): void {
   if (!row.linkedin) {
-    skipStep(row, step, totalSteps, "pas de profil LinkedIn");
+    // Pas de profil : aucune invitation ne sera acceptée (branche « si non acceptée »).
+    db.prepare("UPDATE campaign_contacts SET li_accepted = 0 WHERE id = ?").run(row.cc_id);
+    skipStep({ ...row, li_accepted: 0 }, step, steps, "pas de profil LinkedIn");
     return;
   }
+  const totalSteps = steps.length;
   const type = step.li_action === "message" ? "message" : "invite";
   const contact = {
     email: row.email,
@@ -377,20 +387,20 @@ function who(row: { email: string | null; linkedin?: string | null }): string {
  * candidats joignables par email, par LinkedIn, ou les deux. Le délai de
  * l'étape suivante ne s'applique pas : il mesurait l'écart avec l'étape sautée.
  */
-function skipStep(row: DueRow, step: StepRow, totalSteps: number, reason: string): void {
-  const last = step.step_number >= totalSteps;
+function skipStep(row: DueRow, step: StepRow, steps: StepRow[], reason: string): void {
+  const next = nextStep(steps, step.step_number, row.li_accepted);
   db.prepare(
     `UPDATE campaign_contacts SET current_step = ?, status = ?, next_send_at = ?, error = ? WHERE id = ?`
-  ).run(step.step_number, last ? "completed" : "in_progress", last ? null : Date.now(), `étape ${step.step_number} sautée : ${reason}`, row.cc_id);
-  if (last) syncAttio(row.attio_record_id, `Séquence terminée (${totalSteps} étapes, sans réponse)`);
+  ).run(next ? next.step_number - 1 : step.step_number, next ? "in_progress" : "completed", next ? Date.now() : null, `étape ${step.step_number} sautée : ${reason}`, row.cc_id);
+  if (!next) syncAttio(row.attio_record_id, `Séquence terminée (${steps.length} étapes, sans réponse)`);
   console.log(`[séquence] ${who(row)} : étape ${step.step_number} sautée (${reason})`);
 }
 
 async function processOne(row: DueRow): Promise<void> {
   const steps = db
-    .prepare("SELECT step_number, subject, subject_b, body, wait_days, channel, li_action FROM steps WHERE campaign_id = ? ORDER BY step_number")
+    .prepare("SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch FROM steps WHERE campaign_id = ? ORDER BY step_number")
     .all(row.campaign_id) as StepRow[];
-  const step = steps.find((s) => s.step_number === row.current_step + 1);
+  const step = nextStep(steps, row.current_step, row.li_accepted);
   if (!step) {
     db.prepare("UPDATE campaign_contacts SET status = 'completed', next_send_at = NULL WHERE id = ?").run(row.cc_id);
     return;
@@ -399,11 +409,11 @@ async function processOne(row: DueRow): Promise<void> {
   // Étape LinkedIn : pas d'email. On dépose une action en file ; l'extension la
   // jouera à un rythme « humain » (outreach.ts) et fera avancer le contact au succès.
   if (step.channel === "linkedin") {
-    dispatchLinkedIn(row, step, steps.length);
+    dispatchLinkedIn(row, step, steps);
     return;
   }
   if (!row.email) {
-    skipStep(row, step, steps.length, "pas d'email");
+    skipStep(row, step, steps, "pas d'email");
     return;
   }
   const to = row.email;
@@ -478,7 +488,7 @@ async function processOne(row: DueRow): Promise<void> {
       ).run(row.cc_id, account.id, step.step_number, result.gmailMessageId, result.threadId);
     })();
 
-    const next = steps.find((s) => s.step_number === step.step_number + 1);
+    const next = nextStep(steps, step.step_number, row.li_accepted);
     if (next) {
       scheduleNext(row.cc_id, next);
       syncAttio(row.attio_record_id, `Étape ${step.step_number}/${steps.length} envoyée`);
@@ -522,7 +532,7 @@ async function processOne(row: DueRow): Promise<void> {
 // auprès du propriétaire de la campagne).
 const DUE_SELECT = `
   SELECT cc.id AS cc_id, cc.campaign_id, cc.contact_id, cc.status, cc.current_step,
-         cc.account_id, cc.thread_id, cc.last_gmail_message_id, cc.variant,
+         cc.account_id, cc.thread_id, cc.last_gmail_message_id, cc.variant, cc.li_accepted,
          cp.account_ids AS campaign_account_ids,
          c.email, c.first_name, c.last_name, c.company, c.linkedin, c.attio_record_id,
          -- variables de l'inscription (message écrit pour ce candidat sur ce poste) prioritaires

@@ -680,9 +680,9 @@ export function registerInboxRoutes(app: express.Express): void {
     const limit = optInt(req.query.limit) ?? 50;
     if (Number.isNaN(samples) || Number.isNaN(limit)) return res.status(400).json({ error: "samples et limit doivent être des entiers" });
 
-    type Step = { step_number: number; subject: string; subject_b: string | null; body: string; channel: string; li_action: string | null };
+    type Step = { step_number: number; subject: string; subject_b: string | null; body: string; channel: string; li_action: string | null; branch: string | null };
     const steps = db
-      .prepare("SELECT step_number, subject, subject_b, body, channel, li_action FROM steps WHERE campaign_id = ? ORDER BY step_number")
+      .prepare("SELECT step_number, subject, subject_b, body, channel, li_action, branch FROM steps WHERE campaign_id = ? ORDER BY step_number")
       .all(campaign.id) as Step[];
     const rows = db
       .prepare(
@@ -713,7 +713,9 @@ export function registerInboxRoutes(app: express.Express): void {
     }
 
     // Un contact sans email saute les étapes email ; sans profil, les étapes LinkedIn
-    const unreachable = (s: Step, r: { email: string | null; linkedin: string | null }) => (s.channel === "linkedin" ? !r.linkedin : !r.email);
+    // et celles « si invitation acceptée »
+    const unreachable = (s: Step, r: { email: string | null; linkedin: string | null }) =>
+      (s.channel === "linkedin" || s.branch === "accepted" ? !r.linkedin : !r.email);
     const skipped = new Map<number, number>();
     const checked = rows.map((r) => {
       const values: Record<string, unknown> = {
@@ -797,11 +799,13 @@ export function registerInboxRoutes(app: express.Express): void {
                   step_number: s.step_number,
                   channel: s.channel,
                   li_action: s.li_action,
+                  ...(s.branch ? { branch: s.branch } : {}),
                   body: s.body?.trim() ? renderTemplate(s.body, r, { sender_name: "", signature: "" }) : "",
                 }
               : {
                   step_number: s.step_number,
                   channel: s.channel,
+                  ...(s.branch ? { branch: s.branch } : {}),
                   // Relance sans sujet : même fil que le premier email
                   subject: s !== firstEmail && !s.subject ? `Re: ${renderTemplate(subjectOf(firstEmail), r, vars)}` : renderTemplate(subjectOf(s), r, vars),
                   body: renderTemplate(s.body, r, vars),
@@ -819,6 +823,7 @@ export function registerInboxRoutes(app: express.Express): void {
         step_number: s.step_number,
         channel: s.channel,
         li_action: s.li_action,
+        ...(s.branch ? { branch: s.branch } : {}),
         variables: [...stepVars.get(s.step_number)!.keys()],
         // contacts qui sauteront l'étape (sans email / sans profil LinkedIn)
         ...(skipped.has(s.step_number) ? { skipped: skipped.get(s.step_number) } : {}),

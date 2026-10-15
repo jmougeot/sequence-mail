@@ -140,13 +140,20 @@ async function loadList() {
 const firstCampaign = campaigns => campaigns.find(c => c.status !== "archived") ?? campaigns[0];
 
 // ---------------------------------------------------------------------------
-// Éditeur de séquence. Une étape = { channel, li_action, subject, subject_b, body, wait_days } ;
-// son type est encodé en une valeur : email | invite | message.
+// Éditeur de séquence. Une étape = { channel, li_action, subject, subject_b, body, wait_days, branch } ;
+// son type est encodé en une valeur : email | invite | message. Après une invitation,
+// une étape peut être réservée aux contacts qui l'ont acceptée ou non (branch).
 // ---------------------------------------------------------------------------
 const STEP_TYPES = {
   email:   { icon: "✉️", label: "Email" },
   invite:  { icon: "🔗", label: "Invitation LinkedIn" },
   message: { icon: "💬", label: "Message LinkedIn" },
+};
+
+const BRANCH_LABELS = {
+  "": "Tous les contacts",
+  accepted: "Si invitation acceptée",
+  not_accepted: "Si invitation non acceptée",
 };
 
 function stepChannel(s) {
@@ -160,16 +167,19 @@ function bodyPlaceholder(chan) {
 }
 
 // n = numéro (1..), firstEmail = cette étape est le premier email de la séquence
-// (objet obligatoire, A/B test possible), single = seule étape (non supprimable).
-function stepHtml(n, s, { firstEmail, single }) {
+// ou d'une branche (objet obligatoire), abTest = premier email de la séquence (A/B test possible), single = seule étape (non supprimable),
+// afterInvite = une invitation la précède (branche possible), deadline = première
+// étape « non acceptée » : son délai court depuis l'invitation.
+function stepHtml(n, s, { firstEmail, abTest, single, afterInvite, deadline }) {
   const chan = stepChannel(s);
   const t = STEP_TYPES[chan];
   const isEmail = chan === "email";
-  return `<div class="step" data-chan="${chan}">
+  const branch = afterInvite ? s.branch || "" : "";
+  return `<div class="step" data-chan="${chan}" data-branch="${branch}">
     ${n > 1 ? `<div class="step-delay">
-      <span>Attendre</span>
+      <span>${deadline ? "Sans acceptation après" : "Attendre"}</span>
       <input class="wait" type="number" value="${s.wait_days || 3}" min="1">
-      <span>jour(s)</span>
+      <span>jour(s)${deadline ? " d’invitation" : ""}</span>
     </div>` : ""}
     <div class="step-card">
       <div class="step-head">
@@ -178,12 +188,15 @@ function stepHtml(n, s, { firstEmail, single }) {
         <select class="step-kind" title="Type de l’étape" onchange="changeStepType(this)">
           ${Object.entries(STEP_TYPES).map(([k, v]) => `<option value="${k}" ${k === chan ? "selected" : ""}>${v.label}</option>`).join("")}
         </select>
+        ${afterInvite ? `<select class="step-branch" title="Contacts concernés" onchange="setSteps(readSteps())">
+          ${Object.entries(BRANCH_LABELS).map(([k, v]) => `<option value="${k}" ${k === branch ? "selected" : ""}>${v}</option>`).join("")}
+        </select>` : ""}
         <span class="spacer"></span>
         <button class="icon-btn" title="Aperçu" onclick="previewStep(this)">👁</button>
         <button class="icon-btn danger" title="Supprimer l’étape" onclick="removeStep(this)" ${single ? "disabled" : ""}>✕</button>
       </div>
       ${isEmail ? `<input class="subject" placeholder="${firstEmail ? "Objet" : "Objet (vide = même fil, Re:)"}" value="${esc(s.subject)}">` : ""}
-      ${isEmail && firstEmail ? `<input class="subjectB" placeholder="Objet B (optionnel — A/B test 50/50)" value="${esc(s.subject_b)}">` : ""}
+      ${isEmail && abTest ? `<input class="subjectB" placeholder="Objet B (optionnel — A/B test 50/50)" value="${esc(s.subject_b)}">` : ""}
       <textarea class="body" rows="1" placeholder="${esc(bodyPlaceholder(chan))}">${esc(s.body)}</textarea>
     </div>
   </div>`;
@@ -197,9 +210,20 @@ function autosize(el) {
 
 // Rend toute la séquence à partir d'une liste d'étapes : seule source de vérité du DOM.
 function setSteps(list) {
-  const firstEmailIdx = list.findIndex(s => stepChannel(s) === "email");
+  const inviteIdx = list.findIndex(s => stepChannel(s) === "invite");
+  const branchOf = (s, i) => (inviteIdx >= 0 && i > inviteIdx && s.branch) || "";
+  // Premier email de chaque parcours (tous / acceptée / non acceptée) : objet obligatoire
+  const firstEmails = new Set(["accepted", "not_accepted"].map(b =>
+    list.findIndex((s, i) => stepChannel(s) === "email" && [b, ""].includes(branchOf(s, i)))));
+  const deadlineIdx = list.findIndex((s, i) => branchOf(s, i) === "not_accepted");
   $("#steps").innerHTML = list.map((s, i) =>
-    stepHtml(i + 1, s, { firstEmail: i === firstEmailIdx, single: list.length === 1 })).join("");
+    stepHtml(i + 1, s, {
+      firstEmail: firstEmails.has(i),
+      abTest: i === list.findIndex(x => stepChannel(x) === "email"),
+      single: list.length === 1,
+      afterInvite: inviteIdx >= 0 && i > inviteIdx,
+      deadline: i === deadlineIdx,
+    })).join("");
   $$("#steps .body").forEach(autosize);
 }
 
@@ -214,6 +238,7 @@ function readSteps() {
       subject_b: div.querySelector(".subjectB")?.value || undefined,
       body: div.querySelector(".body")?.value ?? "",
       wait_days: +(div.querySelector(".wait")?.value ?? 0),
+      branch: div.querySelector(".step-branch")?.value || undefined,
     };
   });
 }
@@ -519,12 +544,13 @@ async function renderStepPreview(steps, i, { contact, accountId }) {
   });
   // Un contact sans email saute les étapes email, un contact sans profil saute les étapes LinkedIn
   const skipped = contact && (chan === "email" ? !contact.email : !contact.linkedin);
-  const header = chan === "email"
+  const branch = div.dataset.branch ? `<div class="hline">${BRANCH_LABELS[div.dataset.branch]}</div>` : "";
+  const header = branch + (chan === "email"
     ? `<div class="hline">De : ${esc(r.from)}</div>
        ${skipped ? `<div class="hline skip">Pas d’email — cette étape sera sautée</div>` : `<div class="hline">À : ${esc(r.to)}</div>`}
        <div class="hline"><b>Objet : ${esc(r.subject)}</b></div>`
     : `<div class="hline"><b>${STEP_TYPES[chan].icon} ${STEP_TYPES[chan].label}</b></div>
-       ${skipped ? `<div class="hline skip">Pas de profil LinkedIn — cette étape sera sautée</div>` : ""}`;
+       ${skipped ? `<div class="hline skip">Pas de profil LinkedIn — cette étape sera sautée</div>` : ""}`);
   const body = chan === "invite" && !r.body ? '<span class="muted">(invitation sans note)</span>' : fmtBody(r.body);
   return { r, skipped, html: `${header}<pre>${body}</pre>` };
 }

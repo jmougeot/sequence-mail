@@ -41,6 +41,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 import { db } from "../db.js";
+import { firstNotAccepted, nextStep } from "./branches.js";
 import { linkedinSlug } from "./linkedin-url.js";
 
 const L = config.linkedin;
@@ -531,29 +532,55 @@ export function cancelLinkedInActions(where: string, param: unknown, reason: str
 interface StepRow {
   step_number: number;
   wait_days: number;
+  branch: string | null;
 }
 
-/** Marque l'étape franchie et planifie la suivante (ou termine la séquence). */
-function advanceContact(ccId: number, completedStep: number): void {
-  const cc = db.prepare(`SELECT campaign_id, status FROM campaign_contacts WHERE id = ?`).get(ccId) as
-    | { campaign_id: number; status: string }
+function campaignSteps(campaignId: number): StepRow[] {
+  return db
+    .prepare(`SELECT step_number, wait_days, branch FROM steps WHERE campaign_id = ? ORDER BY step_number`)
+    .all(campaignId) as StepRow[];
+}
+
+/**
+ * Marque l'étape franchie et planifie la suivante de la branche du contact (ou
+ * termine la séquence). Les étapes de l'autre branche comptent comme franchies.
+ * `immediate` : la suivante part sans son délai (bascule « non acceptée », dont
+ * le délai était l'échéance d'acceptation).
+ */
+function advanceContact(ccId: number, completedStep: number, immediate = false): void {
+  const cc = db.prepare(`SELECT campaign_id, status, li_accepted FROM campaign_contacts WHERE id = ?`).get(ccId) as
+    | { campaign_id: number; status: string; li_accepted: number | null }
     | undefined;
   if (!cc || cc.status !== "awaiting_li") return; // réponse/arrêt entre-temps : on ne relance rien
-  const steps = db
-    .prepare(`SELECT step_number, wait_days FROM steps WHERE campaign_id = ? ORDER BY step_number`)
-    .all(cc.campaign_id) as StepRow[];
-  const next = steps.find((s) => s.step_number === completedStep + 1);
+  const next = nextStep(campaignSteps(cc.campaign_id), completedStep, cc.li_accepted);
   if (next) {
     const jitter = rand(0, 4 * 3600 * 1000); // 0-4 h de variabilité
-    const at = Date.now() + next.wait_days * DAY_MS + jitter;
+    const at = Date.now() + (immediate ? 0 : next.wait_days * DAY_MS + jitter);
     db.prepare(
       `UPDATE campaign_contacts SET current_step = ?, status = 'in_progress', next_send_at = ?, error = NULL WHERE id = ?`
-    ).run(completedStep, Math.round(at), ccId);
+    ).run(next.step_number - 1, Math.round(at), ccId);
   } else {
     db.prepare(
       `UPDATE campaign_contacts SET current_step = ?, status = 'completed', next_send_at = NULL WHERE id = ?`
     ).run(completedStep, ccId);
   }
+}
+
+/**
+ * Message à un contact pas encore en relation : passé l'échéance, l'invitation
+ * est considérée non acceptée. Campagne à branches : délai de la première étape
+ * « si non acceptée », compté depuis l'envoi de l'invitation ; sinon
+ * LI_MESSAGE_RETRY_MAX_DAYS depuis la mise en file du message. `branch` : la
+ * campagne a des étapes « si non acceptée » où basculer.
+ */
+function acceptanceDeadline(ccId: number, actionCreatedAt: number): { at: number; days: number; branch: boolean } {
+  const cc = db.prepare(`SELECT campaign_id FROM campaign_contacts WHERE id = ?`).get(ccId) as { campaign_id: number };
+  const fallback = firstNotAccepted(campaignSteps(cc.campaign_id));
+  if (!fallback) return { at: actionCreatedAt + L.messageRetryMaxDays * DAY_MS, days: L.messageRetryMaxDays, branch: false };
+  const invite = db
+    .prepare(`SELECT MAX(sent_at) AS t FROM li_actions WHERE campaign_contact_id = ? AND type = 'invite' AND status = 'sent'`)
+    .get(ccId) as { t: number | null };
+  return { at: (invite.t ?? actionCreatedAt) + fallback.wait_days * DAY_MS, days: fallback.wait_days, branch: true };
 }
 
 // --- Distributeur : que peut faire ce compte, maintenant ? -------------------
@@ -731,8 +758,9 @@ function requeue(id: number, error: string): void {
  * - autre profil connecté (ou profil illisible) → rien n'est parti : l'action
  *   retourne en file et le compte s'arrête (mauvais profil) ou fait une pause ;
  * - `retry` (message à un profil pas encore connecté) → on reporte l'action de
- *   quelques heures, sans pause ni avancement — jusqu'à LI_MESSAGE_RETRY_MAX_DAYS,
- *   au-delà l'invitation est considérée ignorée et la séquence s'arrête là ;
+ *   quelques heures, sans pause ni avancement — jusqu'à l'échéance d'acceptation
+ *   (acceptanceDeadline), au-delà l'invitation est considérée ignorée : le
+ *   contact passe aux étapes « si non acceptée », ou la séquence s'arrête là ;
  * - succès → journalisé (quota du compte, profil émetteur), délai du compte
  *   armé, et le contact avance d'une étape — y compris quand le verdict arrive
  *   après l'expiration du bail, tant que l'action n'a pas été rejouée ;
@@ -792,14 +820,22 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
   }
 
   if (v.retry && !v.ok) {
-    if (now - row.created_at > L.messageRetryMaxDays * DAY_MS) {
-      // Invitation jamais acceptée : la séquence s'arrête, sans échec ni pause.
+    const deadline = acceptanceDeadline(row.campaign_contact_id, row.created_at);
+    if (now >= deadline.at) {
       db.prepare(`UPDATE li_actions SET status = 'cancelled', lease_at = NULL, error = ? WHERE id = ?`).run(
-        `invitation non acceptée après ${L.messageRetryMaxDays} j`,
+        `invitation non acceptée après ${deadline.days} j`,
         id
       );
+      if (deadline.branch) {
+        // Bascule sur les étapes « si non acceptée » (toutes après ce message),
+        // sans attendre davantage.
+        db.prepare(`UPDATE campaign_contacts SET li_accepted = 0 WHERE id = ?`).run(row.campaign_contact_id);
+        advanceContact(row.campaign_contact_id, row.step_number, true);
+        return true;
+      }
+      // Invitation jamais acceptée : la séquence s'arrête, sans échec ni pause.
       db.prepare(`UPDATE campaign_contacts SET status = 'completed', next_send_at = NULL, error = ? WHERE id = ? AND status = 'awaiting_li'`).run(
-        `Invitation LinkedIn non acceptée après ${L.messageRetryMaxDays} j`,
+        `Invitation LinkedIn non acceptée après ${deadline.days} j`,
         row.campaign_contact_id
       );
       return true;
@@ -825,6 +861,8 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
       Math.round(now + rand(L.minGapSec, L.maxGapSec) * 1000),
       account.id
     );
+    // Un message n'arrive qu'à une relation : l'invitation est acceptée.
+    if (row.type === "message") db.prepare(`UPDATE campaign_contacts SET li_accepted = 1 WHERE id = ?`).run(row.campaign_contact_id);
     advanceContact(row.campaign_contact_id, row.step_number);
     return true;
   }

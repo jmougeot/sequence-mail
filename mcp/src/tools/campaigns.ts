@@ -32,6 +32,12 @@ const stepSchema = z.object({
     .enum(["invite", "message"])
     .optional()
     .describe("Action LinkedIn quand channel=linkedin : « invite » (avec note) ou « message »."),
+  branch: z
+    .enum(["accepted", "not_accepted", ""])
+    .optional()
+    .describe(
+      "Après une invitation LinkedIn : étape réservée aux contacts dont l'invitation est acceptée (« accepted ») ou ne l'est pas (« not_accepted ») ; absente ou vide = tous. La première étape « accepted » doit être un message LinkedIn placé avant les étapes « not_accepted » : c'est lui qui teste l'acceptation (retenté jusqu'à ce qu'elle arrive). Le wait_days de la première étape « not_accepted » est l'échéance, comptée depuis l'envoi de l'invitation : passé ce délai sans acceptation, le contact bascule sur les étapes « not_accepted » (pas de message LinkedIn dedans). Un contact sans profil LinkedIn y va directement."
+    ),
 });
 
 const EVENT_TYPES = ["email_sent", "replied", "opted_out", "bounced", "li_invite", "li_message", "visit"] as const;
@@ -177,7 +183,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Détail d'une campagne",
       description:
-        "Renvoie le détail d'une campagne et la liste ordonnée de ses étapes (sujet, corps, wait_days, channel, li_action). account_ids / li_account_ids absents = tous les comptes ; une relance sans subject part dans le fil du premier email. À lire avant de modifier le texte d'une étape (update_step) ou la séquence (update_campaign).",
+        "Renvoie le détail d'une campagne et la liste ordonnée de ses étapes (sujet, corps, wait_days, channel, li_action, branch). account_ids / li_account_ids absents = tous les comptes ; une relance sans subject part dans le fil du premier email. À lire avant de modifier le texte d'une étape (update_step) ou la séquence (update_campaign).",
       inputSchema: { campaign_id: z.number().int().describe("Identifiant de la campagne.") },
       annotations: READ,
     },
@@ -324,7 +330,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Modifier une étape",
       description:
-        "Modifie UNE étape d'une campagne sans renvoyer le reste de la séquence : seuls les champs fournis changent (subject, subject_b, body, wait_days, channel, li_action). Une chaîne vide efface le champ : subject vide sur une relance = même fil que le premier email, subject_b vide = fin de l'A/B test. Le corps est remplacé en entier (pas de modification partielle du texte) : lis-le d'abord avec get_campaign. La séquence obtenue doit rester valide (sujet sur le premier email, corps sur chaque étape hors invitation). Les contacts gardent leur avancement ; les prochains envois de cette étape utilisent le nouveau contenu. Renvoie l'étape telle qu'enregistrée.",
+        "Modifie UNE étape d'une campagne sans renvoyer le reste de la séquence : seuls les champs fournis changent (subject, subject_b, body, wait_days, channel, li_action, branch). Une chaîne vide efface le champ : subject vide sur une relance = même fil que le premier email, subject_b vide = fin de l'A/B test. Le corps est remplacé en entier (pas de modification partielle du texte) : lis-le d'abord avec get_campaign. La séquence obtenue doit rester valide (sujet sur le premier email, corps sur chaque étape hors invitation). Les contacts gardent leur avancement ; les prochains envois de cette étape utilisent le nouveau contenu. Renvoie l'étape telle qu'enregistrée.",
       inputSchema: updateStepShape,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },

@@ -386,3 +386,10 @@ CREATE TABLE IF NOT EXISTS owner_opt_outs (
   PRIMARY KEY (owner_ref, contact_id)
 );
 `);
+
+// Branches de séquence selon l'invitation LinkedIn : une étape peut ne valoir
+// que si l'invitation est acceptée, ou seulement si elle ne l'est pas (NULL =
+// tous les contacts). L'état est relevé par contact de campagne :
+// li_accepted NULL = pas encore connu, 1 = acceptée, 0 = non acceptée.
+addColumnIfMissing("steps", "branch", "branch TEXT");
+addColumnIfMissing("campaign_contacts", "li_accepted", "li_accepted INTEGER");

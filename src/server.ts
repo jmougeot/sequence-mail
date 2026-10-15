@@ -8,6 +8,7 @@ import { syncFromAttio } from "./services/attio.js";
 import { effectiveDailyLimit, nextEmailEstimate, sendWindowState } from "./services/scheduler.js";
 import { registerOutreachRoutes } from "./services/outreach-routes.js";
 import { registerServiceRoutes } from "./services/service-routes.js";
+import { BRANCHES, type Branch } from "./services/branches.js";
 import { cancelLinkedInActions } from "./services/outreach.js";
 import { optOutFromCampaignOf } from "./services/opt-out.js";
 import { registerVisitRoutes } from "./services/visits.js";
@@ -137,6 +138,8 @@ export function createServer(): express.Express {
   // --- Campagnes ---
   // Une étape est soit un email (sujet + corps), soit une action LinkedIn
   // (channel='linkedin', li_action='invite'|'message', le corps = note/message).
+  // branch : réservée aux contacts dont l'invitation est acceptée ('accepted')
+  // ou ne l'est pas ('not_accepted') ; absente = tous (cf. services/branches.ts).
   type StepInput = {
     subject?: string;
     subject_b?: string;
@@ -144,19 +147,44 @@ export function createServer(): express.Express {
     wait_days?: number;
     channel?: string;
     li_action?: string;
+    branch?: string;
   };
 
   /** Valide une séquence ; renvoie un message d'erreur ou null si tout est bon. */
   function validateSteps(name: string, steps: StepInput[]): string | null {
     if (!name || !steps?.length) return "name et steps[] sont requis";
-    // Le premier email ouvre le fil : son objet est obligatoire (les relances sans objet suivent en « Re: »)
-    const firstEmail = steps.find((s) => (s.channel ?? "email") !== "linkedin");
-    if (firstEmail && !firstEmail.subject?.trim()) {
-      return "Le premier email de la séquence doit avoir un objet";
+    const isEmail = (s: StepInput) => (s.channel ?? "email") !== "linkedin";
+    const isMessage = (s: StepInput) => s.channel === "linkedin" && s.li_action === "message";
+    // Le premier email ouvre le fil : son objet est obligatoire (les relances sans
+    // objet suivent en « Re: »). Avec des branches, le premier email de chacune.
+    const hasBranches = steps.some((s) => s.branch);
+    for (const branch of hasBranches ? BRANCHES : [undefined]) {
+      const firstEmail = steps.find((s) => isEmail(s) && (!s.branch || s.branch === branch));
+      if (firstEmail && !firstEmail.subject?.trim()) {
+        return branch
+          ? `Le premier email des contacts dont l'invitation ${branch === "accepted" ? "est acceptée" : "n'est pas acceptée"} doit avoir un objet`
+          : "Le premier email de la séquence doit avoir un objet";
+      }
     }
     for (const s of steps) {
       const isInvite = s.channel === "linkedin" && (s.li_action ?? "invite") === "invite";
       if (!isInvite && !s.body?.trim()) return "Chaque étape doit avoir un contenu (la note d'invitation seule est facultative)";
+    }
+    if (hasBranches) {
+      if (steps.some((s) => s.branch && !BRANCHES.includes(s.branch as Branch))) return `branch : valeurs possibles ${BRANCHES.join(", ")}`;
+      const invite = steps.findIndex((s) => s.channel === "linkedin" && (s.li_action ?? "invite") === "invite");
+      const firstBranch = steps.findIndex((s) => s.branch);
+      if (invite < 0 || firstBranch < invite) return "Les étapes « si invitation acceptée / non acceptée » viennent après une invitation LinkedIn";
+      // Le message LinkedIn révèle l'acceptation : il ouvre la branche « acceptée »,
+      // avant toute étape « non acceptée » (qui ne contient pas de message LinkedIn).
+      const probe = steps.findIndex((s) => s.branch === "accepted");
+      const fallback = steps.findIndex((s) => s.branch === "not_accepted");
+      if (fallback >= 0 && (probe < 0 || !isMessage(steps[probe]) || probe > fallback)) {
+        return "La première étape « si invitation acceptée » doit être un message LinkedIn, placé avant les étapes « si non acceptée »";
+      }
+      if (steps.some((s) => s.branch === "not_accepted" && isMessage(s))) {
+        return "Pas de message LinkedIn dans les étapes « si invitation non acceptée »";
+      }
     }
     return null;
   }
@@ -177,7 +205,7 @@ export function createServer(): express.Express {
   /** Insère les étapes d'une campagne (canal + action LinkedIn pris en charge). */
   function insertSteps(campaignId: number | bigint, steps: StepInput[]): void {
     const insert = db.prepare(
-      "INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days, channel, li_action) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days, channel, li_action, branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
     steps.forEach((s, i) => {
       const channel = s.channel === "linkedin" ? "linkedin" : "email";
@@ -190,7 +218,8 @@ export function createServer(): express.Express {
         s.body ?? "",
         i === 0 ? 0 : (s.wait_days ?? 3),
         channel,
-        li
+        li,
+        BRANCHES.includes(s.branch as Branch) ? s.branch : null
       );
     });
   }
@@ -278,7 +307,7 @@ export function createServer(): express.Express {
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
     const steps = db
       .prepare(
-        "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action FROM steps WHERE campaign_id = ? ORDER BY step_number"
+        "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch FROM steps WHERE campaign_id = ? ORDER BY step_number"
       )
       .all(req.params.id);
     // account_ids / li_account_ids : null = tous les comptes, sinon liste d'ids (JSON en base)
@@ -374,7 +403,7 @@ export function createServer(): express.Express {
       | undefined;
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
     const selectSteps = db.prepare(
-      "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action FROM steps WHERE campaign_id = ? ORDER BY step_number"
+      "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch FROM steps WHERE campaign_id = ? ORDER BY step_number"
     );
     const steps = selectSteps.all(campaign.id) as Array<{ step_number: number } & Record<string, unknown>>;
     const n = Number(req.params.n);
@@ -383,7 +412,7 @@ export function createServer(): express.Express {
 
     const body = (req.body ?? {}) as Record<string, unknown>;
     const patch: Record<string, unknown> = {};
-    for (const key of ["subject", "subject_b", "body", "channel", "li_action"]) {
+    for (const key of ["subject", "subject_b", "body", "channel", "li_action", "branch"]) {
       if (body[key] === undefined) continue;
       if (typeof body[key] !== "string") return res.status(400).json({ error: `${key} doit être un texte` });
       patch[key] = body[key];
@@ -396,7 +425,7 @@ export function createServer(): express.Express {
     }
     if (!Object.keys(patch).length) return res.status(400).json({ error: "Aucun champ à modifier" });
 
-    // null en base (subject_b, li_action) = champ absent pour insertSteps
+    // null en base (subject_b, li_action, branch) = champ absent pour insertSteps
     const next = steps.map((s, i) =>
       Object.fromEntries(Object.entries(i === index ? { ...s, ...patch } : s).filter(([, v]) => v !== null))
     ) as StepInput[];
