@@ -243,7 +243,7 @@ function setSteps(list) {
   const lanes = inviteIdx < 0 ? "" : `<div class="split">${Object.entries(BRANCH_LABELS).map(([b, label]) => `
     <div class="lane" data-lane="${b}">
       <div class="lane-head">${label}</div>
-      ${list.map((s, i) => s.branch === b ? html(s, i) : "").join("")}
+      ${list.some(s => s.branch === b) ? list.map((s, i) => s.branch === b ? html(s, i) : "").join("") : `<div class="lane-end">Fin de la séquence</div>`}
       <div class="add-row">
         ${LANE_TYPES[b].map(k => `<button class="ghost" onclick="addStepToLane('${b}', '${k}')">${STEP_TYPES[k].icon} ${STEP_TYPES[k].label}</button>`).join("")}
       </div>

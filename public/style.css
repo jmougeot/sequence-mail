@@ -104,6 +104,7 @@ label.chip { display:inline-flex; align-items:center; cursor:pointer; user-selec
 .lane-head { font-size:13px; font-weight:600; padding:6px 10px; border-radius:8px; text-align:center; }
 .lane[data-lane="accepted"] .lane-head { color:var(--ok); background:var(--ok-bg); }
 .lane[data-lane="not_accepted"] .lane-head { color:var(--warn); background:var(--warn-bg); }
+.lane-end { text-align:center; color:var(--muted); font-size:13px; padding:14px; border:1px dashed var(--border); border-radius:10px; }
 @media (max-width: 760px) { .split { grid-template-columns:1fr; } }
 .icon-btn { background:transparent; border:none; color:var(--muted); cursor:pointer; font-size:14px; padding:4px 9px; border-radius:6px; }
 .icon-btn:hover { background:var(--hover); color:var(--text); }

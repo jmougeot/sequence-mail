@@ -180,7 +180,7 @@ export function createServer(): express.Express {
       const probe = steps.findIndex((s) => s.branch === "accepted");
       const fallback = steps.findIndex((s) => s.branch === "not_accepted");
       if (fallback >= 0 && (probe < 0 || !isMessage(steps[probe]) || probe > fallback)) {
-        return "La première étape « si invitation acceptée » doit être un message LinkedIn, placé avant les étapes « si non acceptée »";
+        return "Des étapes « invitation non acceptée » demandent un message LinkedIn en tête du chemin « invitation acceptée » : c'est lui qui détecte l'acceptation";
       }
       if (steps.some((s) => s.branch === "not_accepted" && isMessage(s))) {
         return "Pas de message LinkedIn dans les étapes « si invitation non acceptée »";
