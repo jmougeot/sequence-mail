@@ -420,13 +420,27 @@ function startOfLocalDay(ts: number): number {
   return d.getTime();
 }
 
-function sentToday(accountId: number, type: LiActionType): number {
+function sentToday(accountIds: number | number[], type: LiActionType): number {
+  const ids = [accountIds].flat();
   const since = startOfLocalDay(Date.now());
   return (
     db
-      .prepare(`SELECT COUNT(*) AS n FROM li_log WHERE li_account_id = ? AND type = ? AND sent_at >= ?`)
-      .get(accountId, type, since) as { n: number }
+      .prepare(
+        `SELECT COUNT(*) AS n FROM li_log WHERE li_account_id IN (${ids.map(() => "?").join(",")}) AND type = ? AND sent_at >= ?`
+      )
+      .get(...ids, type, since) as { n: number }
   ).n;
+}
+
+/**
+ * Comptes qui envoient depuis le même profil LinkedIn que celui-ci (lui
+ * compris) : une même extension peut servir un compte Sequence Mail et un
+ * compte Azerit. LinkedIn ne voit qu'un profil : quotas du jour, délai entre
+ * deux actions et pauses de sécurité leur sont communs.
+ */
+function sameProfile(account: LiAccount): LiAccount[] {
+  if (!account.member_slug) return [account];
+  return db.prepare(`SELECT ${ACCOUNT_COLS} FROM li_accounts WHERE member_slug = ? ORDER BY id`).all(account.member_slug) as LiAccount[];
 }
 
 function activeDays(a: LiAccount): number {
@@ -669,8 +683,9 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   if (via === "server" && account.session_state !== "ok") {
     return { idle: true, reason: "Session LinkedIn à renvoyer depuis l'extension" };
   }
-  if ((account.paused_until ?? 0) > now)
-    return { wait: Math.ceil((account.paused_until! - now) / 1000), reason: "Pause de sécurité après une erreur" };
+  const profile = sameProfile(account);
+  const pausedUntil = Math.max(...profile.map((a) => a.paused_until ?? 0));
+  if (pausedUntil > now) return { wait: Math.ceil((pausedUntil - now) / 1000), reason: "Pause de sécurité après une erreur" };
 
   // Lecture de la messagerie (détection des réponses), hors quotas d'envoi.
   if (now - (account.last_inbox_at ?? 0) >= L.inboxEveryMin * 60_000 && withinInboxWindow(now) && watchedCount(account.id)) {
@@ -683,10 +698,13 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   }
 
   if (!withinWindow(now)) return { wait: Math.ceil((nextWindowOpen(now) - now) / 1000), reason: "Hors plage horaire d'envoi" };
-  if ((account.next_allowed_at ?? 0) > now)
-    return { wait: Math.ceil((account.next_allowed_at! - now) / 1000), reason: "Délai entre deux actions" };
+  const nextAllowed = Math.max(...profile.map((a) => a.next_allowed_at ?? 0));
+  if (nextAllowed > now) return { wait: Math.ceil((nextAllowed - now) / 1000), reason: "Délai entre deux actions" };
 
-  const allowed = (["invite", "message"] as LiActionType[]).filter((t) => sentToday(account.id, t) < dailyCap(account, t));
+  const ids = profile.map((a) => a.id);
+  const allowed = (["invite", "message"] as LiActionType[]).filter(
+    (t) => sentToday(ids, t) < Math.min(...profile.map((a) => dailyCap(a, t)))
+  );
   const untilTomorrow = Math.ceil((startOfLocalDay(now) + DAY_MS - now) / 1000);
   if (!allowed.length) return { wait: untilTomorrow, reason: "Quota du jour atteint" };
 
