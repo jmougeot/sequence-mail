@@ -73,6 +73,13 @@ export const config = {
     secretKey: process.env.LI_SECRET_KEY ?? "",
     // Secret partagé avec le service runner (navigateurs serveur), réseau interne.
     runnerSecret: process.env.LI_RUNNER_SECRET ?? "",
+    // Propriétaires (ex. « azerit:u:1 ») dont l'extension Chrome exécute elle-même
+    // les envois : à l'appairage depuis Azerit, elle reçoit le jeton de son compte
+    // et se connecte seule. Les autres extensions ne font que relier LinkedIn.
+    extensionOwners: (process.env.LI_EXTENSION_OWNERS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
   },
   // Clé de l'API de service (/api/svc) appelée par Azerit sur le réseau interne
   // du VPS. Vide = API désactivée.

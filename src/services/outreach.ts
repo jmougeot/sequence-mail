@@ -279,7 +279,8 @@ export function storeSession(
   id: number,
   cookies: unknown,
   userAgent: unknown,
-  member: LiMember | null = null
+  member: LiMember | null = null,
+  mode: LiMode = "server"
 ): { ok: true } | { error: string; code?: "other_member" } {
   if (!Array.isArray(cookies)) return { error: "cookies[] manquant" };
   const account = getAccount(id);
@@ -322,8 +323,8 @@ export function storeSession(
   const now = Date.now();
   db.prepare(
     `UPDATE li_accounts SET session_enc = ?, session_state = 'ok', session_error = NULL, session_updated_at = ?,
-       mode = 'server', paused_until = NULL WHERE id = ?`
-  ).run(sealed, now, id);
+       mode = ?, paused_until = NULL WHERE id = ?`
+  ).run(sealed, now, mode, id);
   if (member) {
     db.prepare(
       `UPDATE li_accounts SET member_slug = ?, member_name = COALESCE(?, member_name),
@@ -646,7 +647,9 @@ const ELIGIBLE = `
 
 export function nextAction(account: LiAccount, via: LiMode): NextResult {
   const now = Date.now();
-  db.prepare("UPDATE li_accounts SET last_seen_at = ? WHERE id = ?").run(now, account.id);
+  // « Connecté » = l'exécutant du compte (extension ou runner, selon son mode) est
+  // vu : une extension qui interroge un compte en mode serveur ne compte pas.
+  if (account.mode === via) db.prepare("UPDATE li_accounts SET last_seen_at = ? WHERE id = ?").run(now, account.id);
   reclaimStale();
 
   if (!enabled) return { idle: true, reason: "Envoi LinkedIn en pause (désactivé pour tous les comptes)" };

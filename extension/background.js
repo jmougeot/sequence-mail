@@ -71,15 +71,17 @@ chrome.alarms.onAlarm.addListener((a) => {
 
 /**
  * Ce navigateur exécute-t-il des actions pour Sequence Mail ? La prod est
- * derrière un mot de passe (Caddy) : sans mot de passe d'accès ni autre serveur
- * choisi, aucune requête ne peut aboutir. C'est le cas d'un utilisateur
- * d'Azerit : l'extension ne sert qu'à relier son LinkedIn (les navigateurs
- * serveur envoient à sa place), elle n'interroge donc rien.
+ * derrière un mot de passe (Caddy), sauf pour l'exécutant qui présente le jeton
+ * de son compte. Sans mot de passe d'accès, ni jeton, ni autre serveur choisi,
+ * aucune requête ne peut aboutir : c'est le cas d'un utilisateur d'Azerit dont
+ * l'extension ne sert qu'à relier son LinkedIn (les navigateurs serveur
+ * envoient à sa place), elle n'interroge donc rien. Le jeton arrive seul à
+ * l'appairage depuis Azerit quand le compte est exécuté par l'extension.
  */
 async function isExecutor() {
-  const { server, authPass } = await chrome.storage.local.get(["server", "authPass"]);
+  const { server, authPass, liToken } = await chrome.storage.local.get(["server", "authPass", "liToken"]);
   const custom = Boolean(server) && server.replace(/\/+$/, "") !== DEFAULT_SERVER;
-  return Boolean(authPass) || custom;
+  return Boolean(authPass) || Boolean(liToken) || custom;
 }
 
 async function getEnabled() {
@@ -323,7 +325,15 @@ async function connectToAzerit(origin, code, replace) {
     return { ok: false, error: `Azerit injoignable (${origin})` };
   }
   const d = await r.json().catch(() => ({}));
-  if (r.ok) return { ok: true, account: d.account || null };
+  if (r.ok) {
+    // Compte exécuté par cette extension : son jeton reste ici (jamais remis à
+    // la page) et le premier tick part tout de suite.
+    if (typeof d.token === "string" && d.token) {
+      await chrome.storage.local.set({ liToken: d.token });
+      tick();
+    }
+    return { ok: true, account: d.account || null };
+  }
   // FastAPI range l'erreur dans `detail` (texte, ou objet { error, code, current, got })
   const detail = typeof d.detail === "object" && d.detail ? d.detail : { error: d.detail || d.error };
   return { ok: false, status: r.status, ...detail, error: detail.error || `HTTP ${r.status}` };

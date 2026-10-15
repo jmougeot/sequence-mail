@@ -33,10 +33,18 @@ c'est plus lent mais beaucoup moins détectable.
    l'extension non empaquetée** → choisissez le dossier `Sequence-mail/extension`.
 3. Épinglez l'icône. Le popup montre l'état, les quotas du jour, et un bouton
    pause/activation.
-   Tant qu'aucun mot de passe d'accès ni autre serveur n'est réglé, l'extension
-   n'interroge rien et le popup n'affiche que la vue « Azerit » (c'est ce que
-   voient les utilisateurs d'Azerit, pour qui elle ne sert qu'à relier leur
-   LinkedIn) : ouvrez **Advanced settings** pour les champs ci-dessous.
+   Tant qu'aucun mot de passe d'accès, ni jeton de compte, ni autre serveur n'est
+   réglé, l'extension n'interroge rien et le popup n'affiche que la vue « Azerit »
+   (c'est ce que voient les utilisateurs d'Azerit, pour qui elle ne sert qu'à
+   relier leur LinkedIn) : ouvrez **Advanced settings** pour les champs ci-dessous.
+
+   **Connexion automatique (compte Azerit exécuté par l'extension)** : si le
+   propriétaire du compte figure dans `LI_EXTENSION_OWNERS` (`.env` de Sequence
+   Mail, ex. `azerit:u:1`), relier LinkedIn depuis Azerit (Réglages → LinkedIn)
+   suffit : l'extension reçoit le jeton de son compte, le compte reste en mode
+   extension, et elle se connecte seule au tick suivant, sans mot de passe
+   (Caddy laisse passer `/api/li/{next,result,inbox,status}` porteurs d'un
+   jeton). Les étapes 4 et 5 ci-dessous sont alors inutiles.
 4. **Adresse du serveur** (champ en bas du popup) : par défaut l'extension vise la
    prod partagée `https://sequence.example.com`. Pour développer en local, lancez
    `cd Sequence-mail && npm run dev` (sert sur `localhost:3000`) et mettez

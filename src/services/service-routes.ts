@@ -24,6 +24,7 @@ import {
   createAccount,
   getAccount,
   parseMember,
+  rotateToken,
   storeSession,
   updateAccount,
   type LiAccount,
@@ -170,11 +171,18 @@ export function registerServiceRoutes(app: express.Express): void {
       }
     }
     if (!account) account = createAccount(name, owner).account;
-    const r = storeSession(account.id, b.cookies, b.user_agent, member);
+    // Propriétaire dont l'extension exécute elle-même les envois : le compte
+    // reste en mode extension, et elle reçoit un jeton neuf de son compte
+    // (l'ancien cesse de valoir) pour se connecter seule.
+    const byExtension = config.linkedin.extensionOwners.includes(owner);
+    const r = storeSession(account.id, b.cookies, b.user_agent, member, byExtension ? "extension" : "server");
     if ("error" in r) return res.status(r.code === "other_member" ? 409 : 400).json(r);
     if (!account.active) updateAccount(account.id, { active: true });
     console.log(`[svc] session LinkedIn de ${owner} reçue (profil ${member.slug}, compte #${account.id})`);
-    res.json({ account: accountStatus(getAccount(account.id)!) });
+    res.json({
+      account: accountStatus(getAccount(account.id)!),
+      ...(byExtension ? { token: rotateToken(account.id) } : {}),
+    });
   });
 
   app.patch("/api/svc/li/account", (req, res) => {

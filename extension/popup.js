@@ -18,14 +18,14 @@ async function authHeaders() {
   return h;
 }
 
-// Même règle que background.js : sans mot de passe d'accès ni autre serveur,
+// Même règle que background.js : sans mot de passe d'accès, ni jeton, ni autre serveur,
 // ce navigateur n'exécute rien (utilisateur d'Azerit) — vue « Azerit » seule,
 // réglages d'exécutant derrière « Advanced settings ».
 let showAdvanced = false;
 async function isExecutor() {
-  const { server, authPass } = await chrome.storage.local.get(["server", "authPass"]);
+  const { server, authPass, liToken } = await chrome.storage.local.get(["server", "authPass", "liToken"]);
   const custom = Boolean(server) && server.replace(/\/+$/, "") !== DEFAULT_SERVER;
-  return Boolean(authPass) || custom;
+  return Boolean(authPass) || Boolean(liToken) || custom;
 }
 
 async function refresh() {

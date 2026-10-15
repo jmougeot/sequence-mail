@@ -61,8 +61,11 @@ function caller(req: express.Request, res: express.Response): { account: LiAccou
     }
     return { account, via: "server" };
   }
-  const token = req.get(ACCOUNT_HEADER)?.trim() || undefined;
-  const account = resolveAccount(token);
+  const raw = req.get(ACCOUNT_HEADER);
+  const token = raw?.trim() || undefined;
+  // En-tête présent mais vide : jamais le compte par défaut (sans jeton, seul
+  // l'appel derrière le mot de passe d'accès y a droit).
+  const account = raw !== undefined && !token ? "invalid" : resolveAccount(token);
   if (account === "invalid") {
     res.status(401).json({ error: "Jeton de compte LinkedIn inconnu — recopiez-le depuis Réglages." });
     return undefined;
