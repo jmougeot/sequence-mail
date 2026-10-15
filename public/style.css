@@ -73,7 +73,7 @@ textarea { min-height:90px; }
 .menu-list button.danger { color:var(--bad); }
 
 /* Éditeur de séquence : pas de cadre englobant, des rubriques séparées */
-.editor { display:flex; flex-direction:column; gap:6px; max-width:860px; }
+.editor { display:flex; flex-direction:column; gap:6px; }
 .camp-name-input { font-size:16px; font-weight:600; padding:10px 12px; margin:0 0 6px; }
 .senders { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
 label.chip { display:inline-flex; align-items:center; cursor:pointer; user-select:none; }
