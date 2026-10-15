@@ -4,7 +4,7 @@
  * contact passe en attente. Chaque compte LinkedIn réclame ensuite
  * `nextAction()` — et c'est ICI, côté serveur, que se décide si CE compte a le
  * droit d'agir :
- *   1. plafonds journaliers par type (invitation/message), avec warm-up ;
+ *   1. plafonds journaliers par type (invitation/message), pleins dès le premier jour ;
  *   2. plage horaire ouvrée seulement ;
  *   3. délai aléatoire entre deux actions ;
  *   4. pause de sécurité longue dès qu'une action échoue.
@@ -67,8 +67,6 @@ export interface LiAccount {
   mode: LiMode;
   invites_per_day: number | null;
   messages_per_day: number | null;
-  warmup_started_at: number | null;
-  warmup: number;
   next_allowed_at: number | null;
   paused_until: number | null;
   last_seen_at: number | null;
@@ -109,7 +107,7 @@ function unseal(sealed: string): string {
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 const newToken = () => "li_" + randomBytes(24).toString("base64url");
 
-const ACCOUNT_COLS = `id, name, owner_ref, member_slug, member_name, member_avatar, member_checked_at, active, mode, invites_per_day, messages_per_day, warmup_started_at, warmup, next_allowed_at,
+const ACCOUNT_COLS = `id, name, owner_ref, member_slug, member_name, member_avatar, member_checked_at, active, mode, invites_per_day, messages_per_day, next_allowed_at,
   paused_until, last_seen_at, last_inbox_at, session_state, session_error, session_updated_at,
   proxy_enc IS NOT NULL AS has_proxy, session_enc IS NOT NULL AS has_session, created_at`;
 
@@ -170,8 +168,6 @@ export function updateAccount(
     mode?: LiMode;
     invites_per_day?: number | null;
     messages_per_day?: number | null;
-    restart_warmup?: boolean;
-    warmup?: boolean;
   }
 ): LiAccount | undefined {
   const cap = (v: number | null | undefined) => (v == null ? null : Math.max(0, Math.round(v)));
@@ -188,10 +184,6 @@ export function updateAccount(
     }
     if ("invites_per_day" in patch) db.prepare("UPDATE li_accounts SET invites_per_day = ? WHERE id = ?").run(cap(patch.invites_per_day), id);
     if ("messages_per_day" in patch) db.prepare("UPDATE li_accounts SET messages_per_day = ? WHERE id = ?").run(cap(patch.messages_per_day), id);
-    if (patch.warmup !== undefined) db.prepare("UPDATE li_accounts SET warmup = ? WHERE id = ?").run(patch.warmup ? 1 : 0, id);
-    if (patch.restart_warmup) {
-      db.prepare("UPDATE li_accounts SET warmup_started_at = ?, warmup = 1 WHERE id = ?").run(Date.now(), id);
-    }
   })();
   return getAccount(id);
 }
@@ -448,23 +440,9 @@ function sameProfile(account: LiAccount): LiAccount[] {
   return db.prepare(`SELECT ${ACCOUNT_COLS} FROM li_accounts WHERE member_slug = ? ORDER BY id`).all(account.member_slug) as LiAccount[];
 }
 
-function activeDays(a: LiAccount): number {
-  const start =
-    a.warmup_started_at ??
-    (db.prepare(`SELECT MIN(sent_at) AS t FROM li_log WHERE li_account_id = ?`).get(a.id) as { t: number | null }).t;
-  if (!start) return 0;
-  return Math.floor((startOfLocalDay(Date.now()) - startOfLocalDay(start)) / DAY_MS);
-}
-
-/**
- * Plafond du jour d'un compte pour un type : warm-up croissant, borné au
- * plafond du compte. Sans warm-up (profil déjà chaud, sur ce compte ou un autre
- * du même profil LinkedIn) : le plafond plein.
- */
+/** Plafond du jour d'un compte pour un type : celui du compte, sans montée en charge. */
 export function dailyCap(a: LiAccount, type: LiActionType): number {
-  const hard = type === "invite" ? (a.invites_per_day ?? L.invitesPerDay) : (a.messages_per_day ?? L.messagesPerDay);
-  if (sameProfile(a).some((p) => !p.warmup)) return Math.max(0, hard);
-  return Math.max(0, Math.min(hard, L.warmupStart + activeDays(a) * L.warmupRamp));
+  return Math.max(0, type === "invite" ? (a.invites_per_day ?? L.invitesPerDay) : (a.messages_per_day ?? L.messagesPerDay));
 }
 
 function withinWindow(ts: number): boolean {
@@ -998,7 +976,6 @@ export function accountStatus(a: LiAccount) {
     next_allowed_at: (a.next_allowed_at ?? 0) > now ? a.next_allowed_at : null,
     invites_per_day: a.invites_per_day ?? L.invitesPerDay,
     messages_per_day: a.messages_per_day ?? L.messagesPerDay,
-    warmup: Boolean(a.warmup),
     today: {
       invite: { sent: invites, cap: dailyCap(a, "invite") },
       message: { sent: messages, cap: dailyCap(a, "message") },

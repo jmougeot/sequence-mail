@@ -12,8 +12,6 @@ La règle d'or : **l'extension n'envoie jamais quand elle veut.** À chaque tick
 Le serveur (`outreach.ts`) répond en appliquant :
 
 - **plafonds journaliers** par type (par défaut 20 invitations, 40 messages) ;
-- **warm-up** : on démarre à 5/jour et on monte progressivement (LinkedIn
-  repère les pics) ;
 - **plage horaire ouvrée** seulement (9h–18h, lun–ven par défaut) ;
 - **délai aléatoire** entre deux actions (90–240 s, jamais régulier) ;
 - **pause de sécurité longue** (60 min) dès qu'une action échoue, et arrêt net

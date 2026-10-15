@@ -45,14 +45,12 @@ export const config = {
     warmupRamp: int("WARMUP_RAMP", 5),
   },
   // Étapes LinkedIn (invitations/messages via l'extension Chrome). Ces garde-fous
-  // sont LE rempart anti-ban : plafonds du jour, journée ouvrée, délais aléatoires
-  // et warm-up progressif. Les baisser est sûr ; les gonfler augmente le risque de
+  // sont LE rempart anti-ban : plafonds du jour, journée ouvrée et délais
+  // aléatoires. Les baisser est sûr ; les gonfler augmente le risque de
   // restriction du compte. Voir .env.example (préfixe LI_).
   linkedin: {
     invitesPerDay: int("LI_INVITES_PER_DAY", 20),
     messagesPerDay: int("LI_MESSAGES_PER_DAY", 40),
-    warmupStart: int("LI_WARMUP_START", 5),
-    warmupRamp: int("LI_WARMUP_RAMP", 2),
     hourStart: int("LI_HOUR_START", 9),
     hourEnd: int("LI_HOUR_END", 18),
     workdaysOnly: (process.env.LI_WORKDAYS_ONLY ?? "1") !== "0",

@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS li_actions (
 CREATE INDEX IF NOT EXISTS idx_li_actions_status ON li_actions (status);
 CREATE INDEX IF NOT EXISTS idx_li_actions_cc ON li_actions (campaign_contact_id);
 
--- Journal des actions LinkedIn réellement effectuées : base des quotas du jour et du warm-up.
+-- Journal des actions LinkedIn réellement effectuées : base des quotas du jour.
 CREATE TABLE IF NOT EXISTS li_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   type TEXT NOT NULL,                    -- invite | message
@@ -249,7 +249,7 @@ CREATE TABLE IF NOT EXISTS li_accounts (
   active INTEGER NOT NULL DEFAULT 1,
   invites_per_day INTEGER,               -- NULL = LI_INVITES_PER_DAY
   messages_per_day INTEGER,              -- NULL = LI_MESSAGES_PER_DAY
-  warmup_started_at INTEGER,             -- départ du warm-up ; NULL = première action journalisée
+  warmup_started_at INTEGER,             -- inutilisé (warm-up LinkedIn retiré)
   next_allowed_at INTEGER,               -- délai aléatoire entre deux actions
   paused_until INTEGER,                  -- pause de sécurité après un échec
   last_seen_at INTEGER,                  -- dernier appel de l'extension (« connecté »)
@@ -293,8 +293,6 @@ if ((db.pragma("user_version", { simple: true }) as number) < 4) {
 // (LI_SECRET_KEY). last_inbox_at cadence la lecture de la messagerie qui
 // détecte les réponses.
 addColumnIfMissing("li_accounts", "mode", "mode TEXT NOT NULL DEFAULT 'extension'"); // extension | server
-// 0 = profil LinkedIn déjà chaud : plafonds pleins dès le premier jour, sans montée en charge.
-addColumnIfMissing("li_accounts", "warmup", "warmup INTEGER NOT NULL DEFAULT 1");
 addColumnIfMissing("li_accounts", "proxy_enc", "proxy_enc TEXT");
 addColumnIfMissing("li_accounts", "session_enc", "session_enc TEXT");
 addColumnIfMissing("li_accounts", "session_state", "session_state TEXT"); // NULL | ok | expired | checkpoint

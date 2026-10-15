@@ -30,16 +30,11 @@ const updateShape = {
   invites_per_day: z
     .union([z.number().int().min(0), z.null()])
     .optional()
-    .describe("Plafond d'invitations par jour (avant warm-up). null = défaut de l'app."),
+    .describe("Plafond d'invitations par jour. null = défaut de l'app."),
   messages_per_day: z
     .union([z.number().int().min(0), z.null()])
     .optional()
-    .describe("Plafond de messages par jour (avant warm-up). null = défaut de l'app."),
-  restart_warmup: z.boolean().optional().describe("true = recommence la montée en charge progressive à partir d'aujourd'hui."),
-  warmup: z
-    .boolean()
-    .optional()
-    .describe("false = profil déjà chaud : plafonds pleins tout de suite, sans montée en charge (vaut pour les comptes du même profil LinkedIn) ; true = montée en charge."),
+    .describe("Plafond de messages par jour. null = défaut de l'app."),
 };
 type UpdateArgs = z.infer<z.ZodObject<typeof updateShape>>;
 
@@ -101,7 +96,7 @@ export function registerLinkedinTools(server: McpServer): void {
     {
       title: "Créer un compte LinkedIn",
       description:
-        "Crée un compte LinkedIn d'envoi et renvoie son jeton EN CLAIR (affiché une seule fois) avec les étapes pour le relier : installer l'extension Chrome une fois et y coller le jeton (geste fait par l'utilisateur, hors de Claude). Démarre avec le warm-up et les plafonds par défaut. Donne le jeton et les étapes à l'utilisateur.",
+        "Crée un compte LinkedIn d'envoi et renvoie son jeton EN CLAIR (affiché une seule fois) avec les étapes pour le relier : installer l'extension Chrome une fois et y coller le jeton (geste fait par l'utilisateur, hors de Claude). Démarre avec les plafonds par défaut. Donne le jeton et les étapes à l'utilisateur.",
       inputSchema: {
         name: z.string().min(1).describe("Nom du compte (ex. le nom de la personne dont c'est le profil LinkedIn)."),
       },
@@ -120,7 +115,7 @@ export function registerLinkedinTools(server: McpServer): void {
     {
       title: "Modifier un compte LinkedIn",
       description:
-        "Modifie un compte LinkedIn : nom, actif/inactif, mode (extension|server), proxy, plafonds quotidiens d'invitations et de messages (null = défaut de l'app), warm-up (désactivé ou redémarré). Seuls les champs fournis changent. Renvoie l'état du compte.",
+        "Modifie un compte LinkedIn : nom, actif/inactif, mode (extension|server), proxy, plafonds quotidiens d'invitations et de messages (null = défaut de l'app). Seuls les champs fournis changent. Renvoie l'état du compte.",
       inputSchema: updateShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
