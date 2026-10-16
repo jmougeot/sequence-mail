@@ -41,7 +41,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 import { db } from "../db.js";
-import { firstNotAccepted, nextStep } from "./branches.js";
+import { firstNotAccepted, nextStep, unreachable } from "./branches.js";
 import { linkedinSlug } from "./linkedin-url.js";
 
 const L = config.linkedin;
@@ -535,12 +535,13 @@ export function cancelLinkedInActions(where: string, param: unknown, reason: str
 interface StepRow {
   step_number: number;
   wait_days: number;
+  channel: string;
   branch: string | null;
 }
 
 function campaignSteps(campaignId: number): StepRow[] {
   return db
-    .prepare(`SELECT step_number, wait_days, branch FROM steps WHERE campaign_id = ? ORDER BY step_number`)
+    .prepare(`SELECT step_number, wait_days, channel, branch FROM steps WHERE campaign_id = ? ORDER BY step_number`)
     .all(campaignId) as StepRow[];
 }
 
@@ -548,17 +549,24 @@ function campaignSteps(campaignId: number): StepRow[] {
  * Marque l'étape franchie et planifie la suivante de la branche du contact (ou
  * termine la séquence). Les étapes de l'autre branche comptent comme franchies.
  * `immediate` : la suivante part sans son délai (bascule « non acceptée », dont
- * le délai était l'échéance d'acceptation).
+ * le délai était l'échéance d'acceptation). Une étape que le contact ne peut
+ * pas recevoir (email sans adresse) part aussi sans délai : le scheduler la
+ * saute et planifie la suivante avec le sien.
  */
 function advanceContact(ccId: number, completedStep: number, immediate = false): void {
-  const cc = db.prepare(`SELECT campaign_id, status, li_accepted FROM campaign_contacts WHERE id = ?`).get(ccId) as
-    | { campaign_id: number; status: string; li_accepted: number | null }
+  const cc = db
+    .prepare(
+      `SELECT cc.campaign_id, cc.status, cc.li_accepted, c.email, c.linkedin
+       FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id WHERE cc.id = ?`
+    )
+    .get(ccId) as
+    | { campaign_id: number; status: string; li_accepted: number | null; email: string | null; linkedin: string | null }
     | undefined;
   if (!cc || cc.status !== "awaiting_li") return; // réponse/arrêt entre-temps : on ne relance rien
   const next = nextStep(campaignSteps(cc.campaign_id), completedStep, cc.li_accepted);
   if (next) {
     const jitter = rand(0, 4 * 3600 * 1000); // 0-4 h de variabilité
-    const at = Date.now() + (immediate ? 0 : next.wait_days * DAY_MS + jitter);
+    const at = Date.now() + (immediate || unreachable(next, cc) ? 0 : next.wait_days * DAY_MS + jitter);
     db.prepare(
       `UPDATE campaign_contacts SET current_step = ?, status = 'in_progress', next_send_at = ?, error = NULL WHERE id = ?`
     ).run(next.step_number - 1, Math.round(at), ccId);

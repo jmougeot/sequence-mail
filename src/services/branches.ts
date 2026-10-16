@@ -31,3 +31,11 @@ export function nextStep<T extends BranchStep>(steps: T[], after: number, accept
 export function firstNotAccepted<T extends BranchStep>(steps: T[]): T | undefined {
   return steps.find((s) => s.branch === "not_accepted");
 }
+
+/** Étape que ce contact ne peut pas recevoir (email sans adresse, LinkedIn sans profil) : elle sera sautée. */
+export function unreachable(
+  step: { channel: string | null },
+  contact: { email: string | null; linkedin: string | null }
+): boolean {
+  return step.channel === "linkedin" ? !contact.linkedin : !contact.email;
+}
