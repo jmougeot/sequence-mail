@@ -208,6 +208,15 @@ function autosize(el) {
   el.style.height = Math.max(el.scrollHeight, 96) + "px";
 }
 
+// Les corps se réajustent quand la largeur change (barre de défilement, deux
+// chemins côte à côte, tiroir d'aperçu, fenêtre) : sinon le texte est coupé.
+let stepsWidth = 0;
+new ResizeObserver(([e]) => {
+  if (e.contentRect.width === stepsWidth) return;
+  stepsWidth = e.contentRect.width;
+  $$("#steps .body").forEach(autosize);
+}).observe($("#steps"));
+
 /**
  * Range les étapes : tronc commun jusqu'à la première invitation, puis chemin
  * « acceptée » (étapes sans chemin comprises), puis chemin « non acceptée ».
