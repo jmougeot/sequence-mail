@@ -11,6 +11,17 @@ __DOMAIN__ {
 		reverse_proxy app:3000
 	}
 
+	# Exécutant LinkedIn (extension) : authentifié par le jeton de son compte
+	# (en-tête X-LI-Account, vérifié par l'app), sans le mot de passe d'accès.
+	# Sans jeton, ces routes restent derrière le mot de passe (compte par défaut).
+	@li_exec {
+		path /api/li/next /api/li/result /api/li/inbox /api/li/status
+		header_regexp X-LI-Account ^\S+$
+	}
+	handle @li_exec {
+		reverse_proxy app:3000
+	}
+
 	# --- Tout le reste (dashboard, /api, /auth) : protégé par mot de passe ---
 	# Le hash bcrypt est injecté par setup.sh (utilisateur "admin").
 	handle {

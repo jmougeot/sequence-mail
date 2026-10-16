@@ -29,17 +29,28 @@ async function getServer() {
 }
 
 /**
- * En-têtes d'authentification : mot de passe de la prod (Caddy basic_auth) et
- * jeton du compte LinkedIn. Réglés depuis le popup.
+ * En-têtes d'authentification : mot de passe de la prod (Caddy basic_auth),
+ * réglé depuis le popup, et jeton du compte LinkedIn servi.
  */
-async function authHeaders() {
-  const { authUser, authPass, liToken } = await chrome.storage.local.get(["authUser", "authPass", "liToken"]);
+async function authHeaders(token) {
+  const { authUser, authPass } = await chrome.storage.local.get(["authUser", "authPass"]);
   const h = {};
   if (authPass) h.Authorization = "Basic " + btoa(`${authUser || "admin"}:${authPass}`);
-  // Jeton du compte LinkedIn de ce navigateur (Réglages de l'app) : quotas et
-  // contacts propres à ce compte. Sans jeton, le serveur sert le compte principal.
-  if (liToken) h["X-LI-Account"] = liToken;
+  // Sans jeton, le serveur sert le compte principal (derrière le mot de passe).
+  if (token) h["X-LI-Account"] = token;
   return h;
+}
+
+/**
+ * Comptes servis par ce navigateur : celui du popup (jeton collé depuis les
+ * Réglages de Sequence Mail) et celui d'Azerit (jeton reçu à l'appairage).
+ * Le serveur choisit lequel agit et leur impose des quotas et délais communs
+ * (même profil LinkedIn).
+ */
+async function accountTokens() {
+  const { liToken, azeritToken } = await chrome.storage.local.get(["liToken", "azeritToken"]);
+  const tokens = [...new Set([liToken, azeritToken].filter(Boolean))];
+  return tokens.length ? tokens : [undefined];
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -71,15 +82,17 @@ chrome.alarms.onAlarm.addListener((a) => {
 
 /**
  * Ce navigateur exécute-t-il des actions pour Sequence Mail ? La prod est
- * derrière un mot de passe (Caddy) : sans mot de passe d'accès ni autre serveur
- * choisi, aucune requête ne peut aboutir. C'est le cas d'un utilisateur
- * d'Azerit : l'extension ne sert qu'à relier son LinkedIn (les navigateurs
- * serveur envoient à sa place), elle n'interroge donc rien.
+ * derrière un mot de passe (Caddy), sauf pour l'exécutant qui présente le jeton
+ * de son compte. Sans mot de passe d'accès, ni jeton, ni autre serveur choisi,
+ * aucune requête ne peut aboutir : c'est le cas d'un utilisateur d'Azerit dont
+ * l'extension ne sert qu'à relier son LinkedIn (les navigateurs serveur
+ * envoient à sa place), elle n'interroge donc rien. Le jeton arrive seul à
+ * l'appairage depuis Azerit quand le compte est exécuté par l'extension.
  */
 async function isExecutor() {
-  const { server, authPass } = await chrome.storage.local.get(["server", "authPass"]);
+  const { server, authPass, liToken, azeritToken } = await chrome.storage.local.get(["server", "authPass", "liToken", "azeritToken"]);
   const custom = Boolean(server) && server.replace(/\/+$/, "") !== DEFAULT_SERVER;
-  return Boolean(authPass) || custom;
+  return Boolean(authPass) || Boolean(liToken) || Boolean(azeritToken) || custom;
 }
 
 async function getEnabled() {
@@ -104,63 +117,68 @@ async function tick() {
   busy = true;
   const SERVER = await getServer();
   try {
-    const auth = await authHeaders();
-    const r = await fetch(`${SERVER}/api/li/next`, { headers: auth });
-    if (r.status === 401) {
-      const { error } = await r.json().catch(() => ({}));
-      await setStatus({ kind: "err", text: error || "Accès refusé (401) — renseignez le mot de passe d'accès dans le popup." });
-      return; // le finally remet busy = false
-    }
-    const res = await r.json();
-    if (res.error) {
-      await setStatus({ kind: "err", text: res.error });
-      return;
-    }
-    if (res.action && res.action.type === "sync_inbox") {
-      // Lecture de la messagerie : le serveur y cherche les réponses des contacts.
-      await setStatus({ kind: "run", text: "Lecture de la messagerie…" });
-      const r = await runInbox(res.action);
-      await fetch(`${SERVER}/api/li/inbox`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...auth },
-        body: JSON.stringify({
-          ok: r.ok,
-          conversations: r.data && r.data.conversations,
-          error: r.error,
-          member: r.member,
-          wrong_account: r.wrong_account,
-        }),
-      });
-      await setStatus(r.ok ? { kind: "ok", text: "Messagerie lue" } : { kind: "err", text: `Messagerie : ${r.error || "illisible"}` });
-    } else if (res.action) {
-      await setStatus({ kind: "run", text: `${res.action.type === "invite" ? "Invitation" : "Message"} en cours…` });
-      const verdict = await runAction(res.action);
-      await postVerdict(`${SERVER}/api/li/result`, auth, {
-        id: res.action.id,
-        ok: verdict.ok,
-        error: verdict.error,
-        retry: verdict.retry,
-        member: verdict.member,
-        wrong_account: verdict.wrong_account,
-        identity_unknown: verdict.identity_unknown,
-        replied: verdict.replied,
-        reply_text: verdict.reply_text,
-      });
-      await setStatus(
-        verdict.ok
-          ? { kind: "ok", text: "Dernière action : réussie" }
-          : { kind: "err", text: `Échec : ${verdict.error || "inconnu"}` }
-      );
-    } else if (res.wait != null) {
-      await setStatus({ kind: "wait", text: `${res.reason} — reprise dans ~${Math.ceil(res.wait / 60)} min` });
-    } else {
-      await setStatus({ kind: "idle", text: res.reason || "File vide" });
-    }
+    await setStatus(await serve(SERVER, await accountTokens()));
   } catch (e) {
     await setStatus({ kind: "err", text: `Serveur injoignable (${SERVER}). Lancez l'app Sequence Mail.` });
   } finally {
     busy = false;
   }
+}
+
+/**
+ * Demande au serveur la prochaine action et la joue ; rend l'état à afficher.
+ * Tous les jetons partent ensemble : le serveur choisit le compte qui agit
+ * (quotas, délais, ordre) et dit lequel (`account`, rang du jeton) ; le
+ * verdict repart avec ce seul jeton.
+ */
+async function serve(SERVER, tokens) {
+  const r = await fetch(`${SERVER}/api/li/next`, { headers: await authHeaders(tokens.filter(Boolean).join(",")) });
+  if (r.status === 401) {
+    const { error } = await r.json().catch(() => ({}));
+    return { kind: "err", text: error || "Accès refusé (401) — renseignez le mot de passe d'accès dans le popup." };
+  }
+  const res = await r.json();
+  if (res.error) return { kind: "err", text: res.error };
+  const auth = await authHeaders(tokens[res.account ?? 0]);
+  if (res.action && res.action.type === "sync_inbox") {
+    // Lecture de la messagerie : le serveur y cherche les réponses des contacts.
+    await setStatus({ kind: "run", text: "Lecture de la messagerie…" });
+    const r = await runInbox(res.action);
+    await fetch(`${SERVER}/api/li/inbox`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...auth },
+      body: JSON.stringify({
+        ok: r.ok,
+        conversations: r.data && r.data.conversations,
+        error: r.error,
+        member: r.member,
+        wrong_account: r.wrong_account,
+      }),
+    });
+    return r.ok
+      ? { kind: "ok", text: "Messagerie lue" }
+      : { kind: "err", text: `Messagerie : ${r.error || "illisible"}` };
+  }
+  if (res.action) {
+    await setStatus({ kind: "run", text: `${res.action.type === "invite" ? "Invitation" : "Message"} en cours…` });
+    const verdict = await runAction(res.action);
+    await postVerdict(`${SERVER}/api/li/result`, auth, {
+      id: res.action.id,
+      ok: verdict.ok,
+      error: verdict.error,
+      retry: verdict.retry,
+      member: verdict.member,
+      wrong_account: verdict.wrong_account,
+      identity_unknown: verdict.identity_unknown,
+      replied: verdict.replied,
+      reply_text: verdict.reply_text,
+    });
+    return verdict.ok
+      ? { kind: "ok", text: "Dernière action : réussie" }
+      : { kind: "err", text: `Échec : ${verdict.error || "inconnu"}` };
+  }
+  if (res.wait != null) return { kind: "wait", text: `${res.reason} — reprise dans ~${Math.ceil(res.wait / 60)} min` };
+  return { kind: "idle", text: res.reason || "File vide" };
 }
 
 /**
@@ -323,7 +341,15 @@ async function connectToAzerit(origin, code, replace) {
     return { ok: false, error: `Azerit injoignable (${origin})` };
   }
   const d = await r.json().catch(() => ({}));
-  if (r.ok) return { ok: true, account: d.account || null };
+  if (r.ok) {
+    // Compte exécuté par cette extension : son jeton reste ici (jamais remis à
+    // la page), à côté de celui du popup, et le premier tick part tout de suite.
+    if (typeof d.token === "string" && d.token) {
+      await chrome.storage.local.set({ azeritToken: d.token });
+      tick();
+    }
+    return { ok: true, account: d.account || null };
+  }
   // FastAPI range l'erreur dans `detail` (texte, ou objet { error, code, current, got })
   const detail = typeof d.detail === "object" && d.detail ? d.detail : { error: d.detail || d.error };
   return { ok: false, status: r.status, ...detail, error: detail.error || `HTTP ${r.status}` };

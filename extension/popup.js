@@ -9,23 +9,29 @@ async function getServer() {
 
 // En-têtes d'auth : mot de passe de la prod + jeton du compte LinkedIn.
 async function authHeaders() {
-  const { authUser, authPass, liToken } = await chrome.storage.local.get(["authUser", "authPass", "liToken"]);
+  const { authUser, authPass, liToken, azeritToken } = await chrome.storage.local.get([
+    "authUser",
+    "authPass",
+    "liToken",
+    "azeritToken",
+  ]);
   const h = {};
   if (authPass) h.Authorization = "Basic " + btoa(`${authUser || "admin"}:${authPass}`);
-  // Jeton du compte LinkedIn de ce navigateur (Réglages de l'app) : quotas et
-  // contacts propres à ce compte. Sans jeton, le serveur sert le compte principal.
-  if (liToken) h["X-LI-Account"] = liToken;
+  // Jeton du compte LinkedIn de ce navigateur (Réglages de l'app), sinon celui
+  // reçu d'Azerit : quotas et contacts de ce compte. Sans jeton, le serveur sert le compte principal.
+  const token = liToken || azeritToken;
+  if (token) h["X-LI-Account"] = token;
   return h;
 }
 
-// Même règle que background.js : sans mot de passe d'accès ni autre serveur,
+// Même règle que background.js : sans mot de passe d'accès, ni jeton, ni autre serveur,
 // ce navigateur n'exécute rien (utilisateur d'Azerit) — vue « Azerit » seule,
 // réglages d'exécutant derrière « Advanced settings ».
 let showAdvanced = false;
 async function isExecutor() {
-  const { server, authPass } = await chrome.storage.local.get(["server", "authPass"]);
+  const { server, authPass, liToken, azeritToken } = await chrome.storage.local.get(["server", "authPass", "liToken", "azeritToken"]);
   const custom = Boolean(server) && server.replace(/\/+$/, "") !== DEFAULT_SERVER;
-  return Boolean(authPass) || custom;
+  return Boolean(authPass) || Boolean(liToken) || Boolean(azeritToken) || custom;
 }
 
 async function refresh() {

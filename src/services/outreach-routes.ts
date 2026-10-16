@@ -24,7 +24,7 @@ import {
   deleteAccount,
   getAccount,
   isRunner,
-  nextAction,
+  nextForAccounts,
   outreachStatus,
   parseMember,
   pauseForCheckpoint,
@@ -61,8 +61,11 @@ function caller(req: express.Request, res: express.Response): { account: LiAccou
     }
     return { account, via: "server" };
   }
-  const token = req.get(ACCOUNT_HEADER)?.trim() || undefined;
-  const account = resolveAccount(token);
+  const raw = req.get(ACCOUNT_HEADER);
+  const token = raw?.trim() || undefined;
+  // En-tête présent mais vide : jamais le compte par défaut (sans jeton, seul
+  // l'appel derrière le mot de passe d'accès y a droit).
+  const account = raw !== undefined && !token ? "invalid" : resolveAccount(token);
   if (account === "invalid") {
     res.status(401).json({ error: "Jeton de compte LinkedIn inconnu — recopiez-le depuis Réglages." });
     return undefined;
@@ -72,6 +75,26 @@ function caller(req: express.Request, res: express.Response): { account: LiAccou
     return undefined;
   }
   return { account, via: "extension" };
+}
+
+/**
+ * Comptes servis par une extension : son en-tête X-LI-Account peut porter
+ * plusieurs jetons séparés par des virgules (compte Sequence Mail + compte
+ * Azerit dans le même navigateur). Le runner, lui, en sert un seul.
+ */
+function callers(req: express.Request, res: express.Response): { accounts: LiAccount[]; via: LiMode } | undefined {
+  const raw = req.get(ACCOUNT_HEADER);
+  if (req.get(RUNNER_HEADER) || raw === undefined || !raw.includes(",")) {
+    const c = caller(req, res);
+    return c && { accounts: [c.account], via: c.via };
+  }
+  const tokens = [...new Set(raw.split(",").map((t) => t.trim()).filter(Boolean))];
+  const accounts = tokens.map((t) => resolveAccount(t));
+  if (!tokens.length || accounts.some((a) => a === "invalid" || !a)) {
+    res.status(401).json({ error: "Jeton de compte LinkedIn inconnu — recopiez-le depuis Réglages." });
+    return undefined;
+  }
+  return { accounts: accounts as LiAccount[], via: "extension" };
 }
 
 function nullableInt(v: unknown): number | null | undefined {
@@ -93,9 +116,11 @@ export function registerOutreachRoutes(app: express.Express): void {
 
   // --- Exécutant (extension ou runner) ---
 
+  // Plusieurs comptes : le serveur choisit lequel agit ; `account` (rang du
+  // jeton dans l'en-tête) dit avec quel jeton rendre le verdict.
   app.get("/api/li/next", (req, res) => {
-    const c = caller(req, res);
-    if (c) res.json(nextAction(c.account, c.via));
+    const c = callers(req, res);
+    if (c) res.json(nextForAccounts(c.accounts, c.via));
   });
 
   app.post("/api/li/result", (req, res) => {
@@ -222,7 +247,6 @@ export function registerOutreachRoutes(app: express.Express): void {
     if (b.mode === "extension" || b.mode === "server") patch.mode = b.mode;
     if ("invites_per_day" in b) patch.invites_per_day = nullableInt(b.invites_per_day);
     if ("messages_per_day" in b) patch.messages_per_day = nullableInt(b.messages_per_day);
-    if (b.restart_warmup) patch.restart_warmup = true;
     res.json(accountStatus(updateAccount(id, patch)!));
   });
 

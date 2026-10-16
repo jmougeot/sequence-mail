@@ -45,14 +45,12 @@ export const config = {
     warmupRamp: int("WARMUP_RAMP", 5),
   },
   // Étapes LinkedIn (invitations/messages via l'extension Chrome). Ces garde-fous
-  // sont LE rempart anti-ban : plafonds du jour, journée ouvrée, délais aléatoires
-  // et warm-up progressif. Les baisser est sûr ; les gonfler augmente le risque de
+  // sont LE rempart anti-ban : plafonds du jour, journée ouvrée et délais
+  // aléatoires. Les baisser est sûr ; les gonfler augmente le risque de
   // restriction du compte. Voir .env.example (préfixe LI_).
   linkedin: {
     invitesPerDay: int("LI_INVITES_PER_DAY", 20),
     messagesPerDay: int("LI_MESSAGES_PER_DAY", 40),
-    warmupStart: int("LI_WARMUP_START", 5),
-    warmupRamp: int("LI_WARMUP_RAMP", 2),
     hourStart: int("LI_HOUR_START", 9),
     hourEnd: int("LI_HOUR_END", 18),
     workdaysOnly: (process.env.LI_WORKDAYS_ONLY ?? "1") !== "0",
@@ -73,6 +71,13 @@ export const config = {
     secretKey: process.env.LI_SECRET_KEY ?? "",
     // Secret partagé avec le service runner (navigateurs serveur), réseau interne.
     runnerSecret: process.env.LI_RUNNER_SECRET ?? "",
+    // Propriétaires (ex. « azerit:u:1 ») dont l'extension Chrome exécute elle-même
+    // les envois : à l'appairage depuis Azerit, elle reçoit le jeton de son compte
+    // et se connecte seule. Les autres extensions ne font que relier LinkedIn.
+    extensionOwners: (process.env.LI_EXTENSION_OWNERS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
   },
   // Clé de l'API de service (/api/svc) appelée par Azerit sur le réseau interne
   // du VPS. Vide = API désactivée.

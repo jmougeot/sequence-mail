@@ -3,7 +3,7 @@ import { db } from "../db.js";
 import { pushSequenceStatus } from "./attio.js";
 import { renderTemplate } from "./contacts.js";
 import { getForeignMessages, sendEmail, type AccountRow, type ForeignMessage } from "./google.js";
-import { nextStep } from "./branches.js";
+import { nextStep, unreachable } from "./branches.js";
 import { cancelLinkedInActions, enqueueStep } from "./outreach.js";
 import { NOT_OPTED_OUT, optOutFromCampaignOf } from "./opt-out.js";
 import { visitLink } from "./visits.js";
@@ -336,14 +336,16 @@ function accountById(id: number): AccountRow | undefined {
 /**
  * Planifie l'étape suivante avec un jitter aléatoire (délivrabilité). Les
  * étapes d'une autre branche sont considérées franchies (current_step juste
- * avant la suivante) : l'étape due reste toujours current_step + 1.
+ * avant la suivante) : l'étape due reste toujours current_step + 1. Une étape
+ * que le contact ne peut pas recevoir est due tout de suite : elle sera sautée
+ * sans faire attendre son délai.
  */
-function scheduleNext(ccId: number, next: StepRow): void {
+function scheduleNext(row: DueRow, next: StepRow): void {
   const jitterMs = randBetween(0, 4 * 3600 * 1000); // 0 à 4 h de variabilité
-  const at = Date.now() + next.wait_days * 24 * 3600 * 1000 + jitterMs;
+  const at = unreachable(next, row) ? Date.now() : Date.now() + next.wait_days * 24 * 3600 * 1000 + jitterMs;
   db.prepare(
     "UPDATE campaign_contacts SET status = 'in_progress', current_step = ?, next_send_at = ? WHERE id = ?"
-  ).run(next.step_number - 1, Math.round(at), ccId);
+  ).run(next.step_number - 1, Math.round(at), row.cc_id);
 }
 
 /**
@@ -383,15 +385,25 @@ function who(row: { email: string | null; linkedin?: string | null }): string {
 
 /**
  * Étape impossible pour ce contact (email sans adresse, LinkedIn sans profil) :
- * on la saute et on passe tout de suite à la suivante — une campagne peut mêler
- * candidats joignables par email, par LinkedIn, ou les deux. Le délai de
- * l'étape suivante ne s'applique pas : il mesurait l'écart avec l'étape sautée.
+ * on la saute — une campagne peut mêler candidats joignables par email, par
+ * LinkedIn, ou les deux. Elle a été planifiée sans délai (scheduleNext), son
+ * délai ne compte donc pas : la suivante garde le sien, compté depuis le
+ * dernier envoi réel, et part tout de suite si le contact n'a encore rien reçu.
  */
 function skipStep(row: DueRow, step: StepRow, steps: StepRow[], reason: string): void {
   const next = nextStep(steps, step.step_number, row.li_accepted);
+  const received = db
+    .prepare(
+      `SELECT EXISTS (SELECT 1 FROM messages WHERE campaign_contact_id = ?)
+           OR EXISTS (SELECT 1 FROM li_actions WHERE campaign_contact_id = ? AND status = 'sent') AS r`
+    )
+    .get(row.cc_id, row.cc_id) as { r: number };
+  const at = !next ? null
+    : unreachable(next, row) || !received.r ? Date.now()
+    : Math.round(Date.now() + next.wait_days * 24 * 3600 * 1000 + randBetween(0, 4 * 3600 * 1000));
   db.prepare(
     `UPDATE campaign_contacts SET current_step = ?, status = ?, next_send_at = ?, error = ? WHERE id = ?`
-  ).run(next ? next.step_number - 1 : step.step_number, next ? "in_progress" : "completed", next ? Date.now() : null, `étape ${step.step_number} sautée : ${reason}`, row.cc_id);
+  ).run(next ? next.step_number - 1 : step.step_number, next ? "in_progress" : "completed", at, `étape ${step.step_number} sautée : ${reason}`, row.cc_id);
   if (!next) syncAttio(row.attio_record_id, `Séquence terminée (${steps.length} étapes, sans réponse)`);
   console.log(`[séquence] ${who(row)} : étape ${step.step_number} sautée (${reason})`);
 }
@@ -490,7 +502,7 @@ async function processOne(row: DueRow): Promise<void> {
 
     const next = nextStep(steps, step.step_number, row.li_accepted);
     if (next) {
-      scheduleNext(row.cc_id, next);
+      scheduleNext(row, next);
       syncAttio(row.attio_record_id, `Étape ${step.step_number}/${steps.length} envoyée`);
     } else {
       db.prepare("UPDATE campaign_contacts SET status = 'completed', next_send_at = NULL WHERE id = ?").run(row.cc_id);
@@ -549,6 +561,10 @@ const DUE_SELECT = `
 const NEXT_IS_LINKEDIN = `EXISTS (SELECT 1 FROM steps s
   WHERE s.campaign_id = cc.campaign_id AND s.step_number = cc.current_step + 1 AND s.channel = 'linkedin')`;
 
+// Hors file email : étape LinkedIn, ou contact sans email (l'étape email sera sautée,
+// sans attendre la fenêtre d'envoi ni les quotas).
+const NOT_EMAIL_WORK = `(${NEXT_IS_LINKEDIN} OR c.email IS NULL)`;
+
 /**
  * Estimation du prochain envoi d'email, au plus tôt : contacts dus ou planifiés
  * des campagnes actives, fenêtre d'envoi, quota et repos des comptes. Ne tient
@@ -605,13 +621,13 @@ export async function sendTick(): Promise<void> {
   const now = Date.now();
 
   const linkedinDue = db
-    .prepare(`${DUE_SELECT} AND ${NEXT_IS_LINKEDIN} ORDER BY COALESCE(cc.next_send_at, 0) ASC, cc.id ASC LIMIT 200`)
+    .prepare(`${DUE_SELECT} AND ${NOT_EMAIL_WORK} ORDER BY COALESCE(cc.next_send_at, 0) ASC, cc.id ASC LIMIT 200`)
     .all({ now }) as DueRow[];
   for (const row of linkedinDue) await processOne(row);
 
   if (!inSendWindow()) return;
   const due = db
-    .prepare(`${DUE_SELECT} AND NOT ${NEXT_IS_LINKEDIN} ORDER BY COALESCE(cc.next_send_at, 0) ASC LIMIT 5`)
+    .prepare(`${DUE_SELECT} AND NOT ${NOT_EMAIL_WORK} ORDER BY COALESCE(cc.next_send_at, 0) ASC LIMIT 5`)
     .all({ now }) as DueRow[];
 
   for (const row of due) {

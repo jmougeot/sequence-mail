@@ -4,7 +4,7 @@
  * contact passe en attente. Chaque compte LinkedIn réclame ensuite
  * `nextAction()` — et c'est ICI, côté serveur, que se décide si CE compte a le
  * droit d'agir :
- *   1. plafonds journaliers par type (invitation/message), avec warm-up ;
+ *   1. plafonds journaliers par type (invitation/message), pleins dès le premier jour ;
  *   2. plage horaire ouvrée seulement ;
  *   3. délai aléatoire entre deux actions ;
  *   4. pause de sécurité longue dès qu'une action échoue.
@@ -41,7 +41,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 import { db } from "../db.js";
-import { firstNotAccepted, nextStep } from "./branches.js";
+import { firstNotAccepted, nextStep, unreachable } from "./branches.js";
 import { linkedinSlug } from "./linkedin-url.js";
 
 const L = config.linkedin;
@@ -67,7 +67,6 @@ export interface LiAccount {
   mode: LiMode;
   invites_per_day: number | null;
   messages_per_day: number | null;
-  warmup_started_at: number | null;
   next_allowed_at: number | null;
   paused_until: number | null;
   last_seen_at: number | null;
@@ -108,7 +107,7 @@ function unseal(sealed: string): string {
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 const newToken = () => "li_" + randomBytes(24).toString("base64url");
 
-const ACCOUNT_COLS = `id, name, owner_ref, member_slug, member_name, member_avatar, member_checked_at, active, mode, invites_per_day, messages_per_day, warmup_started_at, next_allowed_at,
+const ACCOUNT_COLS = `id, name, owner_ref, member_slug, member_name, member_avatar, member_checked_at, active, mode, invites_per_day, messages_per_day, next_allowed_at,
   paused_until, last_seen_at, last_inbox_at, session_state, session_error, session_updated_at,
   proxy_enc IS NOT NULL AS has_proxy, session_enc IS NOT NULL AS has_session, created_at`;
 
@@ -169,7 +168,6 @@ export function updateAccount(
     mode?: LiMode;
     invites_per_day?: number | null;
     messages_per_day?: number | null;
-    restart_warmup?: boolean;
   }
 ): LiAccount | undefined {
   const cap = (v: number | null | undefined) => (v == null ? null : Math.max(0, Math.round(v)));
@@ -186,7 +184,6 @@ export function updateAccount(
     }
     if ("invites_per_day" in patch) db.prepare("UPDATE li_accounts SET invites_per_day = ? WHERE id = ?").run(cap(patch.invites_per_day), id);
     if ("messages_per_day" in patch) db.prepare("UPDATE li_accounts SET messages_per_day = ? WHERE id = ?").run(cap(patch.messages_per_day), id);
-    if (patch.restart_warmup) db.prepare("UPDATE li_accounts SET warmup_started_at = ? WHERE id = ?").run(Date.now(), id);
   })();
   return getAccount(id);
 }
@@ -279,7 +276,8 @@ export function storeSession(
   id: number,
   cookies: unknown,
   userAgent: unknown,
-  member: LiMember | null = null
+  member: LiMember | null = null,
+  mode: LiMode = "server"
 ): { ok: true } | { error: string; code?: "other_member" } {
   if (!Array.isArray(cookies)) return { error: "cookies[] manquant" };
   const account = getAccount(id);
@@ -322,8 +320,8 @@ export function storeSession(
   const now = Date.now();
   db.prepare(
     `UPDATE li_accounts SET session_enc = ?, session_state = 'ok', session_error = NULL, session_updated_at = ?,
-       mode = 'server', paused_until = NULL WHERE id = ?`
-  ).run(sealed, now, id);
+       mode = ?, paused_until = NULL WHERE id = ?`
+  ).run(sealed, now, mode, id);
   if (member) {
     db.prepare(
       `UPDATE li_accounts SET member_slug = ?, member_name = COALESCE(?, member_name),
@@ -419,27 +417,32 @@ function startOfLocalDay(ts: number): number {
   return d.getTime();
 }
 
-function sentToday(accountId: number, type: LiActionType): number {
+function sentToday(accountIds: number | number[], type: LiActionType): number {
+  const ids = [accountIds].flat();
   const since = startOfLocalDay(Date.now());
   return (
     db
-      .prepare(`SELECT COUNT(*) AS n FROM li_log WHERE li_account_id = ? AND type = ? AND sent_at >= ?`)
-      .get(accountId, type, since) as { n: number }
+      .prepare(
+        `SELECT COUNT(*) AS n FROM li_log WHERE li_account_id IN (${ids.map(() => "?").join(",")}) AND type = ? AND sent_at >= ?`
+      )
+      .get(...ids, type, since) as { n: number }
   ).n;
 }
 
-function activeDays(a: LiAccount): number {
-  const start =
-    a.warmup_started_at ??
-    (db.prepare(`SELECT MIN(sent_at) AS t FROM li_log WHERE li_account_id = ?`).get(a.id) as { t: number | null }).t;
-  if (!start) return 0;
-  return Math.floor((startOfLocalDay(Date.now()) - startOfLocalDay(start)) / DAY_MS);
+/**
+ * Comptes qui envoient depuis le même profil LinkedIn que celui-ci (lui
+ * compris) : une même extension peut servir un compte Sequence Mail et un
+ * compte Azerit. LinkedIn ne voit qu'un profil : quotas du jour, délai entre
+ * deux actions et pauses de sécurité leur sont communs.
+ */
+function sameProfile(account: LiAccount): LiAccount[] {
+  if (!account.member_slug) return [account];
+  return db.prepare(`SELECT ${ACCOUNT_COLS} FROM li_accounts WHERE member_slug = ? ORDER BY id`).all(account.member_slug) as LiAccount[];
 }
 
-/** Plafond du jour d'un compte pour un type : warm-up croissant, borné au plafond du compte. */
+/** Plafond du jour d'un compte pour un type : celui du compte, sans montée en charge. */
 export function dailyCap(a: LiAccount, type: LiActionType): number {
-  const hard = type === "invite" ? (a.invites_per_day ?? L.invitesPerDay) : (a.messages_per_day ?? L.messagesPerDay);
-  return Math.max(0, Math.min(hard, L.warmupStart + activeDays(a) * L.warmupRamp));
+  return Math.max(0, type === "invite" ? (a.invites_per_day ?? L.invitesPerDay) : (a.messages_per_day ?? L.messagesPerDay));
 }
 
 function withinWindow(ts: number): boolean {
@@ -532,12 +535,13 @@ export function cancelLinkedInActions(where: string, param: unknown, reason: str
 interface StepRow {
   step_number: number;
   wait_days: number;
+  channel: string;
   branch: string | null;
 }
 
 function campaignSteps(campaignId: number): StepRow[] {
   return db
-    .prepare(`SELECT step_number, wait_days, branch FROM steps WHERE campaign_id = ? ORDER BY step_number`)
+    .prepare(`SELECT step_number, wait_days, channel, branch FROM steps WHERE campaign_id = ? ORDER BY step_number`)
     .all(campaignId) as StepRow[];
 }
 
@@ -545,17 +549,24 @@ function campaignSteps(campaignId: number): StepRow[] {
  * Marque l'étape franchie et planifie la suivante de la branche du contact (ou
  * termine la séquence). Les étapes de l'autre branche comptent comme franchies.
  * `immediate` : la suivante part sans son délai (bascule « non acceptée », dont
- * le délai était l'échéance d'acceptation).
+ * le délai était l'échéance d'acceptation). Une étape que le contact ne peut
+ * pas recevoir (email sans adresse) part aussi sans délai : le scheduler la
+ * saute et planifie la suivante avec le sien.
  */
 function advanceContact(ccId: number, completedStep: number, immediate = false): void {
-  const cc = db.prepare(`SELECT campaign_id, status, li_accepted FROM campaign_contacts WHERE id = ?`).get(ccId) as
-    | { campaign_id: number; status: string; li_accepted: number | null }
+  const cc = db
+    .prepare(
+      `SELECT cc.campaign_id, cc.status, cc.li_accepted, c.email, c.linkedin
+       FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id WHERE cc.id = ?`
+    )
+    .get(ccId) as
+    | { campaign_id: number; status: string; li_accepted: number | null; email: string | null; linkedin: string | null }
     | undefined;
   if (!cc || cc.status !== "awaiting_li") return; // réponse/arrêt entre-temps : on ne relance rien
   const next = nextStep(campaignSteps(cc.campaign_id), completedStep, cc.li_accepted);
   if (next) {
     const jitter = rand(0, 4 * 3600 * 1000); // 0-4 h de variabilité
-    const at = Date.now() + (immediate ? 0 : next.wait_days * DAY_MS + jitter);
+    const at = Date.now() + (immediate || unreachable(next, cc) ? 0 : next.wait_days * DAY_MS + jitter);
     db.prepare(
       `UPDATE campaign_contacts SET current_step = ?, status = 'in_progress', next_send_at = ?, error = NULL WHERE id = ?`
     ).run(next.step_number - 1, Math.round(at), ccId);
@@ -646,7 +657,9 @@ const ELIGIBLE = `
 
 export function nextAction(account: LiAccount, via: LiMode): NextResult {
   const now = Date.now();
-  db.prepare("UPDATE li_accounts SET last_seen_at = ? WHERE id = ?").run(now, account.id);
+  // « Connecté » = l'exécutant du compte (extension ou runner, selon son mode) est
+  // vu : une extension qui interroge un compte en mode serveur ne compte pas.
+  if (account.mode === via) db.prepare("UPDATE li_accounts SET last_seen_at = ? WHERE id = ?").run(now, account.id);
   reclaimStale();
 
   if (!enabled) return { idle: true, reason: "Envoi LinkedIn en pause (désactivé pour tous les comptes)" };
@@ -666,8 +679,9 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   if (via === "server" && account.session_state !== "ok") {
     return { idle: true, reason: "Session LinkedIn à renvoyer depuis l'extension" };
   }
-  if ((account.paused_until ?? 0) > now)
-    return { wait: Math.ceil((account.paused_until! - now) / 1000), reason: "Pause de sécurité après une erreur" };
+  const profile = sameProfile(account);
+  const pausedUntil = Math.max(...profile.map((a) => a.paused_until ?? 0));
+  if (pausedUntil > now) return { wait: Math.ceil((pausedUntil - now) / 1000), reason: "Pause de sécurité après une erreur" };
 
   // Lecture de la messagerie (détection des réponses), hors quotas d'envoi.
   if (now - (account.last_inbox_at ?? 0) >= L.inboxEveryMin * 60_000 && withinInboxWindow(now) && watchedCount(account.id)) {
@@ -680,10 +694,13 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   }
 
   if (!withinWindow(now)) return { wait: Math.ceil((nextWindowOpen(now) - now) / 1000), reason: "Hors plage horaire d'envoi" };
-  if ((account.next_allowed_at ?? 0) > now)
-    return { wait: Math.ceil((account.next_allowed_at! - now) / 1000), reason: "Délai entre deux actions" };
+  const nextAllowed = Math.max(...profile.map((a) => a.next_allowed_at ?? 0));
+  if (nextAllowed > now) return { wait: Math.ceil((nextAllowed - now) / 1000), reason: "Délai entre deux actions" };
 
-  const allowed = (["invite", "message"] as LiActionType[]).filter((t) => sentToday(account.id, t) < dailyCap(account, t));
+  const ids = profile.map((a) => a.id);
+  const allowed = (["invite", "message"] as LiActionType[]).filter(
+    (t) => sentToday(ids, t) < Math.min(...profile.map((a) => dailyCap(a, t)))
+  );
   const untilTomorrow = Math.ceil((startOfLocalDay(now) + DAY_MS - now) / 1000);
   if (!allowed.length) return { wait: untilTomorrow, reason: "Quota du jour atteint" };
 
@@ -730,6 +747,30 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
       ...(row.type === "message" ? { guard: messageGuard(row.campaign_contact_id) } : {}),
     },
   };
+}
+
+/**
+ * Prochaine action parmi plusieurs comptes servis par le même exécutant : le
+ * compte resté le plus longtemps sans envoyer passe en premier, une action au
+ * plus. Sans action : la plus courte attente, sinon les raisons d'inactivité.
+ * `account` = rang du compte dans la liste reçue.
+ */
+export function nextForAccounts(accounts: LiAccount[], via: LiMode): NextResult & { account?: number } {
+  const lastSent = (a: LiAccount) =>
+    (db.prepare(`SELECT MAX(sent_at) AS t FROM li_log WHERE li_account_id = ?`).get(a.id) as { t: number | null }).t ?? 0;
+  // Tous sont vus à cet appel, même ceux qu'une action servie dispense d'interroger.
+  const now = Date.now();
+  for (const a of accounts) if (a.mode === via) db.prepare("UPDATE li_accounts SET last_seen_at = ? WHERE id = ?").run(now, a.id);
+  const order = accounts.map((a, i) => ({ i, t: lastSent(a) })).sort((x, y) => x.t - y.t || x.i - y.i);
+  const results: NextResult[] = [];
+  for (const { i } of order) {
+    const r = nextAction(accounts[i], via);
+    if ("action" in r) return { ...r, account: i };
+    results.push(r);
+  }
+  const waits = results.filter((r): r is { wait: number; reason: string } => "wait" in r);
+  if (waits.length) return waits.reduce((a, b) => (b.wait < a.wait ? b : a));
+  return { idle: true, reason: [...new Set(results.map((r) => (r as { reason: string }).reason))].join(" · ") };
 }
 
 const NOT_FOUND = /\(404\)/;

@@ -136,8 +136,7 @@ async function loadLi() {
     const sess = !server || a.session.state === "ok" ? ""
       : `<div class="err" title="${esc([a.session.error, "À renvoyer depuis l'extension"].filter(Boolean).join(" — "))}">${sessLabel}</div>`;
     const proxy = !server ? "" : `<div><input value="" title="Proxy résidentiel ou ISP fixe, propre au compte : sans proxy, le serveur ne lance rien" placeholder="${a.has_proxy ? "proxy configuré ✓ (remplacer…)" : "⚠️ proxy http://user:mdp@hôte:port"}" style="width:220px" onchange="patchLi(${a.id}, {proxy: this.value})"></div>`;
-    const quota = (kind, field, label) => `<td style="white-space:nowrap">${a.today[kind].sent} / <input type="number" min="0" value="${a[field]}" title="${label} / jour" style="width:60px" onchange="patchLi(${a.id}, {${field}: this.value})">
-        ${a.today[kind].cap < a[field] ? `<div class="muted">warm-up : ${a.today[kind].cap}/j</div>` : ""}</td>`;
+    const quota = (kind, field, label) => `<td style="white-space:nowrap">${a.today[kind].sent} / <input type="number" min="0" value="${a[field]}" title="${label} / jour" style="width:60px" onchange="patchLi(${a.id}, {${field}: this.value})"></td>`;
     return `<tr>
       <td><input value="${esc(a.name)}" style="width:150px" onchange="patchLi(${a.id}, {name: this.value})">
         ${a.member ? `<div><a href="${esc(a.member.url)}" target="_blank" rel="noopener" title="Profil vérifié avant chaque action">✓ ${esc(a.member.name || a.member.slug)}</a></div>` : `<div class="muted">profil non vérifié</div>`}
