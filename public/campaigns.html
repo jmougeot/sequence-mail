@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Campagnes</title>
-<link rel="stylesheet" href="style.css?v=5">
+<link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
 <div class="wrap wide">
@@ -20,8 +20,8 @@
 
   <div id="campTabs" hidden class="camp-tabs">
     <button class="tab-btn active" id="tab-seq"      onclick="showTab('seq')">Séquence</button>
-    <button class="tab-btn"        id="tab-stats"    onclick="showTab('stats')">Stats</button>
     <button class="tab-btn"        id="tab-contacts" onclick="showTab('contacts')">Contacts</button>
+    <button class="tab-btn"        id="tab-stats"    onclick="showTab('stats')">Stats</button>
     <button class="tab-btn"        id="tab-import"   onclick="showTab('import')">Import</button>
   </div>
 
@@ -115,7 +115,7 @@
   </div>
 </aside>
 
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 <script>
 renderNav("campaigns.html");
 
@@ -381,7 +381,7 @@ function newCampaign() {
 }
 
 function showTab(name) {
-  ["seq","stats","contacts","import"].forEach(t => {
+  ["seq","contacts","stats","import"].forEach(t => {
     $("#tab-" + t).classList.toggle("active", t === name);
     $("#pane" + t.charAt(0).toUpperCase() + t.slice(1)).hidden = t !== name;
   });
@@ -398,51 +398,36 @@ function showPane(id) {
   });
 }
 
+// Stats : l'entonnoir en quatre chiffres, les envois, puis la répartition des contacts par statut.
 function renderStats(c) {
-  const launched = (c.contacts || 0) - (c.pending || 0) - (c.held || 0);
-  const reached  = (c.in_progress || 0) + (c.awaiting_li || 0) + (c.replied || 0) + (c.completed || 0);
-  const pct = (n, d) => d > 0 ? Math.round(n / d * 100) + "%" : "—";
-
-  const card = (value, pctVal, label) => `
-    <div class="stat-card">
-      ${pctVal ? `<div class="sp" style="margin-bottom:4px">${pctVal}</div>` : "<div style='height:20px'></div>"}
-      <div class="sv">${value}</div>
-      <div class="sl">${label}</div>
-    </div>`;
-
+  const n = (v) => Number(v || 0);
+  const pct = (a, b) => (b > 0 ? `${Math.round((a / b) * 100)} %` : "");
+  const tile = (value, label, sub = "") => `<div class="st"><div class="sv">${value}</div><div class="sl">${label}</div>${sub ? `<div class="ss">${sub}</div>` : ""}</div>`;
+  const plural = (v, one, many) => `${v} ${v > 1 ? many : one}`;
+  const sent = [
+    n(c.emails_sent) && plural(n(c.emails_sent), "email", "emails"),
+    n(c.li_invites_sent) && plural(n(c.li_invites_sent), "invitation LinkedIn", "invitations LinkedIn"),
+    n(c.li_messages_sent) && plural(n(c.li_messages_sent), "message LinkedIn", "messages LinkedIn"),
+    n(c.visited) && plural(n(c.visited), "visite du lien", "visites du lien"),
+  ].filter(Boolean);
+  // répartition, dans l'ordre de la séquence ; seuls les statuts présents
+  const parts = [
+    ["held", "non lancés", "#d0d7de"], ["pending", "en attente", "#9ab6f0"], ["in_progress", "en cours", "#2f6feb"],
+    ["awaiting_li", "action LinkedIn", "#0a66c2"], ["completed", "terminés", "#8c959f"], ["replied", "ont répondu", "#1a7f37"],
+    ["opted_out", "refus", "#cf222e"], ["bounced", "bounces", "#fa7a7a"], ["failed", "échecs", "#9a6700"], ["stopped", "arrêtés", "#57606a"],
+  ].filter(([k]) => n(c[k]) > 0);
+  const total = n(c.contacts) || 1;
   $("#statsContent").innerHTML = `
-    <div class="stat-section" style="margin-top:0">Prospects</div>
-    <div class="stat-grid">
-      ${card(c.contacts, null, "Total dans la campagne")}
-      ${card(launched, pct(launched, c.contacts), "Lancés")}
-      ${card(reached, pct(reached, launched || 1), "Atteints")}
-      ${card(c.replied, pct(c.replied, reached || 1), "Ont répondu")}
+    <div class="st-row">
+      ${tile(n(c.contacts), "contacts")}
+      ${tile(n(c.launched), "lancés", pct(n(c.launched), n(c.contacts)))}
+      ${tile(n(c.contacted), "contactés")}
+      ${tile(n(c.replied), "réponses", n(c.contacted) ? `${c.reply_rate} %${c.ab_test ? ` · A ${c.reply_rate_a} % / B ${c.reply_rate_b} %` : ""}` : "")}
     </div>
-    <div class="stat-section">Délivrabilité</div>
-    <div class="stat-grid">
-      ${card(c.emails_sent, null, "Emails envoyés")}
-      ${card(c.bounced, pct(c.bounced, c.emails_sent || 1), "Bounces")}
-      ${card(c.opted_out, pct(c.opted_out, launched || 1), "Désinscrits")}
-      ${card(c.failed, pct(c.failed, c.emails_sent || 1), "Échecs")}
-    </div>
-    <div class="stat-section">Engagement</div>
-    <div class="stat-grid">
-      ${card(c.visited || 0, pct(c.visited, reached || 1), "Ont visité 🌐")}
-    </div>
-    ${c.li_steps ? `
-    <div class="stat-section">LinkedIn</div>
-    <div class="stat-grid">
-      ${card(c.li_invites_sent, null, "Invitations envoyées")}
-      ${card(c.li_messages_sent, null, "Messages envoyés")}
-      ${card(c.awaiting_li, null, "En file (à jouer)")}
-    </div>` : ""}
-    <div class="stat-section">Progression</div>
-    <div class="stat-grid">
-      ${card(c.pending, pct(c.pending, c.contacts || 1), "En attente d'envoi")}
-      ${card(c.in_progress, pct(c.in_progress, launched || 1), "Séquence en cours")}
-      ${card(c.completed, pct(c.completed, launched || 1), "Séquence terminée")}
-      ${c.ab_test ? card(`${c.reply_rate_a}% / ${c.reply_rate_b}%`, null, "Taux réponse A / B") : card(c.reply_rate + "%", null, "Taux de réponse global")}
-    </div>`;
+    <p class="st-sent">${sent.length ? `Envoyés : ${sent.join(" · ")}` : "Rien n'est encore parti."}</p>
+    ${parts.length ? `
+    <div class="st-bar">${parts.map(([k, , color]) => `<div style="width:${(n(c[k]) / total) * 100}%;background:${color}" title="${n(c[k])}"></div>`).join("")}</div>
+    <div class="st-legend">${parts.map(([k, label, color]) => `<span><i style="background:${color}"></i>${n(c[k])} ${label}</span>`).join("")}</div>` : ""}`;
 }
 
 async function loadStats() {

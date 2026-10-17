@@ -262,6 +262,13 @@ export function createServer(): express.Express {
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'completed') AS completed,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'failed') AS failed,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'awaiting_li') AS awaiting_li,
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'stopped') AS stopped,
+           -- lancés : sortis de « held », sauf ceux arrêtés avant tout envoi
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status <> 'held'
+              AND NOT (cc.status = 'stopped' AND cc.current_step = 0)) AS launched,
+           -- contactés : au moins une étape (email ou LinkedIn) partie, hors bounces (jamais reçus)
+           (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.current_step > 0
+              AND cc.status <> 'bounced') AS contacted,
            (SELECT COUNT(*) FROM messages m JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
               WHERE cc.campaign_id = cp.id) AS emails_sent,
            (SELECT COUNT(DISTINCT v.cc_id) FROM visits v
@@ -285,10 +292,10 @@ export function createServer(): express.Express {
       contacted > 0 ? Math.round((replied / contacted) * 1000) / 10 : 0;
 
     for (const c of campaigns) {
-      // Les bounces n'ont jamais reçu l'email, les held/pending pas encore lancés : exclus du dénominateur
-      const contacted = Number(c.contacts) - Number(c.held) - Number(c.pending) - Number(c.bounced);
-      c.reply_rate = rate(Number(c.replied), contacted);
-      const launched = Number(c.contacts) - Number(c.held);
+      // Dénominateur : les contacts à qui au moins une étape est partie (ni held, ni pending, ni arrêtés avant
+      // tout envoi, ni bounces)
+      c.reply_rate = rate(Number(c.replied), Number(c.contacted));
+      const launched = Number(c.launched);
       // awaiting_li : action LinkedIn en file, séquence non terminée — encore « en cours »
       const stillRunning = Number(c.pending) + Number(c.in_progress) + Number(c.awaiting_li);
       c.progress = launched > 0 ? Math.round(((launched - stillRunning) / launched) * 100) : 0;
