@@ -73,32 +73,34 @@ textarea { min-height:90px; }
 .menu-list button.danger { color:var(--bad); }
 
 /* Éditeur de séquence : pas de cadre englobant, des rubriques séparées */
-.editor { display:flex; flex-direction:column; gap:4px; }
+.editor { display:flex; flex-direction:column; gap:8px; }
 .camp-name-input { font-size:16px; font-weight:600; padding:10px 12px; margin:0 0 6px; }
 .senders { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
 label.chip { display:inline-flex; align-items:center; cursor:pointer; user-select:none; }
-.add-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:6px 0 2px; }
+.add-row { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:12px 0 4px; }
 .add-row button { padding:5px 10px; }
 .editor-foot { display:flex; align-items:center; gap:12px; padding:10px 0 24px; }
 
 /* Séquence : timeline d'étapes (email / LinkedIn) reliées par des délais */
-.step-delay { display:flex; align-items:center; gap:4px; padding:2px 0 2px 38px; color:var(--muted); font-size:12px; position:relative; }
-.step-delay::before { content:""; position:absolute; left:25px; top:0; bottom:0; width:2px; background:var(--border); z-index:0; }
+.step-delay { display:flex; align-items:center; gap:4px; padding:7px 0 7px 42px; color:var(--muted); font-size:12px; position:relative; }
+.step-delay::before { content:""; position:absolute; left:28px; top:0; bottom:0; width:2px; background:var(--border); z-index:0; }
 .step-delay > * { position:relative; z-index:1; background:var(--bg); padding:0 4px; }
 .step-delay input { width:40px; margin:0; text-align:center; padding:1px 2px; font-size:12px; background:var(--card); }
 /* Étape repliée : une ligne (type, numéro, objet ou début du message) ; un clic la déplie pour l'éditer */
 .step-box { background:var(--card); border:1px solid var(--border); border-radius:8px; }
 .step.open .step-box { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-bg); }
-.step-sum { display:flex; align-items:center; gap:10px; padding:6px 12px; min-height:40px; cursor:pointer; border-radius:8px; }
+.step-sum { display:flex; align-items:center; gap:12px; padding:10px 14px; min-height:50px; cursor:pointer; border-radius:8px; }
 .step-sum:hover { background:var(--hover); }
 .step.open .step-sum { border-radius:8px 8px 0 0; }
 .step-n { font-size:12px; font-weight:600; color:var(--muted); min-width:10px; }
-.sum { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13.5px; }
+.sum { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+.ab-tag { display:inline-block; margin-left:8px; padding:0 6px; border-radius:4px; background:var(--accent-bg); color:var(--accent); font-size:11px; font-weight:700; vertical-align:1px; }
+.step-head .link-btn.ab { color:var(--accent); font-size:12.5px; white-space:nowrap; padding:4px 2px; }
 .sum-main { font-weight:500; }
 .sum-sub { color:var(--muted); margin-left:10px; }
 .step-sum .chev { color:var(--muted); font-size:16px; transition:transform .15s; }
 .step.open .step-sum .chev { transform:rotate(90deg); }
-.step-card { display:none; padding:2px 12px 12px; }
+.step-card { display:none; padding:4px 14px 14px; }
 .step.open .step-card { display:block; }
 /* Corps : hauteur auto (grandit avec le texte), pas de poignée de redimensionnement */
 .step-card .body { resize:none; overflow:hidden; min-height:56px; line-height:1.5; padding:8px 10px; margin:0; }
@@ -115,9 +117,9 @@ label.chip { display:inline-flex; align-items:center; cursor:pointer; user-selec
 .step-kind:hover, .step-kind:focus { border-color:var(--border); background-color:var(--field); box-shadow:none; }
 .step-kind-label { font-weight:500; font-size:13px; padding:4px 8px; }
 /* Après l'invitation : deux chemins côte à côte (acceptée / non acceptée) */
-.split { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:8px; }
+.split { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:12px; }
 .lane { display:flex; flex-direction:column; gap:6px; min-width:0; }
-.lane-head { font-size:12px; font-weight:600; padding:3px 10px; border-radius:6px; text-align:center; }
+.lane-head { font-size:12.5px; font-weight:600; padding:6px 10px; border-radius:6px; text-align:center; }
 .lane[data-lane="accepted"] .lane-head { color:var(--ok); background:var(--ok-bg); }
 .lane[data-lane="not_accepted"] .lane-head { color:var(--warn); background:var(--warn-bg); }
 .lane-end { text-align:center; color:var(--muted); font-size:12.5px; padding:8px; border:1px dashed var(--border); border-radius:8px; }

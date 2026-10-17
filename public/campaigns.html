@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Campagnes</title>
-<link rel="stylesheet" href="style.css?v=12">
+<link rel="stylesheet" href="style.css?v=13">
 </head>
 <body>
 <div class="wrap wide">
@@ -114,7 +114,7 @@
   </div>
 </aside>
 
-<script src="app.js?v=12"></script>
+<script src="app.js?v=13"></script>
 <script>
 renderNav("campaigns.html");
 
@@ -169,13 +169,13 @@ function bodyPlaceholder(chan) {
 }
 
 // Résumé d'une étape repliée : objet et début du message (sans la formule d'appel).
-function stepSummary(chan, subject, body, firstEmail) {
+function stepSummary(chan, subject, body, firstEmail, subjectB) {
   const line = (body || "").split("\n").map(l => l.trim()).filter(l => l && !/^(hello|bonjour|hi|salut|hey)\b/i.test(l))[0] || "";
   const main = chan === "email" ? (subject || (firstEmail ? "Sans objet" : "Re: (même fil)"))
     : chan === "invite" ? (line ? "Invitation avec note" : "Invitation, sans note")
     : line || "Message vide";
   const sub = chan === "message" ? "" : line;
-  return `<span class="sum-main">${esc(main)}</span>${sub ? `<span class="sum-sub">${esc(sub)}</span>` : ""}`;
+  return `<span class="sum-main">${esc(main)}</span>${subjectB ? `<span class="ab-tag" title="A/B test : « ${esc(subject)} » / « ${esc(subjectB)} »">A/B</span>` : ""}${sub ? `<span class="sum-sub">${esc(sub)}</span>` : ""}`;
 }
 
 // n = numéro (1..), firstEmail = cette étape est le premier email de la séquence
@@ -197,7 +197,7 @@ function stepHtml(n, s, { firstEmail, abTest, single, types, deadline, open }) {
     <div class="step-box">
       <div class="step-sum" onclick="toggleStep(this)" title="${open ? "Replier" : "Modifier"}">
         <span class="step-ic">${t.icon}</span><span class="step-n">${n}</span>
-        <span class="sum">${stepSummary(chan, s.subject, s.body, firstEmail)}</span>
+        <span class="sum">${stepSummary(chan, s.subject, s.body, firstEmail, abTest && s.subject_b)}</span>
         <span class="chev">›</span>
       </div>
       <div class="step-card">
@@ -206,7 +206,7 @@ function stepHtml(n, s, { firstEmail, abTest, single, types, deadline, open }) {
             ${types.map(k => `<option value="${k}" ${k === chan ? "selected" : ""}>${STEP_TYPES[k].label}</option>`).join("")}
           </select>` : `<span class="step-kind-label">${t.label}</span>`}
           ${isEmail ? `<input class="subject" placeholder="${firstEmail ? "Objet" : "Objet (vide = même fil, Re:)"}" value="${esc(s.subject)}">` : `<span class="spacer"></span>`}
-          ${isEmail && abTest && !s.subject_b ? `<button class="icon-btn ab" title="Tester un second objet (A/B 50/50)" onclick="addSubjectB(this)">A/B</button>` : ""}
+          ${isEmail && abTest && !s.subject_b ? `<button class="link-btn ab" title="La moitié des contacts reçoit l'objet A, l'autre moitié l'objet B" onclick="addSubjectB(this)">+ Objet B (A/B test)</button>` : ""}
           <button class="icon-btn" title="Aperçu" onclick="previewStep(this)">👁</button>
           <button class="icon-btn danger" title="Supprimer l’étape" onclick="removeStep(this)" ${single ? "disabled" : ""}>✕</button>
         </div>
@@ -232,8 +232,8 @@ function toggleStep(el) {
 // Le résumé suit la saisie
 $("#steps").addEventListener("input", (e) => {
   const div = e.target.closest(".step");
-  if (!div || !e.target.matches(".subject, .body")) return;
-  $(".sum", div).innerHTML = stepSummary(div.dataset.chan, $(".subject", div)?.value, $(".body", div).value, div.dataset.first === "1");
+  if (!div || !e.target.matches(".subject, .subjectB, .body")) return;
+  $(".sum", div).innerHTML = stepSummary(div.dataset.chan, $(".subject", div)?.value, $(".body", div).value, div.dataset.first === "1", $(".subjectB", div)?.value);
 });
 
 // Le corps grandit tout seul avec le texte (pas de redimensionnement manuel) ; vide, il tient sur deux lignes.
