@@ -4,18 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Campagnes</title>
-<link rel="stylesheet" href="style.css?v=6">
+<link rel="stylesheet" href="style.css?v=7">
 </head>
 <body>
 <div class="wrap wide">
-  <div class="topbar">
-    <h1>Campagnes</h1>
-    <select id="campSelect" style="width:240px" onchange="if(this.value) selectCampaign(+this.value)">
-      <option value="">— Sélectionner —</option>
-    </select>
-    <span id="statusZone" class="inline"></span>
+  <div class="camp-head">
+    <span class="menu">
+      <button class="camp-title" onclick="toggleMenu(event)" title="Changer de campagne"><span id="campTitle">Nouvelle campagne</span><span class="chev">▾</span></button>
+      <span class="menu-list camp-list" id="campList" hidden></span>
+    </span>
+    <span id="campPill"></span>
     <span class="spacer"></span>
-    <button class="ghost" onclick="newCampaign()">+ Nouvelle campagne</button>
+    <span id="statusZone" class="inline"></span>
   </div>
 
   <div id="campTabs" hidden class="camp-tabs">
@@ -115,7 +115,7 @@
   </div>
 </aside>
 
-<script src="app.js?v=6"></script>
+<script src="app.js?v=7"></script>
 <script>
 renderNav("campaigns.html");
 
@@ -125,14 +125,14 @@ let contactRows = [];
 
 async function loadList() {
   const campaigns = await api("/api/campaigns");
-  const sel = $("#campSelect");
-  const cur = sel.value;
   // Les campagnes archivées sont masquées du sélecteur (on les retrouve depuis le tableau de bord),
   // sauf celle qui est ouverte.
-  sel.innerHTML = `<option value="">— Sélectionner —</option>` +
+  const current = campaigns.find(c => c.id === selectedId);
+  $("#campTitle").textContent = current ? current.name : "Nouvelle campagne";
+  $("#campList").innerHTML =
     campaigns.filter(c => c.status !== "archived" || c.id === selectedId)
-      .map(c => `<option value="${c.id}" ${c.id === selectedId ? "selected" : ""}>${esc(c.name)} (${STATUS_LABELS[c.status] || c.status})</option>`).join("");
-  if (!sel.value && cur) sel.value = cur;
+      .map(c => `<button type="button" class="${c.id === selectedId ? "cur" : ""}" onclick="$('#campList').hidden = true; selectCampaign(${c.id})"><i class="dot-st ${esc(c.status)}"></i>${esc(c.name)}</button>`).join("") +
+    `<button type="button" class="new" onclick="$('#campList').hidden = true; newCampaign()">+ Nouvelle campagne</button>`;
   return campaigns;
 }
 
@@ -368,6 +368,8 @@ function newCampaign() {
   location.hash = "new";
   $("#saveBtn").textContent = "Créer la campagne";
   $("#statusZone").innerHTML = "";
+  $("#campPill").innerHTML = "";
+  $("#campName").hidden = false;
   $("#campName").value = "";
   $("#campMsg").textContent = "";
   renderSenders(null);
@@ -441,21 +443,37 @@ async function loadStats() {
 function renderStatusZone(c) {
   const main = c.status === "archived"
     ? `<button class="ghost" onclick="setArchived(${c.id}, false)">Désarchiver</button>`
-    : `<button class="ghost" onclick="toggleStatus(${c.id}, '${c.status}')">${c.status === "active" ? "⏸ Mettre en pause" : "▶ Lancer les envois"}</button>`;
-  $("#statusZone").innerHTML = `${pill(c.status)} ${main}
+    : c.status === "active"
+      ? `<button class="ghost" onclick="toggleStatus(${c.id}, 'active')">Mettre en pause</button>`
+      : `<button onclick="toggleStatus(${c.id}, '${c.status}')">Lancer les envois</button>`;
+  $("#campPill").innerHTML = pill(c.status);
+  $("#statusZone").innerHTML = `${main}
     <span class="menu">
       <button class="icon-btn" title="Plus d’actions" onclick="toggleMenu(event)">⋯</button>
       <span class="menu-list" hidden>
-        ${c.status === "archived" ? "" : `<button type="button" onclick="setArchived(${c.id}, true)">🗄 Archiver</button>`}
-        <button type="button" class="danger" onclick="deleteCampaign()">🗑 Supprimer</button>
+        <button type="button" onclick="renameCampaign()">Renommer</button>
+        ${c.status === "archived" ? "" : `<button type="button" onclick="setArchived(${c.id}, true)">Archiver</button>`}
+        <button type="button" class="danger" onclick="deleteCampaign()">Supprimer</button>
       </span>
     </span>`;
+}
+
+// Le nom se modifie dans l'onglet Séquence et s'enregistre avec la séquence.
+function renameCampaign() {
+  $$(".menu-list").forEach(m => m.hidden = true);
+  showTab("seq");
+  const input = $("#campName");
+  input.hidden = false;
+  input.focus();
+  input.select();
 }
 
 function toggleMenu(e) {
   e.stopPropagation();
   const list = e.currentTarget.nextElementSibling;
-  list.hidden = !list.hidden;
+  const open = list.hidden;
+  $$(".menu-list").forEach(m => m.hidden = true); // un seul menu ouvert à la fois
+  list.hidden = !open;
 }
 document.addEventListener("click", e => {
   if (!e.target.closest(".menu")) $$(".menu-list").forEach(m => m.hidden = true);
@@ -467,6 +485,7 @@ async function selectCampaign(id, tab = "seq") {
   $("#saveBtn").textContent = "Enregistrer";
   renderStatusZone(c);
   $("#campName").value = c.name;
+  $("#campName").hidden = true; // le nom est dans l'en-tête ; « Renommer » le rend modifiable ici
   $("#campMsg").textContent = "";
   renderSenders(c.account_ids);
   refreshPreviewAccounts();

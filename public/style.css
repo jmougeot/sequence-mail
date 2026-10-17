@@ -279,3 +279,18 @@ body.inbox-page { height:100vh; display:flex; flex-direction:column; overflow:hi
   .ib-thread { padding:14px; }
   .composer { padding:10px 14px 12px; }
 }
+
+/* En-tête de campagne : le nom (qui ouvre la liste des campagnes), le statut, une action */
+.camp-head { display:flex; align-items:center; gap:10px; margin-bottom:6px; min-height:40px; }
+.camp-title { display:inline-flex; align-items:center; gap:8px; background:transparent; color:var(--text); font-size:20px; font-weight:700; padding:6px 10px; margin-left:-10px; border-radius:8px; max-width:min(640px, 60vw); }
+.camp-title:hover { background:var(--hover); filter:none; }
+.camp-title #campTitle { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.camp-title .chev { font-size:12px; color:var(--muted); }
+.camp-list { left:0; right:auto; min-width:300px; max-height:60vh; overflow-y:auto; }
+.camp-list button { display:flex; align-items:center; gap:8px; }
+.camp-list button.cur { font-weight:600; background:var(--accent-bg); }
+.camp-list button.new { color:var(--accent); border-top:1px solid var(--border); border-radius:0 0 6px 6px; margin-top:4px; padding-top:10px; }
+.dot-st { width:7px; height:7px; border-radius:50%; background:var(--border); flex:0 0 auto; }
+.dot-st.active { background:var(--ok); }
+.dot-st.paused { background:var(--warn); }
+@media (max-width: 640px) { .camp-head { flex-wrap:wrap; } .camp-title { max-width:100%; font-size:18px; } }
