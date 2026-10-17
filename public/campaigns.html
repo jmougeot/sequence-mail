@@ -4,25 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Campagnes</title>
-<link rel="stylesheet" href="style.css?v=7">
+<link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
 <div class="wrap wide">
+  <!-- Une seule barre : campagne (pastille de statut + nom, qui ouvre la liste), onglets, action -->
   <div class="camp-head">
     <span class="menu">
-      <button class="camp-title" onclick="toggleMenu(event)" title="Changer de campagne"><span id="campTitle">Nouvelle campagne</span><span class="chev">▾</span></button>
+      <button class="camp-title" onclick="toggleMenu(event)" title="Changer de campagne"><i id="campDot" class="dot-st"></i><span id="campTitle">Nouvelle campagne</span><span class="chev">▾</span></button>
       <span class="menu-list camp-list" id="campList" hidden></span>
     </span>
-    <span id="campPill"></span>
+    <div id="campTabs" hidden class="camp-tabs">
+      <button class="tab-btn active" id="tab-seq"      onclick="showTab('seq')">Séquence</button>
+      <button class="tab-btn"        id="tab-contacts" onclick="showTab('contacts')">Contacts</button>
+      <button class="tab-btn"        id="tab-stats"    onclick="showTab('stats')">Stats</button>
+      <button class="tab-btn"        id="tab-import"   onclick="showTab('import')">Import</button>
+    </div>
     <span class="spacer"></span>
     <span id="statusZone" class="inline"></span>
-  </div>
-
-  <div id="campTabs" hidden class="camp-tabs">
-    <button class="tab-btn active" id="tab-seq"      onclick="showTab('seq')">Séquence</button>
-    <button class="tab-btn"        id="tab-contacts" onclick="showTab('contacts')">Contacts</button>
-    <button class="tab-btn"        id="tab-stats"    onclick="showTab('stats')">Stats</button>
-    <button class="tab-btn"        id="tab-import"   onclick="showTab('import')">Import</button>
   </div>
 
   <!-- Séquence -->
@@ -115,7 +114,7 @@
   </div>
 </aside>
 
-<script src="app.js?v=7"></script>
+<script src="app.js?v=8"></script>
 <script>
 renderNav("campaigns.html");
 
@@ -368,7 +367,8 @@ function newCampaign() {
   location.hash = "new";
   $("#saveBtn").textContent = "Créer la campagne";
   $("#statusZone").innerHTML = "";
-  $("#campPill").innerHTML = "";
+  $("#campDot").className = "dot-st";
+  $("#campDot").title = "";
   $("#campName").hidden = false;
   $("#campName").value = "";
   $("#campMsg").textContent = "";
@@ -446,7 +446,8 @@ function renderStatusZone(c) {
     : c.status === "active"
       ? `<button class="ghost" onclick="toggleStatus(${c.id}, 'active')">Mettre en pause</button>`
       : `<button onclick="toggleStatus(${c.id}, '${c.status}')">Lancer les envois</button>`;
-  $("#campPill").innerHTML = pill(c.status);
+  $("#campDot").className = `dot-st ${c.status}`;
+  $("#campDot").title = STATUS_LABELS[c.status] || c.status;
   $("#statusZone").innerHTML = `${main}
     <span class="menu">
       <button class="icon-btn" title="Plus d’actions" onclick="toggleMenu(event)">⋯</button>
@@ -780,7 +781,7 @@ function renderContacts() {
 
 async function loadContacts() {
   contactRows = await api(`/api/campaigns/${selectedId}/contacts`);
-  $("#tab-contacts").textContent = contactRows.length ? `Contacts (${contactRows.length})` : "Contacts";
+  $("#tab-contacts").innerHTML = contactRows.length ? `Contacts <span class="tab-n">${contactRows.length}</span>` : "Contacts";
   renderContacts();
 }
 
