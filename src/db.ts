@@ -301,6 +301,10 @@ addColumnIfMissing("li_accounts", "session_updated_at", "session_updated_at INTE
 addColumnIfMissing("li_accounts", "last_inbox_at", "last_inbox_at INTEGER");
 // Fil de messagerie LinkedIn où le contact a répondu (lien dans le tableau de bord).
 addColumnIfMissing("campaign_contacts", "li_thread_url", "li_thread_url TEXT");
+// Page Réponses : dernier message LinkedIn du contact (aperçu de la messagerie), réponse ouverte, réponse traitée.
+addColumnIfMissing("campaign_contacts", "li_reply_text", "li_reply_text TEXT");
+addColumnIfMissing("campaign_contacts", "inbox_seen_at", "inbox_seen_at INTEGER");
+addColumnIfMissing("campaign_contacts", "inbox_done_at", "inbox_done_at INTEGER");
 
 // v5 : un contact peut n'avoir que LinkedIn (candidats sans email connu).
 // SQLite ne sait pas retirer un NOT NULL : on reconstruit la table (procédure

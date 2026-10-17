@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Campagnes</title>
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
 <div class="wrap wide">
@@ -115,7 +115,7 @@
   </div>
 </aside>
 
-<script src="app.js?v=3"></script>
+<script src="app.js?v=4"></script>
 <script>
 renderNav("campaigns.html");
 
@@ -761,7 +761,7 @@ function renderContacts() {
           : (hasLiSteps ? ` <span class="err" title="Aucune URL LinkedIn — les étapes LinkedIn seront sautées">⚠️</span>` : "")}</div>
         <div class="muted">${esc([r.company, r.email || "pas d’email"].filter(Boolean).join(" · "))}</div>
       </td>
-      <td>${pill(r.status)}${r.li_thread_url ? ` <a href="${esc(r.li_thread_url)}" target="_blank" rel="noopener" title="Réponse sur LinkedIn — ouvrir la conversation" onclick="event.stopPropagation()">💬</a>` : ""}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
+      <td>${pill(r.status)}${r.status === "replied" || r.status === "opted_out" ? ` <a href="replies.html#cc=${r.cc_id}" title="Lire la réponse et y répondre" onclick="event.stopPropagation()">💬</a>` : r.li_thread_url ? ` <a href="${esc(r.li_thread_url)}" target="_blank" rel="noopener" title="Conversation LinkedIn" onclick="event.stopPropagation()">💬</a>` : ""}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
       <td>${r.current_step || "—"}</td>
       <td>${r.visit_count ? `<span title="${new Date(r.last_visit_at).toLocaleString("fr-FR")} — ${r.visit_count} visite(s)">🌐 ${r.visit_count}</span>` : "—"}</td>
       <td>${r.variant || "—"}</td>

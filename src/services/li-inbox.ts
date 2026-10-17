@@ -160,7 +160,11 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
       optedOut,
       optedOut ? "Pas intéressé / désinscrit 🚫 (LinkedIn)" : "A répondu ✅ (LinkedIn)"
     );
-    if (conv.thread_url) db.prepare("UPDATE campaign_contacts SET li_thread_url = ? WHERE id = ?").run(conv.thread_url, match.cc_id);
+    db.prepare("UPDATE campaign_contacts SET li_thread_url = COALESCE(?, li_thread_url), li_reply_text = ? WHERE id = ?").run(
+      conv.thread_url ?? null,
+      conv.snippet?.trim().slice(0, 2000) || null,
+      match.cc_id
+    );
     report.replied.push({ cc_id: match.cc_id, name: conv.name ?? "?", opted_out: optedOut });
     console.log(`[linkedin] ${conv.name} a répondu sur LinkedIn (${account.name})${optedOut ? " — désinscrit" : ""} — séquence arrêtée`);
   }
@@ -193,6 +197,7 @@ export function processThreadReply(account: LiAccount, actionId: number, text: s
     optedOut,
     optedOut ? "Pas intéressé / désinscrit 🚫 (LinkedIn)" : "A répondu ✅ (LinkedIn)"
   );
+  if (text.trim()) db.prepare("UPDATE campaign_contacts SET li_reply_text = ? WHERE id = ?").run(text.trim().slice(0, 2000), row.cc_id);
   // terminate a annulé l'action en cours : on note pourquoi elle n'est pas partie
   db.prepare("UPDATE li_actions SET error = ? WHERE id = ?").run("le contact a écrit dans la conversation — message non envoyé", actionId);
   const name = [row.first_name, row.last_name].filter(Boolean).join(" ") || `contact #${row.contact_id}`;

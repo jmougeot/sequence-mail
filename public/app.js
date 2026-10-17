@@ -24,16 +24,33 @@ function renderNav(active) {
   const links = [
     ["index.html", "Tableau de bord"],
     ["campaigns.html", "Campagnes"],
+    ["replies.html", "Réponses"],
     ["settings.html", "Paramètres"],
   ];
   document.body.insertAdjacentHTML(
     "afterbegin",
     `<nav><span class="brand">Sequence Mail</span>` +
       links
-        .map(([href, label]) => `<a href="${href}" class="${href === active ? "active" : ""}">${label}</a>`)
+        .map(([href, label]) => `<a href="${href}" class="${href === active ? "active" : ""}">${label}${href === "replies.html" ? ` <span class="nav-badge" id="navReplies" hidden></span>` : ""}</a>`)
         .join("") +
       `</nav>`
   );
+  refreshNavBadge();
+}
+
+/** Pastille du menu Réponses : réponses à traiter (accentuée s'il y en a de non ouvertes). */
+async function refreshNavBadge() {
+  const badge = document.getElementById("navReplies");
+  if (!badge) return;
+  try {
+    const { todo, unseen } = await api("/api/inbox/counts");
+    badge.hidden = !todo;
+    badge.textContent = todo;
+    badge.classList.toggle("unseen", unseen > 0);
+    badge.title = unseen ? `${todo} à traiter, dont ${unseen} non lue(s)` : `${todo} à traiter`;
+  } catch {
+    badge.hidden = true;
+  }
 }
 
 const STATUS_LABELS = {

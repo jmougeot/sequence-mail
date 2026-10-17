@@ -2,6 +2,8 @@
  * Boîte de réception unifiée et outils de pilotage (façon lemlist), appelés par
  * le serveur MCP (Claude) comme par le tableau de bord :
  *   - /api/inbox : réponses reçues, toutes campagnes confondues (texte lu dans Gmail sur demande) ;
+ *   - /api/inbox/counts et /api/campaign-contacts/:ccId/inbox : réponses à traiter, ouvertes, traitées
+ *     (page Réponses du tableau de bord) ;
  *   - /api/campaign-contacts/:ccId/conversation : fil complet d'un contact
  *     (emails lus dans Gmail, étapes envoyées, actions LinkedIn) ;
  *   - /api/campaign-contacts/:ccId/reply : répondre à la main dans le fil email ;
@@ -166,13 +168,17 @@ export function registerInboxRoutes(app: express.Express): void {
         return res.status(400).json({ error: "campaign_id, since et limit doivent être des entiers" });
       }
       const includeText = req.query.include_text === "1" || req.query.include_text === "true";
+      // done=0 : réponses à traiter ; done=1 : déjà traitées ; absent : toutes
+      const done = req.query.done === "0" ? 0 : req.query.done === "1" ? 1 : null;
 
       const rows = db
         .prepare(
           `SELECT cc.id AS cc_id, c.id AS contact_id, cp.id AS campaign_id, cp.name AS campaign_name, cp.owner_ref,
                   c.email, c.first_name, c.last_name, c.company, c.linkedin,
+                  json_extract(${MERGED_EXTRA}, '$.poste') AS poste,
                   cc.status, cc.replied_at, cc.current_step,
-                  a.email AS sender, li.name AS li_sender, cc.li_thread_url,
+                  a.email AS sender, li.name AS li_sender, cc.li_thread_url, cc.li_reply_text,
+                  cc.inbox_seen_at, cc.inbox_done_at,
                   cc.thread_id, cc.account_id
            FROM campaign_contacts cc
            JOIN contacts c ON c.id = cc.contact_id
@@ -182,6 +188,7 @@ export function registerInboxRoutes(app: express.Express): void {
            WHERE cc.status IN (SELECT value FROM json_each(@statuses))
              AND (@campaign IS NULL OR cc.campaign_id = @campaign)
              AND (@since IS NULL OR cc.replied_at >= @since)
+             AND (@done IS NULL OR (cc.inbox_done_at IS NOT NULL) = @done)
            ORDER BY cc.replied_at DESC, cc.id DESC
            LIMIT @limit`
         )
@@ -189,13 +196,28 @@ export function registerInboxRoutes(app: express.Express): void {
           statuses: JSON.stringify(statuses),
           campaign: campaignId ?? null,
           since: since ?? null,
+          done,
           limit: Math.min(Math.max(limit, 1), 200),
-        }) as Array<Record<string, unknown> & { cc_id: number; status: string; thread_id: string | null; account_id: number | null; li_thread_url: string | null }>;
+        }) as Array<
+          Record<string, unknown> & {
+            cc_id: number;
+            status: string;
+            thread_id: string | null;
+            account_id: number | null;
+            li_thread_url: string | null;
+            li_reply_text: string | null;
+            inbox_seen_at: number | null;
+            inbox_done_at: number | null;
+          }
+        >;
 
       // Canal de la réponse : un fil LinkedIn connu prime, sinon le fil Gmail
-      const items = rows.map(({ thread_id, account_id, ...r }) => {
+      const items = rows.map(({ thread_id, account_id, li_reply_text, inbox_seen_at, inbox_done_at, ...r }) => {
         const channel: "email" | "linkedin" = r.li_thread_url ? "linkedin" : thread_id ? "email" : "linkedin";
-        return { item: { ...r, channel } as Record<string, unknown>, thread_id, account_id, channel };
+        const item: Record<string, unknown> = { ...r, channel, seen: inbox_seen_at != null, done: inbox_done_at != null };
+        // réponse LinkedIn : son texte vient de la messagerie, déjà en base
+        if (includeText && channel === "linkedin") item.reply_text = li_reply_text;
+        return { item, thread_id, account_id, channel };
       });
 
       if (includeText) {
@@ -239,6 +261,39 @@ export function registerInboxRoutes(app: express.Express): void {
     })
   );
 
+  // --- Compteurs de la page Réponses (pastille du menu) : réponses et refus à traiter, dont non ouverts ---
+  app.get("/api/inbox/counts", (_req, res) => {
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) AS todo, COALESCE(SUM(inbox_seen_at IS NULL), 0) AS unseen
+         FROM campaign_contacts WHERE status IN ('replied', 'opted_out') AND inbox_done_at IS NULL`
+      )
+      .get() as { todo: number; unseen: number };
+    res.json(row);
+  });
+
+  // --- Suivi d'une réponse : ouverte (seen) et traitée (done), réversibles ---
+  app.post("/api/campaign-contacts/:ccId/inbox", (req, res) => {
+    const { seen, done } = (req.body ?? {}) as { seen?: unknown; done?: unknown };
+    if (seen === undefined && done === undefined) return res.status(400).json({ error: "seen ou done est requis" });
+    const now = Date.now();
+    const r = db
+      .prepare(
+        `UPDATE campaign_contacts SET
+           inbox_seen_at = CASE WHEN @seen IS NULL THEN inbox_seen_at WHEN @seen = 1 THEN COALESCE(inbox_seen_at, @now) ELSE NULL END,
+           inbox_done_at = CASE WHEN @done IS NULL THEN inbox_done_at WHEN @done = 1 THEN COALESCE(inbox_done_at, @now) ELSE NULL END
+         WHERE id = @id`
+      )
+      .run({
+        id: req.params.ccId,
+        now,
+        seen: seen === undefined ? null : seen ? 1 : 0,
+        done: done === undefined ? null : done ? 1 : 0,
+      });
+    if (!r.changes) return res.status(404).json({ error: "Contact de campagne introuvable" });
+    res.json({ ok: true });
+  });
+
   // --- Fil complet d'un contact : emails (lus dans Gmail), étapes envoyées, actions LinkedIn ---
   app.get(
     "/api/campaign-contacts/:ccId/conversation",
@@ -246,11 +301,13 @@ export function registerInboxRoutes(app: express.Express): void {
       const cc = db
         .prepare(
           `SELECT cc.id AS cc_id, cc.status, cc.current_step, cc.replied_at, cc.error,
-                  cc.thread_id, cc.account_id, cc.li_thread_url,
+                  cc.thread_id, cc.account_id, cc.li_thread_url, cc.li_reply_text, cc.inbox_seen_at, cc.inbox_done_at,
                   cp.id AS campaign_id, cp.name AS campaign_name, cp.owner_ref,
                   c.id AS contact_id, c.email, c.first_name, c.last_name, c.company, c.linkedin,
-                  a.email AS sender
+                  ${MERGED_EXTRA} AS extra,
+                  a.email AS sender, li.name AS li_sender
            FROM campaign_contacts cc
+           LEFT JOIN li_accounts li ON li.id = cc.li_account_id
            JOIN campaigns cp ON cp.id = cc.campaign_id
            JOIN contacts c ON c.id = cc.contact_id
            LEFT JOIN accounts a ON a.id = cc.account_id
@@ -266,6 +323,9 @@ export function registerInboxRoutes(app: express.Express): void {
             thread_id: string | null;
             account_id: number | null;
             li_thread_url: string | null;
+            li_reply_text: string | null;
+            inbox_seen_at: number | null;
+            inbox_done_at: number | null;
             campaign_id: number;
             campaign_name: string;
             owner_ref: string | null;
@@ -275,7 +335,9 @@ export function registerInboxRoutes(app: express.Express): void {
             last_name: string | null;
             company: string | null;
             linkedin: string | null;
+            extra: string | null;
             sender: string | null;
+            li_sender: string | null;
           }
         | undefined;
       if (!cc) return res.status(404).json({ error: "Contact de campagne introuvable" });
@@ -338,13 +400,20 @@ export function registerInboxRoutes(app: express.Express): void {
           last_name: cc.last_name,
           company: cc.company,
           linkedin: cc.linkedin,
+          extra: parseJsonObject(cc.extra),
         },
         sender: cc.sender,
+        li_sender: cc.li_sender,
+        // le fil dans Gmail, ouvert sur le compte qui l'a envoyé
+        gmail_url: cc.thread_id && cc.sender ? `https://mail.google.com/mail/?authuser=${encodeURIComponent(cc.sender)}#all/${cc.thread_id}` : null,
         email_thread: emailThread,
         ...(emailThreadError ? { email_thread_error: emailThreadError } : {}),
         steps_sent: stepsSent,
         linkedin,
         li_thread_url: cc.li_thread_url,
+        li_reply_text: cc.li_reply_text,
+        seen: cc.inbox_seen_at != null,
+        done: cc.inbox_done_at != null,
       });
     })
   );
@@ -425,7 +494,11 @@ export function registerInboxRoutes(app: express.Express): void {
       } catch (err) {
         return res.status(502).json({ error: googleErrorMessage(err, account.email) });
       }
-      db.prepare("UPDATE campaign_contacts SET last_gmail_message_id = ? WHERE id = ?").run(result.rfc822MessageId, cc.cc_id);
+      // répondre traite la réponse : elle quitte « À traiter » (réversible depuis la page Réponses)
+      db.prepare(
+        `UPDATE campaign_contacts SET last_gmail_message_id = ?,
+           inbox_seen_at = COALESCE(inbox_seen_at, ?), inbox_done_at = COALESCE(inbox_done_at, ?) WHERE id = ?`
+      ).run(result.rfc822MessageId, Date.now(), Date.now(), cc.cc_id);
       console.log(`[réponse manuelle] ${cc.email} via ${account.email}`);
       res.json({ ...out, sent: true, gmail_message_id: result.gmailMessageId, thread_id: result.threadId });
     })
