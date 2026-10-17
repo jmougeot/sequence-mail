@@ -73,7 +73,7 @@ textarea { min-height:90px; }
 .menu-list button.danger { color:var(--bad); }
 
 /* Éditeur de séquence : pas de cadre englobant, des rubriques séparées */
-.editor { display:flex; flex-direction:column; gap:6px; }
+.editor { display:flex; flex-direction:column; gap:4px; }
 .camp-name-input { font-size:16px; font-weight:600; padding:10px 12px; margin:0 0 6px; }
 .senders { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
 label.chip { display:inline-flex; align-items:center; cursor:pointer; user-select:none; }
@@ -82,14 +82,24 @@ label.chip { display:inline-flex; align-items:center; cursor:pointer; user-selec
 .editor-foot { display:flex; align-items:center; gap:12px; padding:10px 0 24px; }
 
 /* Séquence : timeline d'étapes (email / LinkedIn) reliées par des délais */
-.step-delay { display:flex; align-items:center; justify-content:center; gap:6px; padding:3px 0; color:var(--muted); font-size:12.5px; position:relative; }
-.step-delay::before { content:""; position:absolute; left:50%; top:0; bottom:0; width:2px; background:var(--border); transform:translateX(-50%); z-index:0; }
+.step-delay { display:flex; align-items:center; gap:4px; padding:2px 0 2px 38px; color:var(--muted); font-size:12px; position:relative; }
+.step-delay::before { content:""; position:absolute; left:25px; top:0; bottom:0; width:2px; background:var(--border); z-index:0; }
 .step-delay > * { position:relative; z-index:1; background:var(--bg); padding:0 4px; }
-.step-delay input { width:46px; margin:0; text-align:center; padding:2px 4px; }
-/* Étape sans cadre : en-tête et champs posés sur le fond, champs en blanc pour le contraste */
-.step-card { padding:0; }
-.step-card input, .step-card textarea { background:var(--card); }
-.step-card textarea:focus, .step-card input:focus { background:var(--card); }
+.step-delay input { width:40px; margin:0; text-align:center; padding:1px 2px; font-size:12px; background:var(--card); }
+/* Étape repliée : une ligne (type, numéro, objet ou début du message) ; un clic la déplie pour l'éditer */
+.step-box { background:var(--card); border:1px solid var(--border); border-radius:8px; }
+.step.open .step-box { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-bg); }
+.step-sum { display:flex; align-items:center; gap:10px; padding:6px 12px; min-height:40px; cursor:pointer; border-radius:8px; }
+.step-sum:hover { background:var(--hover); }
+.step.open .step-sum { border-radius:8px 8px 0 0; }
+.step-n { font-size:12px; font-weight:600; color:var(--muted); min-width:10px; }
+.sum { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13.5px; }
+.sum-main { font-weight:500; }
+.sum-sub { color:var(--muted); margin-left:10px; }
+.step-sum .chev { color:var(--muted); font-size:16px; transition:transform .15s; }
+.step.open .step-sum .chev { transform:rotate(90deg); }
+.step-card { display:none; padding:2px 12px 12px; }
+.step.open .step-card { display:block; }
 /* Corps : hauteur auto (grandit avec le texte), pas de poignée de redimensionnement */
 .step-card .body { resize:none; overflow:hidden; min-height:56px; line-height:1.5; padding:8px 10px; margin:0; }
 .step-head { display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap; }
@@ -97,7 +107,7 @@ label.chip { display:inline-flex; align-items:center; cursor:pointer; user-selec
 .step-card .subjectB { margin:0 0 6px; padding:6px 8px; }
 .icon-btn.ab { font-size:11px; font-weight:600; }
 .step-head b { font-size:14px; white-space:nowrap; }
-.step-ic { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; background:var(--card); font-size:15px; flex:0 0 auto; }
+.step-ic { display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; background:var(--field); font-size:14px; flex:0 0 auto; }
 .step[data-chan="invite"] .step-ic, .step[data-chan="message"] .step-ic { background:var(--accent-bg); }
 /* Type de l'étape : un sélecteur discret dans l'en-tête de la carte */
 .step-kind { width:auto; margin:0; padding:4px 26px 4px 8px; font-weight:500; background:transparent; border-color:transparent; cursor:pointer;

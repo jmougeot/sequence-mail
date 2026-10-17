@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Campagnes</title>
-<link rel="stylesheet" href="style.css?v=11">
+<link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
 <div class="wrap wide">
@@ -114,7 +114,7 @@
   </div>
 </aside>
 
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 <script>
 renderNav("campaigns.html");
 
@@ -168,38 +168,73 @@ function bodyPlaceholder(chan) {
     : "Bonjour {{first_name}},\n...";
 }
 
+// Résumé d'une étape repliée : objet et début du message (sans la formule d'appel).
+function stepSummary(chan, subject, body, firstEmail) {
+  const line = (body || "").split("\n").map(l => l.trim()).filter(l => l && !/^(hello|bonjour|hi|salut|hey)\b/i.test(l))[0] || "";
+  const main = chan === "email" ? (subject || (firstEmail ? "Sans objet" : "Re: (même fil)"))
+    : chan === "invite" ? (line ? "Invitation avec note" : "Invitation, sans note")
+    : line || "Message vide";
+  const sub = chan === "message" ? "" : line;
+  return `<span class="sum-main">${esc(main)}</span>${sub ? `<span class="sum-sub">${esc(sub)}</span>` : ""}`;
+}
+
 // n = numéro (1..), firstEmail = cette étape est le premier email de la séquence
 // ou d'un chemin (objet obligatoire), abTest = premier email de la séquence (A/B test
 // possible), single = seule étape (non supprimable), types = types proposés,
-// deadline = première étape « non acceptée » : son délai court depuis l'invitation.
-function stepHtml(n, s, { firstEmail, abTest, single, types, deadline }) {
+// deadline = première étape « non acceptée » : son délai court depuis l'invitation,
+// open = étape dépliée (une seule à la fois).
+function stepHtml(n, s, { firstEmail, abTest, single, types, deadline, open }) {
   const chan = stepChannel(s);
   const t = STEP_TYPES[chan];
   const isEmail = chan === "email";
   const branch = s.branch || "";
-  return `<div class="step" data-chan="${chan}" data-branch="${branch}">
+  return `<div class="step ${open ? "open" : ""}" data-chan="${chan}" data-branch="${branch}" data-first="${firstEmail ? 1 : ""}">
     ${n > 1 ? `<div class="step-delay">
-      <span>${deadline ? "Sans acceptation après" : "Attendre"}</span>
+      <span>${deadline ? "Sans acceptation après" : "+"}</span>
       <input class="wait" type="number" value="${s.wait_days || 3}" min="1">
-      <span>jour(s)${deadline ? " d’invitation" : ""}</span>
+      <span>${deadline ? "j d’invitation" : "j"}</span>
     </div>` : ""}
-    <div class="step-card">
-      <div class="step-head">
-        <span class="step-ic">${t.icon}</span>
-        <b>Étape ${n}</b>
-        ${types.length > 1 ? `<select class="step-kind" title="Type de l’étape" onchange="changeStepType(this)">
-          ${types.map(k => `<option value="${k}" ${k === chan ? "selected" : ""}>${STEP_TYPES[k].label}</option>`).join("")}
-        </select>` : `<span class="step-kind-label">${t.label}</span>`}
-        ${isEmail ? `<input class="subject" placeholder="${firstEmail ? "Objet" : "Objet (vide = même fil, Re:)"}" value="${esc(s.subject)}">` : `<span class="spacer"></span>`}
-        ${isEmail && abTest && !s.subject_b ? `<button class="icon-btn ab" title="Tester un second objet (A/B 50/50)" onclick="addSubjectB(this)">A/B</button>` : ""}
-        <button class="icon-btn" title="Aperçu" onclick="previewStep(this)">👁</button>
-        <button class="icon-btn danger" title="Supprimer l’étape" onclick="removeStep(this)" ${single ? "disabled" : ""}>✕</button>
+    <div class="step-box">
+      <div class="step-sum" onclick="toggleStep(this)" title="${open ? "Replier" : "Modifier"}">
+        <span class="step-ic">${t.icon}</span><span class="step-n">${n}</span>
+        <span class="sum">${stepSummary(chan, s.subject, s.body, firstEmail)}</span>
+        <span class="chev">›</span>
       </div>
-      ${isEmail && abTest && s.subject_b ? `<input class="subjectB" placeholder="Objet B (A/B test 50/50 ; vide = pas de test)" value="${esc(s.subject_b)}">` : ""}
-      <textarea class="body" rows="1" placeholder="${esc(bodyPlaceholder(chan))}">${esc(s.body)}</textarea>
+      <div class="step-card">
+        <div class="step-head">
+          ${types.length > 1 ? `<select class="step-kind" title="Type de l’étape" onchange="changeStepType(this)">
+            ${types.map(k => `<option value="${k}" ${k === chan ? "selected" : ""}>${STEP_TYPES[k].label}</option>`).join("")}
+          </select>` : `<span class="step-kind-label">${t.label}</span>`}
+          ${isEmail ? `<input class="subject" placeholder="${firstEmail ? "Objet" : "Objet (vide = même fil, Re:)"}" value="${esc(s.subject)}">` : `<span class="spacer"></span>`}
+          ${isEmail && abTest && !s.subject_b ? `<button class="icon-btn ab" title="Tester un second objet (A/B 50/50)" onclick="addSubjectB(this)">A/B</button>` : ""}
+          <button class="icon-btn" title="Aperçu" onclick="previewStep(this)">👁</button>
+          <button class="icon-btn danger" title="Supprimer l’étape" onclick="removeStep(this)" ${single ? "disabled" : ""}>✕</button>
+        </div>
+        ${isEmail && abTest && s.subject_b ? `<input class="subjectB" placeholder="Objet B (A/B test 50/50 ; vide = pas de test)" value="${esc(s.subject_b)}">` : ""}
+        <textarea class="body" rows="1" placeholder="${esc(bodyPlaceholder(chan))}">${esc(s.body)}</textarea>
+      </div>
     </div>
   </div>`;
 }
+
+// Étape dépliée (index dans l'ordre d'affichage) ; -1 = toutes repliées
+let openStep = -1;
+function showOpenStep() {
+  $$("#steps .step").forEach((d, j) => d.classList.toggle("open", j === openStep));
+  const div = $$("#steps .step")[openStep];
+  if (div) autosize(div.querySelector(".body"));
+}
+function toggleStep(el) {
+  const i = stepIndex(el);
+  openStep = openStep === i ? -1 : i;
+  showOpenStep();
+}
+// Le résumé suit la saisie
+$("#steps").addEventListener("input", (e) => {
+  const div = e.target.closest(".step");
+  if (!div || !e.target.matches(".subject, .body")) return;
+  $(".sum", div).innerHTML = stepSummary(div.dataset.chan, $(".subject", div)?.value, $(".body", div).value, div.dataset.first === "1");
+});
 
 // Le corps grandit tout seul avec le texte (pas de redimensionnement manuel) ; vide, il tient sur deux lignes.
 function autosize(el) {
@@ -254,6 +289,7 @@ function setSteps(list) {
     // une seule invitation : elle ouvre les deux chemins
     types: s.branch ? LANE_TYPES[s.branch] : Object.keys(STEP_TYPES).filter(k => k !== "invite" || inviteIdx < 0 || i === inviteIdx),
     deadline: i === deadlineIdx,
+    open: i === openStep,
   });
   const trunk = list.map((s, i) => s.branch ? "" : html(s, i)).join("");
   const lanes = inviteIdx < 0 ? "" : `<div class="split">${Object.entries(BRANCH_LABELS).map(([b, label]) => `
@@ -298,6 +334,8 @@ function openPaths(list) {
 }
 
 function focusStep(i) {
+  openStep = i;
+  showOpenStep();
   const div = $$("#steps .step")[i];
   if (!div) return;
   div.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -328,6 +366,7 @@ function changeStepType(sel) {
   const list = readSteps();
   const chan = sel.value;
   list[i] = { ...list[i], channel: chan === "email" ? "email" : "linkedin", li_action: chan === "email" ? undefined : chan };
+  openStep = i;
   setSteps(openPaths(list));
   $$("#steps .step")[i].querySelector(".step-kind")?.focus();
 }
@@ -337,6 +376,7 @@ function removeStep(btn) {
   const list = readSteps();
   if (list.length <= 1) return;
   list.splice(i, 1);
+  openStep = -1;
   setSteps(list);
   if (preview?.kind === "step") closeDrawer();
 }
@@ -382,6 +422,7 @@ function newCampaign() {
   $("#campMsg").textContent = "";
   renderSenders(null);
   refreshPreviewAccounts();
+  openStep = 0;
   setSteps([{ channel: "email" }]);
   $("#campTabs").hidden = true;
   showPane("paneSeq");
@@ -498,6 +539,7 @@ async function selectCampaign(id, tab = "seq") {
   $("#campMsg").textContent = "";
   renderSenders(c.account_ids);
   refreshPreviewAccounts();
+  openStep = c.steps.length ? -1 : 0;
   setSteps(c.steps.length ? c.steps : [{ channel: "email" }]);
   $("#campTabs").hidden = false;
   $("#tab-contacts").textContent = "Contacts";
