@@ -4,38 +4,27 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Réponses</title>
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=5">
 </head>
 <body class="inbox-page">
 <div class="inbox" id="inbox">
   <section class="ib-list">
     <div class="ib-list-head">
-      <h1>Réponses</h1>
       <div class="ib-tabs" id="tabs">
         <button data-tab="todo" class="active">À traiter <span id="cTodo"></span></button>
         <button data-tab="done">Traitées</button>
-        <button data-tab="all">Toutes</button>
       </div>
-      <div class="ib-filters">
-        <input id="q" type="search" placeholder="Nom, entreprise, email…">
-        <select id="kind" title="Type de réponse">
-          <option value="replied,opted_out">Réponses et refus</option>
-          <option value="replied">Réponses</option>
-          <option value="opted_out">Refus</option>
-          <option value="bounced">Bounces</option>
-        </select>
-      </div>
-      <select id="camp" style="margin:0;padding:6px 8px;font-size:12.5px"><option value="">Toutes les campagnes</option></select>
+      <input id="q" type="search" placeholder="Rechercher">
     </div>
     <div class="ib-items" id="items"><div class="ib-empty">Chargement…</div></div>
   </section>
 
   <section class="ib-detail" id="detail">
-    <div class="ib-placeholder">Choisissez une réponse à gauche.</div>
+    <div class="ib-placeholder"></div>
   </section>
 </div>
 
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 <script>
 renderNav("replies.html");
 
@@ -45,7 +34,7 @@ let items = [];
 const texts = new Map(); // cc_id → { text, error } : texte de la réponse, lu dans Gmail une fois
 let selected = null; // cc_id ouvert
 let conv = null; // conversation ouverte
-let channel = "email"; // canal du compositeur
+let channel = "email"; // canal de la réponse en cours d'écriture
 let pendingSend = null; // envoi en attente (annulable)
 
 const fullName = (x) => [x.first_name, x.last_name].filter(Boolean).join(" ") || x.email || "Contact";
@@ -54,42 +43,56 @@ const store = {
   set(k, v) { try { v === "" || v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
 };
 
-/** « il y a 5 min », « 14:32 », « hier », « lun. », « 12 oct. » */
+/** « 14:32 » aujourd'hui, « hier », « lun. », « 12 oct. » */
 function when(ms) {
   if (!ms) return "";
   const d = new Date(ms), now = new Date();
-  const diff = now - d;
-  if (diff < 3600e3) return diff < 60e3 ? "à l'instant" : `il y a ${Math.floor(diff / 60e3)} min`;
   const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const days = Math.round((day(now) - day(d)) / 86400e3);
   if (days === 0) return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
   if (days === 1) return "hier";
   if (days < 7) return d.toLocaleDateString("fr-FR", { weekday: "short" });
-  return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short", ...(d.getFullYear() !== now.getFullYear() && { year: "numeric" }) });
-}
-/** Horodatage d'un message : « 14:32 » aujourd'hui, sinon « 17 oct., 22:28 ». */
-function stamp(ms) {
-  if (!ms) return "";
-  const d = new Date(ms), t = d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-  return d.toDateString() === new Date().toDateString() ? t : `${d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}, ${t}`;
+  return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
 }
 const fullDate = (ms) => (ms ? new Date(ms).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" }) : "");
 
+/**
+ * Ce que la personne a écrit, sans le reste : message cité (« Le … a écrit », bloc Outlook
+ * « De : … Objet : », lignes en >) et signature (tout ce qui suit la formule de politesse,
+ * logos et liens compris). Le texte complet reste affichable.
+ */
+const QUOTE_STARTS = [
+  /^[ \t]*-{2,}[ \t]*(Original Message|Message d'origine|Forwarded message|Message transféré)/im,
+  /^[ \t]*_{8,}[ \t]*$/m,
+  /^[ \t]*(De|From)[ \t]*:.*\n(?:.*\n){0,5}?[ \t]*(Objet|Subject)[ \t]*:/im,
+  /^[ \t]*(Le|On)[ \t][^\n]*(\n[^\n]*)?(a écrit|wrote)[ \t]*:/im,
+  /^[ \t]*>/m,
+];
+const SIGN_OFF = /^(bien |très )?(cordialement|bien à (vous|toi)|à (bientôt|plus)|bonne (journée|soirée|fin de journée|semaine)|sincères salutations|salutations|best( regards)?|kind regards|regards|cheers|merci( beaucoup| d'avance| encore)?|thanks|thank you)[\s,.!]*$/i;
+function cleanReply(text) {
+  let s = String(text || "").replace(/\r\n/g, "\n");
+  const cut = Math.min(...QUOTE_STARTS.map((re) => { const i = s.search(re); return i < 0 ? s.length : i; }));
+  s = s.slice(0, cut);
+  const lines = s
+    .replace(/<https?:\/\/[^>\s]*>/g, "") // liens des signatures (« [web] <https://…> »)
+    .split("\n")
+    .filter((l) => !/^\s*(\[[^\]]*\]\s*)+$/.test(l)); // logos et icônes en texte (« [logo] [linkedin] »)
+  const firstText = lines.findIndex((l) => l.trim());
+  const off = lines.findIndex((l, i) => i > firstText && SIGN_OFF.test(l.trim()));
+  const kept = off >= 0 ? lines.slice(0, off + 1) : lines;
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 // ───────────────────────────── Liste ─────────────────────────────
 
-function query(includeText) {
-  const p = new URLSearchParams({ status: $("#kind").value, limit: "200" });
-  if (tab !== "all") p.set("done", tab === "done" ? "1" : "0");
-  if ($("#camp").value) p.set("campaign_id", $("#camp").value);
-  if (includeText) p.set("include_text", "1");
-  return `/api/inbox?${p}`;
-}
+const query = (includeText) =>
+  `/api/inbox?status=replied,opted_out&limit=200&done=${tab === "done" ? 1 : 0}${includeText ? "&include_text=1" : ""}`;
 
 async function loadList() {
   const url = query(false);
   try {
     const rows = await api(url);
-    if (url !== query(false)) return; // filtres changés entre-temps
+    if (url !== query(false)) return; // onglet changé entre-temps
     items = rows;
     renderList();
     loadTexts(url);
@@ -103,8 +106,7 @@ async function loadList() {
 async function loadTexts(listUrl) {
   if (items.every((i) => texts.has(i.cc_id))) return;
   try {
-    const rows = await api(query(true));
-    for (const r of rows) texts.set(r.cc_id, { text: r.reply_text ?? null, error: r.reply_error ?? null });
+    for (const r of await api(query(true))) texts.set(r.cc_id, { text: r.reply_text ?? null, error: r.reply_error ?? null });
     if (listUrl === query(false)) renderList();
   } catch {}
 }
@@ -112,7 +114,7 @@ async function loadTexts(listUrl) {
 async function refreshCounts() {
   try {
     const { todo } = await api("/api/inbox/counts");
-    $("#cTodo").textContent = todo ? `(${todo})` : "";
+    $("#cTodo").textContent = todo || "";
   } catch {}
   refreshNavBadge();
 }
@@ -120,33 +122,30 @@ async function refreshCounts() {
 function visibleItems() {
   const q = $("#q").value.trim().toLowerCase();
   if (!q) return items;
-  return items.filter((i) => [fullName(i), i.company, i.email, i.campaign_name, i.poste].filter(Boolean).join(" ").toLowerCase().includes(q));
+  return items.filter((i) => [fullName(i), i.company, i.email].filter(Boolean).join(" ").toLowerCase().includes(q));
 }
 
 function snippet(i) {
   const t = texts.get(i.cc_id);
-  if (!t) return `<div class="snip wait">…</div>`;
-  if (t.error) return `<div class="snip wait">${esc(t.error)}</div>`;
-  if (!t.text) return `<div class="snip wait">${i.channel === "linkedin" ? "Réponse sur LinkedIn" : "Réponse sans texte lisible"}</div>`;
-  return `<div class="snip">${esc(t.text.replace(/\s+/g, " "))}</div>`;
+  const s = t?.text ? cleanReply(t.text).replace(/\s+/g, " ") : "";
+  return s ? `<div class="snip">${esc(s)}</div>` : `<div class="snip wait">${t ? (i.channel === "linkedin" ? "Réponse sur LinkedIn" : "") : "…"}</div>`;
 }
 
 function renderList() {
   const list = visibleItems();
   if (!list.length) {
-    $("#items").innerHTML = `<div class="ib-empty">${tab === "todo" ? "Aucune réponse à traiter." : "Aucune réponse."}</div>`;
+    $("#items").innerHTML = `<div class="ib-empty">${tab === "todo" ? "Rien à traiter." : "Aucune réponse traitée."}</div>`;
     return;
   }
   $("#items").innerHTML = list.map((i) => `
     <div class="ib-item ${i.cc_id === selected ? "sel" : ""} ${i.seen ? "" : "unseen"}" data-cc="${i.cc_id}">
-      <div class="l1"><span class="who">${esc(fullName(i))}</span><span class="when" title="${esc(fullDate(i.replied_at))}">${esc(when(i.replied_at))}</span></div>
-      <div class="co">${esc([i.company, i.poste].filter(Boolean).join(" · ") || i.email || "")}</div>
-      ${snippet(i)}
-      <div class="tags">
-        <span class="chan ${i.channel}">${i.channel === "linkedin" ? "in LinkedIn" : "✉ Email"}</span>
-        ${i.status !== "replied" ? pill(i.status) : ""}
-        <span class="camp">${esc(i.campaign_name)}</span>
+      <div class="l1">
+        <span class="who">${esc(fullName(i))}</span>
+        ${i.status === "opted_out" ? `<span class="refus">refus</span>` : ""}
+        <span class="when" title="${esc(fullDate(i.replied_at))}">${i.channel === "linkedin" ? `<span class="li-mini">in</span>` : ""}${esc(when(i.replied_at))}</span>
       </div>
+      <div class="co">${esc(i.company || "")}</div>
+      ${snippet(i)}
     </div>`).join("");
 }
 
@@ -156,30 +155,28 @@ $("#items").addEventListener("click", (e) => {
 });
 $("#tabs").addEventListener("click", (e) => {
   const b = e.target.closest("button");
-  if (!b) return;
+  if (!b || b.dataset.tab === tab) return;
   tab = b.dataset.tab;
   $$("#tabs button").forEach((x) => x.classList.toggle("active", x === b));
   loadList();
 });
-$("#kind").addEventListener("change", loadList);
-$("#camp").addEventListener("change", loadList);
 $("#q").addEventListener("input", renderList);
 
 // ───────────────────────────── Conversation ─────────────────────────────
 
-async function openReply(ccId, { keepComposer = false } = {}) {
+async function openReply(ccId, { keepChannel = false } = {}) {
   if (pendingSend) return notify("Un envoi est en attente : annulez-le ou attendez qu'il parte.", false);
   selected = ccId;
   history.replaceState(null, "", `#cc=${ccId}`);
   $("#inbox").classList.add("open");
   renderList();
-  if (!keepComposer) $("#detail").innerHTML = `<div class="ib-placeholder">Chargement…</div>`;
+  if (!keepChannel) $("#detail").innerHTML = `<div class="ib-placeholder">Chargement…</div>`;
   try {
     const c = await api(`/api/campaign-contacts/${ccId}/conversation`);
     if (selected !== ccId) return;
     conv = c;
     const item = items.find((i) => i.cc_id === ccId);
-    if (!keepComposer) channel = defaultChannel(c, item);
+    if (!keepChannel) channel = defaultChannel(c, item);
     renderDetail();
     if (!c.seen) {
       api(`/api/campaign-contacts/${ccId}/inbox`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ seen: true }) })
@@ -200,91 +197,60 @@ function defaultChannel(c, item) {
   return canEmail(c) ? "email" : "none";
 }
 
-/** Fil chronologique : emails du fil Gmail, actions LinkedIn, réponse lue dans la messagerie LinkedIn. */
-function timeline(c) {
-  const ev = [];
-  for (const m of c.email_thread ?? []) ev.push({ at: m.date, type: "mail", m });
-  let last = 0;
-  for (const a of c.linkedin ?? []) {
-    last = a.sent_at ?? last;
-    ev.push({ at: a.sent_at ?? last, type: "li", a });
+/** Messages échangés, dans l'ordre : emails du fil Gmail, messages LinkedIn, réponse LinkedIn. */
+function messages(c) {
+  const out = [];
+  for (const m of c.email_thread ?? []) {
+    if (m.kind === "sent") out.push({ at: m.date, mine: true, text: m.text.trim() });
+    else if (m.kind === "reply") out.push({ at: m.date, mine: false, text: m.text.trim() });
   }
-  if (c.li_reply_text) ev.push({ at: c.replied_at ?? Date.now(), type: "lireply" });
-  if (!c.email_thread) for (const s of c.steps_sent ?? []) ev.push({ at: s.sent_at, type: "step", s });
-  return ev.sort((x, y) => (x.at ?? 0) - (y.at ?? 0));
+  for (const a of c.linkedin ?? []) {
+    if (a.status === "sent" && a.type === "message" && a.body) out.push({ at: a.sent_at, mine: true, text: a.body.trim() });
+  }
+  if (c.li_reply_text) out.push({ at: c.replied_at ?? Date.now(), mine: false, text: c.li_reply_text.trim() });
+  return out.sort((x, y) => (x.at ?? 0) - (y.at ?? 0));
 }
 
-function bubble({ dir, who, whoTitle, chan, at, body, full, clamp, optout, note }) {
-  const id = "m" + Math.random().toString(36).slice(2, 8);
-  const quoted = full && full.trim() !== body.trim();
+function bubble(m, who, { clamp = false } = {}) {
+  const short = m.mine ? m.text : cleanReply(m.text) || m.text;
+  const more = clamp ? "Afficher tout" : short !== m.text ? "Afficher le message complet" : "";
   return `
-    <div class="msg ${dir} ${clamp ? "clamp" : ""} ${optout ? "optout" : ""}" id="${id}">
-      <div class="msg-h"><b title="${esc(whoTitle || "")}">${esc(who)}</b>${chan ? `<span class="chan ${chan}">${chan === "linkedin" ? "in LinkedIn" : "✉ Email"}</span>` : ""}${note ? `<span title="${esc(note.title)}">${esc(note.label)}</span>` : ""}<span class="t" title="${esc(fullDate(at))}">${esc(stamp(at))}</span></div>
-      <div class="msg-b" data-short="${esc(body)}" data-full="${esc(full || body)}">${esc(body)}</div>
-      ${clamp ? `<button class="msg-more" data-act="expand">Afficher tout</button>` : quoted ? `<button class="msg-more" data-act="quoted">Afficher le message cité</button>` : ""}
+    <div class="msg ${m.mine ? "out" : "in"} ${clamp ? "clamp" : ""}">
+      <div class="msg-h"><b>${esc(who)}</b><span class="t" title="${esc(fullDate(m.at))}">${esc(when(m.at))}</span></div>
+      <div class="msg-b" data-short="${esc(short)}" data-full="${esc(m.text)}">${esc(short)}</div>
+      ${more ? `<button class="msg-more">${more}</button>` : ""}
     </div>`;
 }
 
 function renderThread(c) {
-  const me = "Vous";
-  const them = fullName(c.contact);
-  const ev = timeline(c);
-  const lastOut = [...ev].reverse().find((e) => (e.type === "mail" && e.m.direction === "out") || (e.type === "li" && e.a.type === "message" && e.a.status === "sent"));
+  const all = messages(c);
+  if (!all.length) return c.email_thread_error ? `<div class="notice">${esc(c.email_thread_error)}</div>` : "";
+  const them = c.contact.first_name || fullName(c.contact);
+  // l'essentiel : la réponse, et le message auquel elle répond ; le reste replié
+  let lastIn = all.map((m) => !m.mine).lastIndexOf(true);
+  if (lastIn < 0) lastIn = all.length - 1;
+  const start = Math.max(0, lastIn - 1);
+  const older = all.slice(0, start);
   const html = [];
-  if (c.email_thread_error) html.push(`<div class="notice">Fil Gmail illisible : ${esc(c.email_thread_error)}</div>`);
-  for (const e of ev) {
-    if (e.type === "mail") {
-      const m = e.m;
-      if (m.kind === "bounce") { html.push(`<div class="evt bad" title="${esc(m.text.slice(0, 400))}">Email non remis (bounce) · ${esc(fullDate(m.date))}</div>`); continue; }
-      if (m.kind === "auto_reply") { html.push(`<div class="evt" title="${esc(m.text.slice(0, 400))}">Réponse automatique · ${esc(fullDate(m.date))}</div>`); continue; }
-      if (m.direction === "out") html.push(bubble({ dir: "out", who: me, whoTitle: c.sender, chan: "email", at: m.date, body: m.text.trim(), clamp: e !== lastOut }));
-      else html.push(bubble({ dir: "in", who: them, chan: "email", at: m.date, body: m.text_clean || m.text.trim(), full: m.text.trim(), optout: c.status === "opted_out" }));
-    } else if (e.type === "li") {
-      const a = e.a;
-      const label = a.type === "invite" ? "Invitation LinkedIn" : "Message LinkedIn";
-      if (a.status !== "sent") {
-        // « cancelled » : étape suivante annulée par la réponse elle-même, rien à montrer
-        if (a.status === "failed") html.push(`<div class="evt bad">${label} non envoyé${a.type === "invite" ? "e" : ""}${a.error ? ` — ${esc(a.error)}` : ""}</div>`);
-        continue;
-      }
-      if (a.type === "invite" && !a.body) html.push(`<div class="evt">Invitation LinkedIn envoyée · ${esc(fullDate(a.sent_at))}</div>`);
-      else html.push(bubble({ dir: "out", who: me, whoTitle: c.li_sender ? `compte LinkedIn ${c.li_sender}` : "", chan: "linkedin", at: a.sent_at, body: (a.type === "invite" ? "Note d'invitation :\n" : "") + (a.body || "").trim(), clamp: e !== lastOut }));
-    } else if (e.type === "lireply") {
-      html.push(bubble({ dir: "in", who: them, chan: "linkedin", at: e.at, body: c.li_reply_text.trim(), optout: c.status === "opted_out",
-        note: { label: "· aperçu", title: "Texte lu dans la liste des conversations LinkedIn : il peut être tronqué. Le message complet est sur LinkedIn." } }));
-    } else if (e.type === "step") {
-      html.push(`<div class="evt">Email étape ${e.s.step_number} envoyé · ${esc(fullDate(e.s.sent_at))}</div>`);
-    }
+  if (older.length) {
+    html.push(`<button class="older" id="older">${older.length} message${older.length > 1 ? "s" : ""} précédent${older.length > 1 ? "s" : ""}</button>`);
+    html.push(`<div id="olderList" hidden>${older.map((m) => bubble(m, m.mine ? "Vous" : them, { clamp: m.mine })).join("")}</div>`);
   }
-  if (!ev.length) html.push(`<div class="evt">Aucun échange enregistré.</div>`);
+  all.slice(start).forEach((m, i, rest) => html.push(bubble(m, m.mine ? "Vous" : them, { clamp: m.mine && i < rest.length - 1 })));
   return html.join("");
 }
 
-function lastSubject(c) {
-  const m = [...(c.email_thread ?? [])].reverse().find((x) => x.kind === "sent" || x.kind === "reply");
-  const s = (m?.subject || "").replace(/^\s*((re|ré|réf|ref|rép|aw|sv)\.?\s*(\[\d+\])?\s*:\s*)+/iu, "").trim();
-  return s ? `Re: ${s}` : "";
-}
-
 function renderComposer(c) {
-  if (channel === "none") return `<div class="composer"><div class="hint">Ni email ni profil LinkedIn connu pour ce contact.</div></div>`;
-  const tabs = [canEmail(c) && "email", canLinkedin(c) && "linkedin"].filter(Boolean);
+  if (channel === "none") return "";
   const first = c.contact.first_name || fullName(c.contact);
-  const draftKey = `draft:${c.cc_id}:${channel}`;
-  const head = channel === "email"
-    ? `De <b>${esc(c.sender || "")}</b> · À <b>${esc(c.contact.email)}</b>${lastSubject(c) ? ` · <b>${esc(lastSubject(c))}</b>` : ""}`
-    : `Sur LinkedIn${c.li_sender ? ` · compte <b>${esc(c.li_sender)}</b>` : ""}`;
+  const other = channel === "email" ? canLinkedin(c) && "linkedin" : canEmail(c) && "email";
   return `
     <div class="composer" id="composer">
-      ${tabs.length > 1 ? `<div class="ctabs">${tabs.map((t) => `<button data-chan="${t}" class="${t === channel ? "active" : ""}">${t === "email" ? "✉ Email" : "in LinkedIn"}</button>`).join("")}</div>` : ""}
-      <div class="chead">${head}</div>
-      <textarea id="reply" placeholder="Répondre à ${esc(first)}…">${esc(store.get(draftKey, ""))}</textarea>
+      <textarea id="reply" placeholder="${channel === "email" ? `Répondre à ${esc(first)}…` : `Message LinkedIn à ${esc(first)}…`}">${esc(store.get(`draft:${c.cc_id}:${channel}`, ""))}</textarea>
       <div class="cfoot" id="cfoot">
-        ${channel === "email"
-          ? `<button id="send">Envoyer</button>
-             <label><input type="checkbox" id="sig" ${store.get("reply:sig", "1") === "1" ? "checked" : ""}> Ajouter ma signature</label>
-             <span class="spacer"></span><span class="hint"><kbd>⌘</kbd> <kbd>↵</kbd> pour envoyer</span>`
-          : `<button id="copyLi">Copier et ouvrir LinkedIn</button><span class="spacer"></span>`}
+        ${channel === "email" ? `<button id="send">Envoyer</button>` : `<button id="copyLi">Copier et ouvrir LinkedIn</button>`}
+        <span class="spacer"></span>
+        ${other ? `<button class="link-btn" id="switch">${other === "email" ? "Répondre par email" : "Répondre sur LinkedIn"}</button>` : ""}
       </div>
     </div>`;
 }
@@ -292,27 +258,23 @@ function renderComposer(c) {
 function renderDetail() {
   const c = conv;
   const extra = c.contact.extra || {};
-  const item = items.find((i) => i.cc_id === c.cc_id);
   const liLink = c.li_thread_url || (c.contact.linkedin ? liUrl(c.contact.linkedin) : "");
   $("#detail").innerHTML = `
     <div class="ib-head">
-      <button class="ghost ib-back" id="back">←</button>
+      <button class="icon-btn ib-back" id="back">←</button>
       <div class="id">
-        <h2>${esc(fullName(c.contact))} ${c.status !== "replied" ? pill(c.status) : ""}</h2>
+        <h2>${esc(fullName(c.contact))}</h2>
         <div class="sub">${esc([extra.poste, c.contact.company].filter(Boolean).join(" · "))}</div>
-        <div class="meta">
-          ${c.contact.email ? `<a href="#" id="copyEmail" title="Copier l'adresse">${esc(c.contact.email)}</a>` : ""}
-          <a href="campaigns.html#${c.campaign.id}">${esc(c.campaign.name)}</a>
-          ${extra.offre ? `<span>Offre citée : ${esc(extra.offre)}</span>` : ""}
-          ${c.replied_at ? `<span>Réponse le ${esc(fullDate(c.replied_at))}</span>` : ""}
-        </div>
       </div>
       <div class="acts">
-        ${c.gmail_url ? `<a class="btn ghost" href="${esc(c.gmail_url)}" target="_blank" rel="noopener" title="Ouvrir le fil dans Gmail">Gmail ↗</a>` : ""}
-        ${liLink ? `<a class="btn ghost" href="${esc(liLink)}" target="_blank" rel="noopener" title="${c.li_thread_url ? "Ouvrir la conversation LinkedIn" : "Ouvrir le profil LinkedIn"}">LinkedIn ↗</a>` : ""}
-        <button class="${c.done ? "ghost" : ""}" id="done" title="Raccourci : e">${c.done ? "Remettre à traiter" : "Traitée ✓"}</button>
+        <button class="${c.done ? "ghost" : ""}" id="done">${c.done ? "Remettre à traiter" : "Traitée ✓"}</button>
         <div class="menu"><button class="icon-btn" id="more">⋯</button>
-          <div class="menu-list" id="moreList" hidden><button id="unseen">Marquer comme non lue</button></div>
+          <div class="menu-list" id="moreList" hidden>
+            ${c.gmail_url ? `<button data-href="${esc(c.gmail_url)}">Ouvrir dans Gmail</button>` : ""}
+            ${liLink ? `<button data-href="${esc(liLink)}">Ouvrir sur LinkedIn</button>` : ""}
+            <button data-href="campaigns.html#${c.campaign.id}" data-same="1">Voir la campagne</button>
+            <button id="unseen">Marquer comme non lue</button>
+          </div>
         </div>
       </div>
     </div>
@@ -320,38 +282,37 @@ function renderDetail() {
     ${renderComposer(c)}`;
   const th = $("#thread");
   th.scrollTop = th.scrollHeight;
-  wireDetail(item);
+  wireDetail();
 }
 
 function autosize(ta) { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight + 2, window.innerHeight * 0.4) + "px"; }
 
-function wireDetail(item) {
+function wireDetail() {
   const c = conv;
   $("#back").onclick = () => { $("#inbox").classList.remove("open"); selected = null; renderList(); };
   $("#done").onclick = () => setDone(!c.done);
   $("#more").onclick = (e) => { e.stopPropagation(); $("#moreList").hidden = !$("#moreList").hidden; };
+  $$("#moreList [data-href]").forEach((b) => (b.onclick = () => (b.dataset.same ? (location.href = b.dataset.href) : window.open(b.dataset.href, "_blank", "noopener"))));
   $("#unseen").onclick = async () => {
     await api(`/api/campaign-contacts/${c.cc_id}/inbox`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ seen: false }) });
+    const item = items.find((i) => i.cc_id === c.cc_id);
     if (item) item.seen = false;
-    selected = null; conv = null;
-    $("#inbox").classList.remove("open");
-    $("#detail").innerHTML = `<div class="ib-placeholder">Choisissez une réponse à gauche.</div>`;
-    renderList(); refreshCounts();
+    closeDetail();
+    refreshCounts();
   };
-  const ce = $("#copyEmail");
-  if (ce) ce.onclick = async (e) => { e.preventDefault(); notify((await copyText(c.contact.email)) ? "Adresse copiée" : "Copie impossible", true); };
+  const older = $("#older");
+  if (older) older.onclick = () => { $("#olderList").hidden = false; older.remove(); };
   $("#thread").addEventListener("click", (e) => {
     const b = e.target.closest(".msg-more");
     if (!b) return;
     const msg = b.closest(".msg"), body = $(".msg-b", msg);
-    if (b.dataset.act === "expand") { msg.classList.remove("clamp"); b.remove(); }
-    else {
-      const showFull = b.textContent.startsWith("Afficher");
-      body.textContent = showFull ? body.dataset.full : body.dataset.short;
-      b.textContent = showFull ? "Masquer le message cité" : "Afficher le message cité";
-    }
+    if (msg.classList.contains("clamp")) { msg.classList.remove("clamp"); b.remove(); return; }
+    const full = b.textContent.startsWith("Afficher");
+    body.textContent = full ? body.dataset.full : body.dataset.short;
+    b.textContent = full ? "Masquer" : "Afficher le message complet";
   });
-  $$("#composer .ctabs button").forEach((b) => (b.onclick = () => { channel = b.dataset.chan; renderDetail(); }));
+  const sw = $("#switch");
+  if (sw) sw.onclick = () => { channel = channel === "email" ? "linkedin" : "email"; renderDetail(); $("#reply").focus(); };
   const ta = $("#reply");
   if (!ta) return;
   autosize(ta);
@@ -359,29 +320,29 @@ function wireDetail(item) {
   ta.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); channel === "email" ? sendEmail() : copyLinkedin(); }
   });
-  const sig = $("#sig");
-  if (sig) sig.onchange = () => store.set("reply:sig", sig.checked ? "1" : "0");
   if ($("#send")) $("#send").onclick = sendEmail;
   if ($("#copyLi")) $("#copyLi").onclick = copyLinkedin;
+}
+
+function closeDetail(message = "") {
+  selected = null; conv = null;
+  $("#inbox").classList.remove("open");
+  $("#detail").innerHTML = `<div class="ib-placeholder">${esc(message)}</div>`;
+  renderList();
 }
 
 async function setDone(done) {
   const c = conv;
   await api(`/api/campaign-contacts/${c.cc_id}/inbox`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done, seen: true }) });
   c.done = done;
-  const item = items.find((i) => i.cc_id === c.cc_id);
-  if (item) item.done = done;
-  notify(done ? "Rangée dans « Traitées »" : "Remise dans « À traiter »");
   // la réponse quitte l'onglet courant : on passe à la suivante
-  if ((tab === "todo" && done) || (tab === "done" && !done)) {
-    const list = visibleItems();
-    const idx = list.findIndex((i) => i.cc_id === c.cc_id);
-    items = items.filter((i) => i.cc_id !== c.cc_id);
-    const next = visibleItems()[Math.min(idx, visibleItems().length - 1)];
-    renderList();
-    if (next && window.innerWidth > 900) openReply(next.cc_id);
-    else { selected = null; $("#inbox").classList.remove("open"); $("#detail").innerHTML = `<div class="ib-placeholder">${tab === "todo" ? "Tout est traité." : "Choisissez une réponse à gauche."}</div>`; }
-  } else renderDetail();
+  const list = visibleItems();
+  const idx = list.findIndex((i) => i.cc_id === c.cc_id);
+  items = items.filter((i) => i.cc_id !== c.cc_id);
+  const rest = visibleItems();
+  const next = rest[Math.min(idx, rest.length - 1)];
+  if (next && window.innerWidth > 900) openReply(next.cc_id);
+  else closeDetail(tab === "todo" && !rest.length ? "Tout est traité." : "");
   refreshCounts();
 }
 
@@ -391,28 +352,28 @@ function sendEmail() {
   const text = ta.value.trim();
   if (!text) return notify("Écrivez d'abord votre réponse.", false);
   if (pendingSend) return;
-  const body = text + ($("#sig")?.checked ? "\n\n{{signature}}" : "");
   ta.disabled = true;
   const foot = $("#cfoot");
   const saved = foot.innerHTML;
   let left = Math.round(UNDO_MS / 1000);
-  foot.innerHTML = `<span class="hint" id="countdown">Envoi à ${esc(c.contact.email)} dans ${left} s…</span><button class="ghost" id="undo">Annuler</button>`;
-  const tick = setInterval(() => { left--; const el = $("#countdown"); if (el && left > 0) el.textContent = `Envoi à ${c.contact.email} dans ${left} s…`; }, 1000);
-  const restore = () => { clearInterval(tick); pendingSend = null; ta.disabled = false; foot.innerHTML = saved; wireDetail(items.find((i) => i.cc_id === c.cc_id)); };
+  foot.innerHTML = `<span class="hint" id="countdown">Envoi dans ${left} s…</span><button class="ghost" id="undo">Annuler</button>`;
+  const tick = setInterval(() => { left--; const el = $("#countdown"); if (el && left > 0) el.textContent = `Envoi dans ${left} s…`; }, 1000);
+  const restore = () => { clearInterval(tick); pendingSend = null; ta.disabled = false; foot.innerHTML = saved; wireDetail(); };
   const timer = setTimeout(async () => {
     clearInterval(tick);
     $("#countdown") && ($("#countdown").textContent = "Envoi…");
     $("#undo")?.remove();
     try {
-      await api(`/api/campaign-contacts/${c.cc_id}/reply`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body, dry_run: false }) });
+      await api(`/api/campaign-contacts/${c.cc_id}/reply`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: `${text}\n\n{{signature}}`, dry_run: false }),
+      });
       pendingSend = null;
       store.set(`draft:${c.cc_id}:email`, "");
       notify("Réponse envoyée");
-      const item = items.find((i) => i.cc_id === c.cc_id);
-      if (item) item.done = true;
       refreshCounts();
       // Gmail met un instant à ranger l'envoi dans le fil
-      setTimeout(() => { if (selected === c.cc_id) openReply(c.cc_id, { keepComposer: true }); }, 1500);
+      setTimeout(() => { if (selected === c.cc_id) openReply(c.cc_id, { keepChannel: true }); }, 1500);
     } catch (e) {
       restore();
       notify(`Envoi impossible : ${e.message}`, false);
@@ -428,7 +389,7 @@ async function copyLinkedin() {
   if (!text) return notify("Écrivez d'abord votre message.", false);
   const ok = await copyText(text);
   window.open(c.li_thread_url || liUrl(c.contact.linkedin), "_blank", "noopener");
-  notify(ok ? "Message copié : collez-le dans la conversation LinkedIn" : "Copie impossible : copiez le texte à la main", ok);
+  notify(ok ? "Message copié : collez-le dans LinkedIn" : "Copie impossible : copiez le texte à la main", ok);
 }
 
 document.addEventListener("click", () => { const m = $("#moreList"); if (m) m.hidden = true; });
@@ -447,24 +408,19 @@ document.addEventListener("keydown", (e) => {
 // ───────────────────────────── Démarrage ─────────────────────────────
 
 (async () => {
-  try {
-    const camps = await api("/api/campaigns");
-    $("#camp").insertAdjacentHTML("beforeend", camps.map((c) => `<option value="${c.id}">${esc(c.name)}${c.status === "archived" ? " (archivée)" : ""}</option>`).join(""));
-  } catch {}
   const m = location.hash.match(/cc=(\d+)/);
   await loadList();
   if (m) {
     const id = Number(m[1]);
     // lien depuis une campagne : la réponse peut être déjà traitée
     if (!items.some((i) => i.cc_id === id)) {
-      tab = "all";
-      $$("#tabs button").forEach((x) => x.classList.toggle("active", x.dataset.tab === "all"));
+      tab = "done";
+      $$("#tabs button").forEach((x) => x.classList.toggle("active", x.dataset.tab === "done"));
       await loadList();
     }
     openReply(id);
-  }
+  } else if (window.innerWidth > 900 && items.length) openReply(visibleItems()[0].cc_id);
   setInterval(() => { if (!pendingSend) loadList(); }, 60000);
-  // lien #cc=… suivi alors que la page est déjà ouverte
   window.addEventListener("hashchange", () => {
     const h = location.hash.match(/cc=(\d+)/);
     if (h && Number(h[1]) !== selected) openReply(Number(h[1]));
