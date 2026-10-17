@@ -30,11 +30,30 @@ async function waitFor(find, timeout = 8000) {
   return null;
 }
 
+/** Racines de recherche : le document d'abord, puis les shadow roots ouverts
+ *  (le nouveau design LinkedIn y rend la fenêtre d'invitation, invisible pour
+ *  document.querySelectorAll). Le document en premier : ce qu'on y trouvait
+ *  reste prioritaire. */
+function searchRoots(root = document, depth = 0, out = []) {
+  out.push(root);
+  if (depth > 40) return out;
+  for (const host of root.querySelectorAll("*")) if (host.shadowRoot) searchRoots(host.shadowRoot, depth + 1, out);
+  return out;
+}
+const deepQueryAll = (sel) => searchRoots().flatMap((r) => [...r.querySelectorAll(sel)]);
+
+/** Affiché : offsetParent suffit dans le document ; dans un shadow root il peut
+ *  valoir null pour un élément visible (fenêtre en position fixe), d'où les rects. */
+function isShown(el) {
+  if (el.offsetParent !== null) return true;
+  return el.getRootNode() !== document && el.getClientRects().length > 0;
+}
+
 /** Premier bouton/lien cliquable dont le texte OU l'aria-label matche la regex. */
 function findClickable(re) {
-  const nodes = document.querySelectorAll('button, a, [role="button"]');
+  const nodes = deepQueryAll('button, a, [role="button"]');
   for (const el of nodes) {
-    if (el.disabled || el.offsetParent === null) continue; // ignore masqués/désactivés
+    if (el.disabled || !isShown(el)) continue; // ignore masqués/désactivés
     const label = `${el.getAttribute("aria-label") || ""} ${el.textContent || ""}`.trim();
     if (re.test(label)) return el;
   }
@@ -176,6 +195,7 @@ const RE_ADD_NOTE = /(ajouter une note|add a note)/i;
 const RE_SEND_NOTE = /(envoyer l.invitation|envoyer$|^envoyer\b|send invitation|^send$)/i;
 const RE_SEND_NO_NOTE = /(envoyer sans note|send without)/i;
 const RE_SEND_MSG = /(^envoyer$|^send$)/i;
+const RE_PENDING = /^(en attente|pending)\b/i;
 
 /** Bouton « Message » DU PROFIL affiché — PAS le lien global « Messagerie » de
  *  la barre de navigation (en FR il matche le même mot et arrive plus tôt dans le
@@ -195,15 +215,45 @@ function findProfileMessageBtn() {
   return null;
 }
 
-/** Bouton « Se connecter », éventuellement caché dans le menu « Plus ». */
+/** Nom du profil ouvert, lu dans le titre de l'onglet (« (3) Prénom Nom | LinkedIn »). */
+function profileName() {
+  return normWords(document.title.replace(/^\(\d+\)\s*/, "").split("|")[0]);
+}
+
+/** Personne nommée par un libellé « Invite X to connect » / « Inviter X à … », sinon null. */
+function invitee(label) {
+  const m = label.match(/^(?:invite|invitez|inviter)\s+(.+?)\s+(?:to connect|à (?:se connecter|rejoindre|vous connecter))/i);
+  return m ? normWords(m[1]) : null;
+}
+
+/** Comme findClickable, mais seulement parmi les actions DU PROFIL ouvert :
+ *  jamais dans la colonne de droite (<aside> : suggestions « Connect » d'autres
+ *  personnes, et la messagerie avec son bouton « Send »), ni un bouton qui nomme
+ *  quelqu'un d'autre. Sur un profil dont le « Se connecter » est rangé sous
+ *  « Plus », on cliquait la suggestion d'à côté : l'invitation partait au
+ *  mauvais destinataire. */
+function findOwnClickable(re) {
+  const me = profileName();
+  for (const el of deepQueryAll('button, a, [role="button"]')) {
+    if (el.disabled || !isShown(el) || el.closest("aside")) continue;
+    const aria = el.getAttribute("aria-label") || "";
+    if (!re.test(`${aria} ${el.textContent || ""}`.trim())) continue;
+    const who = invitee(aria);
+    if (who && me && who !== me) continue;
+    return el;
+  }
+  return null;
+}
+
+/** Bouton « Se connecter » du profil, éventuellement caché dans le menu « Plus ». */
 async function findConnectButton() {
-  let btn = findClickable(RE_CONNECT);
+  let btn = findOwnClickable(RE_CONNECT);
   if (btn) return btn;
-  const more = findClickable(RE_MORE);
+  const more = findOwnClickable(RE_MORE);
   if (more) {
     await clickHuman(more);
     await human();
-    btn = await waitFor(() => findClickable(RE_CONNECT), 4000);
+    btn = await waitFor(() => findOwnClickable(RE_CONNECT), 4000);
   }
   return btn;
 }
@@ -214,12 +264,33 @@ const RE_DISMISS = /^(ignorer|fermer|dismiss|close)\b/i;
 
 /** Ferme la fenêtre affichée (bouton « Ignorer »/« Fermer », sinon Échap). */
 async function dismissDialog() {
-  const btn = [...document.querySelectorAll("button[aria-label]")].find(
-    (b) => b.offsetParent !== null && RE_DISMISS.test(b.getAttribute("aria-label") || "")
+  const btn = deepQueryAll("button[aria-label]").find(
+    (b) => isShown(b) && RE_DISMISS.test(b.getAttribute("aria-label") || "")
   );
   if (btn) await clickHuman(btn);
   else document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
   await human();
+}
+
+/** État de la page quand le bouton d'envoi manque, joint à l'erreur : de quoi
+ *  comprendre l'échec depuis Sequence Mail sans avoir vu l'onglet. */
+function inviteDiagnostic(connect) {
+  const roots = searchRoots();
+  const dialog = deepQueryAll('[role="dialog"], dialog[open], .artdeco-modal').find(isShown);
+  const buttons = (dialog ? [...dialog.querySelectorAll("button, a")] : [])
+    .filter(isShown)
+    .map((b) => (b.getAttribute("aria-label") || b.textContent || "").trim().replace(/\s+/g, " ").slice(0, 30))
+    .filter(Boolean)
+    .slice(0, 6);
+  const text = (dialog ? dialog.textContent : "").trim().replace(/\s+/g, " ").slice(0, 80);
+  const clicked = `${connect.tagName.toLowerCase()} « ${(connect.getAttribute("aria-label") || connect.textContent || "").trim().slice(0, 40)} »`;
+  return [
+    `clic sur ${clicked}`,
+    `onglet ${document.visibilityState} ${innerWidth}×${innerHeight}`,
+    `page ${location.pathname}`,
+    `${roots.length - 1} shadow root(s)`,
+    dialog ? `fenêtre « ${text} » [${buttons.join(" | ")}]` : "aucune fenêtre affichée",
+  ].join(" ; ");
 }
 
 /** Envoie une invitation, avec la note si LinkedIn la permet. Une note trop
@@ -228,7 +299,7 @@ async function dismissDialog() {
  *  cas l'invitation part sans note, et le verdict le dit. */
 async function doInvite(note) {
   // Déjà en relation / invitation déjà partie ? On considère l'action faite (pas d'erreur punitive).
-  if (!findClickable(RE_CONNECT) && (findClickable(RE_MESSAGE) || findClickable(/en attente|pending/i))) {
+  if (!findOwnClickable(RE_CONNECT) && (findOwnClickable(RE_MESSAGE) || findOwnClickable(RE_PENDING))) {
     if (!(await findConnectButton())) return { ok: true, error: "déjà en relation ou invitation déjà envoyée (ignoré)" };
   }
   const connect = await findConnectButton();
@@ -244,15 +315,14 @@ async function doInvite(note) {
   }
   let noted = false;
   if (clean) {
-    const addNote = await waitFor(() => findClickable(RE_ADD_NOTE), 4000);
+    const addNote = await waitFor(() => findOwnClickable(RE_ADD_NOTE), 4000);
     if (!addNote) {
       dropped = "option « Ajouter une note » absente";
     } else {
       await clickHuman(addNote);
       // champ VISIBLE : l'offre Premium peut laisser un formulaire de note masqué dans la page
       const box = await waitFor(() => {
-        const b = document.querySelector('textarea[name="message"], #custom-message, textarea#custom-message');
-        return b && b.offsetParent !== null ? b : null;
+        return deepQueryAll('textarea[name="message"], #custom-message').find(isShown) || null;
       }, 4000);
       if (box) {
         await typeInto(box, clean);
@@ -261,7 +331,7 @@ async function doInvite(note) {
         dropped = "plus de note personnalisée disponible sur ce compte (offre Premium affichée)";
         await dismissDialog();
         // l'offre a pu refermer la fenêtre d'invitation : on la rouvre
-        if (!findClickable(RE_SEND_NO_NOTE)) {
+        if (!findOwnClickable(RE_SEND_NO_NOTE)) {
           const again = await findConnectButton();
           if (again) {
             await clickHuman(again);
@@ -271,9 +341,20 @@ async function doInvite(note) {
       }
     }
   }
-  // Envoyer (avec ou sans note)
-  const send = await waitFor(() => findClickable(noted ? RE_SEND_NOTE : RE_SEND_NO_NOTE) || findClickable(RE_SEND_NOTE), 5000);
-  if (!send) return { ok: false, error: "bouton « Envoyer » de l'invitation introuvable" };
+  // Envoyer (avec ou sans note). Certains profils envoient l'invitation dès le
+  // clic sur « Se connecter », sans fenêtre : le bouton passe alors « En attente ».
+  const send = await waitFor(
+    () =>
+      findOwnClickable(noted ? RE_SEND_NOTE : RE_SEND_NO_NOTE) ||
+      findOwnClickable(RE_SEND_NOTE) ||
+      (noted ? null : findOwnClickable(RE_PENDING)),
+    10000
+  );
+  if (!send) return { ok: false, error: `bouton « Envoyer » de l'invitation introuvable — ${inviteDiagnostic(connect)}` };
+  if (RE_PENDING.test(`${send.getAttribute("aria-label") || ""} ${send.textContent || ""}`.trim())) {
+    dropped = dropped || (clean ? "LinkedIn l'a envoyée dès le clic sur « Se connecter »" : null);
+    return dropped ? { ok: true, error: `invitation envoyée sans note — ${dropped}` } : { ok: true };
+  }
   await clickHuman(send);
   await human();
   return dropped ? { ok: true, error: `invitation envoyée sans note — ${dropped}` } : { ok: true };
@@ -380,7 +461,7 @@ async function doMessage(text, inThread, guard, meName) {
     if (!msgBtn) {
       // Pas encore en relation (invitation en attente ou à envoyer) : le serveur
       // reporte le message de quelques heures, sans pause punitive.
-      if (findClickable(RE_CONNECT) || findClickable(/en attente|pending/i)) {
+      if (findOwnClickable(RE_CONNECT) || findOwnClickable(RE_PENDING)) {
         return { ok: false, retry: true, error: "pas encore en relation (invitation non acceptée)" };
       }
       return { ok: false, error: "bouton « Message » du profil introuvable" };
