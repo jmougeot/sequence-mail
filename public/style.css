@@ -281,9 +281,10 @@ body.inbox-page { height:100vh; display:flex; flex-direction:column; overflow:hi
 }
 
 /* En-tête de campagne : une seule barre — pastille de statut et nom (qui ouvre la liste), onglets, action */
-.camp-head { display:flex; align-items:center; gap:4px 18px; border-bottom:1px solid var(--border); margin:-8px 0 16px; flex-wrap:wrap; }
+.camp-head { display:flex; align-items:center; gap:4px 20px; flex-wrap:wrap; background:var(--card); border-bottom:1px solid var(--border);
+  margin:-24px -24px 20px; padding:0 24px; min-height:52px; box-shadow:0 1px 2px rgba(27,31,36,.04); }
 .camp-head .camp-tabs { border:none; margin:0; align-self:stretch; }
-.camp-head .tab-btn { padding:12px 10px; margin-bottom:-1px; font-size:13.5px; }
+.camp-head .tab-btn { padding:16px 10px 14px; margin-bottom:-1px; font-size:13.5px; border-bottom-width:2px; }
 .tab-n { color:var(--muted); font-size:12px; margin-left:2px; }
 .tab-btn.active .tab-n { color:inherit; }
 .camp-title { display:inline-flex; align-items:center; gap:8px; background:transparent; color:var(--text); font-size:15px; font-weight:600; padding:6px 8px; margin-left:-8px; border-radius:6px; max-width:min(420px, 45vw); }
@@ -296,6 +297,6 @@ body.inbox-page { height:100vh; display:flex; flex-direction:column; overflow:hi
 .camp-list button.cur { font-weight:600; background:var(--accent-bg); }
 .camp-list button.new { color:var(--accent); border-top:1px solid var(--border); border-radius:0 0 6px 6px; margin-top:4px; padding-top:10px; }
 .dot-st { width:8px; height:8px; border-radius:50%; background:var(--border); flex:0 0 auto; }
-.dot-st.active { background:var(--ok); }
-.dot-st.paused { background:var(--warn); }
+.dot-st.active { background:#2da44e; box-shadow:0 0 0 3px #dafbe1; }
+.dot-st.paused { background:#e3a008; box-shadow:0 0 0 3px #fff4d6; }
 @media (max-width: 760px) { .camp-title { max-width:100%; } .camp-head .camp-tabs { order:3; flex:1 1 100%; } }
