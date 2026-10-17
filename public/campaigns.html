@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Campagnes</title>
-<link rel="stylesheet" href="style.css?v=9">
+<link rel="stylesheet" href="style.css?v=10">
 </head>
 <body>
 <div class="wrap wide">
@@ -114,7 +114,7 @@
   </div>
 </aside>
 
-<script src="app.js?v=9"></script>
+<script src="app.js?v=10"></script>
 <script>
 renderNav("campaigns.html");
 
@@ -190,21 +190,29 @@ function stepHtml(n, s, { firstEmail, abTest, single, types, deadline }) {
         ${types.length > 1 ? `<select class="step-kind" title="Type de l’étape" onchange="changeStepType(this)">
           ${types.map(k => `<option value="${k}" ${k === chan ? "selected" : ""}>${STEP_TYPES[k].label}</option>`).join("")}
         </select>` : `<span class="step-kind-label">${t.label}</span>`}
-        <span class="spacer"></span>
+        ${isEmail ? `<input class="subject" placeholder="${firstEmail ? "Objet" : "Objet (vide = même fil, Re:)"}" value="${esc(s.subject)}">` : `<span class="spacer"></span>`}
+        ${isEmail && abTest && !s.subject_b ? `<button class="icon-btn ab" title="Tester un second objet (A/B 50/50)" onclick="addSubjectB(this)">A/B</button>` : ""}
         <button class="icon-btn" title="Aperçu" onclick="previewStep(this)">👁</button>
         <button class="icon-btn danger" title="Supprimer l’étape" onclick="removeStep(this)" ${single ? "disabled" : ""}>✕</button>
       </div>
-      ${isEmail ? `<input class="subject" placeholder="${firstEmail ? "Objet" : "Objet (vide = même fil, Re:)"}" value="${esc(s.subject)}">` : ""}
-      ${isEmail && abTest ? `<input class="subjectB" placeholder="Objet B (optionnel — A/B test 50/50)" value="${esc(s.subject_b)}">` : ""}
+      ${isEmail && abTest && s.subject_b ? `<input class="subjectB" placeholder="Objet B (A/B test 50/50 ; vide = pas de test)" value="${esc(s.subject_b)}">` : ""}
       <textarea class="body" rows="1" placeholder="${esc(bodyPlaceholder(chan))}">${esc(s.body)}</textarea>
     </div>
   </div>`;
 }
 
-// Le corps grandit tout seul avec le texte (pas de redimensionnement manuel).
+// Le corps grandit tout seul avec le texte (pas de redimensionnement manuel) ; vide, il tient sur deux lignes.
 function autosize(el) {
   el.style.height = "auto";
-  el.style.height = Math.max(el.scrollHeight, 96) + "px";
+  el.style.height = Math.max(el.scrollHeight + 2, 56) + "px";
+}
+
+// Second objet de l'étape 1 : affiché à la demande, sous la ligne de titre
+function addSubjectB(btn) {
+  const card = btn.closest(".step-card");
+  btn.remove();
+  card.querySelector(".step-head").insertAdjacentHTML("afterend", `<input class="subjectB" placeholder="Objet B (A/B test 50/50 ; vide = pas de test)">`);
+  card.querySelector(".subjectB").focus();
 }
 
 // Les corps se réajustent quand la largeur change (barre de défilement, deux
