@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Campagnes</title>
-<link rel="stylesheet" href="style.css?v=13">
+<link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
 <div class="wrap wide">
@@ -114,7 +114,7 @@
   </div>
 </aside>
 
-<script src="app.js?v=13"></script>
+<script src="app.js?v=15"></script>
 <script>
 renderNav("campaigns.html");
 
@@ -190,9 +190,10 @@ function stepHtml(n, s, { firstEmail, abTest, single, types, deadline, open }) {
   const branch = s.branch || "";
   return `<div class="step ${open ? "open" : ""}" data-chan="${chan}" data-branch="${branch}" data-first="${firstEmail ? 1 : ""}">
     ${n > 1 ? `<div class="step-delay">
-      <span>${deadline ? "Sans acceptation après" : "+"}</span>
+      <span class="menu"><button class="ins" title="Insérer une étape ici" onclick="insertMenu(event)">+</button><span class="menu-list ins-list" hidden></span></span>
+      <span>${deadline ? "Sans acceptation après" : "Attendre"}</span>
       <input class="wait" type="number" value="${s.wait_days || 3}" min="1">
-      <span>${deadline ? "j d’invitation" : "j"}</span>
+      <span>${deadline ? "jours d’invitation" : "jours"}</span>
     </div>` : ""}
     <div class="step-box">
       <div class="step-sum" onclick="toggleStep(this)" title="${open ? "Replier" : "Modifier"}">
@@ -340,6 +341,31 @@ function focusStep(i) {
   if (!div) return;
   div.scrollIntoView({ behavior: "smooth", block: "nearest" });
   (div.querySelector(".subject") || div.querySelector(".body")).focus();
+}
+
+// ⊕ entre deux étapes : les types possibles à cet endroit (ceux du chemin, une seule invitation)
+function insertMenu(e) {
+  e.stopPropagation();
+  const btn = e.currentTarget;
+  const list = btn.nextElementSibling;
+  const i = stepIndex(btn);
+  const steps = readSteps();
+  const branch = steps[i].branch;
+  const hasInvite = steps.some(x => stepChannel(x) === "invite");
+  const types = branch ? LANE_TYPES[branch] : Object.keys(STEP_TYPES).filter(k => k !== "invite" || !hasInvite);
+  list.innerHTML = types.map(k => `<button type="button" onclick="insertStep(${i}, '${k}')">${STEP_TYPES[k].icon} ${STEP_TYPES[k].label}</button>`).join("");
+  const open = list.hidden;
+  $$(".menu-list").forEach(m => m.hidden = true);
+  list.hidden = !open;
+}
+
+// Insère une étape avant l'étape i, dans le même chemin ; elle s'ouvre pour être écrite.
+function insertStep(i, chan) {
+  $$(".menu-list").forEach(m => m.hidden = true);
+  const list = readSteps();
+  list.splice(i, 0, newStep(chan, { branch: list[i].branch, wait_days: 3 }));
+  setSteps(openPaths(list));
+  focusStep(i);
 }
 
 function addStepOfType(chan) { // email | invite | message

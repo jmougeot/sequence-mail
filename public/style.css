@@ -82,10 +82,15 @@ label.chip { display:inline-flex; align-items:center; cursor:pointer; user-selec
 .editor-foot { display:flex; align-items:center; gap:12px; padding:10px 0 24px; }
 
 /* Séquence : timeline d'étapes (email / LinkedIn) reliées par des délais */
-.step-delay { display:flex; align-items:center; gap:4px; padding:7px 0 7px 42px; color:var(--muted); font-size:12px; position:relative; }
+.step-delay { display:flex; align-items:center; gap:7px; padding:8px 0 8px 13px; color:var(--muted); font-size:14px; position:relative; }
 .step-delay::before { content:""; position:absolute; left:28px; top:0; bottom:0; width:2px; background:var(--border); z-index:0; }
 .step-delay > * { position:relative; z-index:1; background:var(--bg); padding:0 4px; }
-.step-delay input { width:40px; margin:0; text-align:center; padding:1px 2px; font-size:12px; background:var(--card); }
+.step-delay input { width:52px; margin:0; text-align:center; padding:4px 4px; font-size:15px; font-weight:600; background:var(--card); }
+/* ⊕ sur le trait : insérer une étape à cet endroit */
+.step-delay > .menu { margin-right:6px; z-index:30; }
+.step-delay .ins { width:22px; height:22px; padding:0; border-radius:50%; background:var(--card); border:1px solid var(--border); color:var(--muted); font-size:15px; line-height:20px; text-align:center; }
+.step-delay .ins:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-bg); filter:none; }
+.ins-list { left:0; right:auto; top:calc(100% + 4px); }
 /* Étape repliée : une ligne (type, numéro, objet ou début du message) ; un clic la déplie pour l'éditer */
 .step-box { background:var(--card); border:1px solid var(--border); border-radius:8px; }
 .step.open .step-box { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-bg); }
