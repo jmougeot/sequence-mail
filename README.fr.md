@@ -1,0 +1,134 @@
+# Sequence Mail
+
+*[English](README.md)*
+
+Outil de séquences multicanales (cold outreach) auto-hébergé : emails depuis plusieurs comptes Google Workspace et étapes LinkedIn, campagnes indépendantes, import CSV / Attio, détection automatique des réponses, répartition de charge entre comptes, protection de la délivrabilité.
+
+## Démarrage rapide
+
+**Sur un serveur** (VPS Linux, 1 Go de RAM suffit), une seule commande :
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jmougeot/sequence-mail/main/install.sh | sudo bash
+```
+
+Elle installe Docker si besoin, télécharge l'image précompilée et met l'app en
+ligne en HTTPS. Deux questions, toutes deux facultatives :
+- **domaine** : sans domaine, l'app est servie sur `<ip>.sslip.io`. Avec un domaine,
+  créer d'abord l'enregistrement `A  go.mondomaine.com → IP du serveur`
+  (proxy Cloudflare désactivé) ;
+- **mot de passe** du dashboard : généré et affiché s'il est laissé vide.
+
+Pour l'automatiser : `curl -fsSL …/install.sh | sudo DOMAIN=go.mondomaine.com DASHBOARD_PASSWORD=… bash`.
+Mise à jour : `cd /opt/sequence-mail && docker compose pull && docker compose up -d`.
+
+**En local**, pour essayer :
+
+```bash
+docker run -d --name sequence-mail -p 127.0.0.1:3000:3000 -v sequence-data:/data ghcr.io/jmougeot/sequence-mail
+```
+
+puis ouvrir http://localhost:3000. Le lien `{{link}}` et le suivi des visites ont
+besoin d'une adresse publique : ils ne marchent qu'avec l'installation serveur.
+
+Le suivi (`/p/`, `/t/`) est public ; tout le reste est protégé par le mot de passe
+(utilisateur `admin`).
+
+### Configuration Google (la seule étape manuelle)
+
+Les envois passent par l'API Gmail avec **vos** identifiants OAuth. La page
+**Paramètres** de l'app guide ces étapes et affiche l'URI de redirection à copier :
+
+1. [Activer l'API Gmail](https://console.cloud.google.com/apis/library/gmail.googleapis.com) dans un projet Google Cloud.
+2. [Audience](https://console.cloud.google.com/auth/audience) : *Interne* avec Google Workspace, sinon *Externe* puis « Publier l'application ».
+3. [Créer un client OAuth](https://console.cloud.google.com/auth/clients/create) de type *Application Web*, avec l'URI de redirection affichée dans Paramètres.
+4. Coller le client ID et le secret dans **Paramètres** (ou `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` dans `.env`, qui reste prioritaire).
+5. Dans Paramètres, cliquer **« + Connecter un compte Google »** pour chaque adresse Google Workspace à utiliser pour les envois.
+
+**Pour que la connexion dure indéfiniment** : sur l'écran *OAuth consent screen* de la console Google, l'application ne doit pas rester en mode **Testing** (les jetons y expirent au bout de 7 jours et il faudrait reconnecter les comptes chaque semaine). Deux options :
+- *User type: Internal* (recommandé avec Google Workspace) : seuls les comptes de votre organisation peuvent se connecter, aucune expiration, aucune validation Google ;
+- ou *Publishing status: In production* pour un user type External.
+
+Une fois cela fait, les jetons sont rafraîchis automatiquement et persistés en base : aucune reconnexion n'est nécessaire. Si Google révoque malgré tout un accès (changement de mot de passe, révocation manuelle…), le compte se désactive proprement dans le dashboard ; le reconnecter le réactive.
+
+### Piloter depuis Claude (serveur MCP)
+
+Un serveur **MCP** (lecture + écriture) permet de gérer campagnes, contacts et
+comptes depuis Claude Desktop / Claude Code. Il appelle l'API HTTP de l'app (local
+ou serveur) — voir **`mcp/README.md`** pour l'installation et le branchement.
+
+### Développement
+
+```bash
+npm install
+cp .env.example .env
+npm start              # http://localhost:3000
+```
+
+### Configuration Attio (bonus, optionnel)
+
+Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroniser depuis Attio » du tableau de bord en indiquant le slug de l'attribut statut (ex. `stage`) et les valeurs à importer.
+
+**Mise à jour retour vers Attio** : en renseignant `ATTIO_STAGE_ATTRIBUTE` (slug d'un attribut *texte* sur l'objet « people »), l'avancement de chaque contact est écrit automatiquement sur sa fiche Attio : « Étape 2/3 envoyée », « A répondu ✅ », « Séquence terminée », « Échec d'envoi ⚠️ ». La base SQLite reste la source de vérité (transactions, aucune perte en cas d'incident) ; Attio est un miroir temps réel.
+
+## Fonctionnement
+
+### Campagnes et séquences
+- Chaque campagne est indépendante et contient une séquence d'étapes (email initial + relances avec délai en jours).
+- Les corps et sujets acceptent des variables : `{{first_name}}`, `{{last_name}}`, `{{company}}`, `{{email}}`, `{{sender_name}}` et toute colonne supplémentaire du CSV.
+- Un **bloc conditionnel** adapte le texte aux données du contact : `{{si competences}}Vous cherchez {{competences}}.{{sinon}}Vous recrutez.{{fin}}` garde le premier texte si la variable est remplie, le second sinon (`{{sinon}}` facultatif, pas d'imbrication). L'aperçu d'une campagne ne signale alors une variable vide que chez les contacts qui recevront le texte où elle figure.
+- Une relance **sans sujet** part dans le même fil Gmail (`Re:`, en-têtes `In-Reply-To`/`References`), ce qui améliore la délivrabilité et le taux de réponse.
+- **A/B test** : l'étape 1 peut avoir un « Sujet B ». Chaque contact reçoit alors aléatoirement (50/50) la variante A ou B, conservée pour toute sa séquence, et le tableau de bord affiche le taux de réponse de chaque variante.
+
+### Import des contacts
+- **CSV** : colonnes `email` et/ou `linkedin` (au moins l'une des deux par ligne), `first_name`, `last_name`, `company` ; toute autre colonne devient une variable de template. Une cellule vide laisse le champ tel qu'il est ; la valeur `[vider]` le retire du contact. Dédoublonnage par email, sinon par profil LinkedIn. Un contact sans email saute les étapes email, un contact sans profil LinkedIn saute les étapes LinkedIn : une même campagne mêle candidats joignables par l'un, l'autre ou les deux.
+- **Attio** : import des personnes dont un attribut de statut CRM correspond aux valeurs choisies.
+
+### Gestion des réponses
+- Le système interroge les boîtes connectées toutes les ~4–7 minutes.
+- Dès qu'un contact répond (n'importe quel message du fil qui ne vient pas du compte émetteur), il passe au statut `replied` et est **retiré du workflow** : plus aucune relance ne lui sera envoyée, même après l'envoi de la dernière étape.
+- **Détection des refus** : si la réponse contient une demande de désinscription ou un refus (« pas intéressé », « ne plus me contacter », « unsubscribe », etc.), le contact passe en `opted_out`, est désinscrit auprès du propriétaire de la campagne — `do_not_contact` pour le tableau de bord, `owner_opt_outs` pour un client Azerit (exclu de toutes ses campagnes actuelles et futures, y compris lors d'imports ultérieurs ; les campagnes des autres clients ne sont pas touchées) et sa fiche Attio est taguée « Pas intéressé / désinscrit 🚫 ».
+- **Détection des bounces** (signaux serveur uniquement) : un message dont l'expéditeur est `mailer-daemon`/`postmaster` (convention RFC 5321) ou l'adresse NDR fixe d'Exchange passe le contact en `bounced`. Si le bounce est **permanent** (code DSN 5.X.X, « user unknown »…), l'adresse est blacklistée définitivement ; un échec temporaire (boîte pleine…) arrête la séquence sans blacklister. Les bounces sont exclus du taux de réponse.
+- **Réponses automatiques (OOO)** : détectées uniquement par les signaux machine — en-tête `Auto-Submitted` (RFC 3834, posé par Gmail/Outlook), `X-Autoreply`, `Precedence: auto_reply`, ou préfixe de sujet généré par le client (« Automatic reply: », « Réponse automatique : »). La relance est alors reportée d'environ 7 jours. **Aucune analyse du texte humain** : « je suis en déplacement, appelez-moi » est une vraie réponse et arrête la séquence. En cas de doute, le système choisit toujours l'arrêt de la séquence (échec côté sûr).
+- La classification opt-out ignore le texte cité (`>` et « Le … a écrit : ») : une mention de désinscription présente dans *votre propre template* cité dans la réponse ne déclenche rien.
+
+### Répartition entre comptes
+- Le premier email d'un contact part du compte **le moins chargé** du jour (équilibrage automatique).
+- Les relances partent toujours **du même compte** que le premier email (continuité du fil).
+- Quota quotidien par compte configurable depuis le tableau de bord (défaut : `DEFAULT_DAILY_LIMIT`).
+- Chaque compte a son **nom d'expéditeur** (champ « De ») et sa **signature**, configurables dans le tableau de bord. La signature s'insère à l'emplacement de `{{signature}}` dans le corps des étapes (libre à vous de l'omettre, ex. sur une relance) et accepte les variables. Le template peut aussi utiliser `{{sender_name}}` pour mentionner l'expéditeur dans le corps.
+
+### Délivrabilité
+- **Warm-up automatique** : chaque compte démarre à 5 emails/jour puis gagne +5/semaine jusqu'à son quota configuré (désactivable par compte dans Paramètres pour les boîtes déjà rodées).
+- **Vérification MX à l'import** : les adresses dont le domaine n'a pas de serveur mail sont rejetées avant tout envoi (rapport d'import détaillé), ce qui élimine la majorité des bounces.
+- Fenêtre d'envoi configurable (`SEND_WINDOW_START`/`END`, dans le fuseau `SEND_WINDOW_TZ`), envois en semaine uniquement par défaut.
+- Délai aléatoire de 90 à 420 s entre deux envois d'un même compte (`MIN_GAP_SECONDS`/`MAX_GAP_SECONDS`).
+- Jitter de 0 à 4 h sur la planification des relances : aucun envoi à heure fixe.
+- Emails en texte brut, envoyés via l'API Gmail (réputation du domaine préservée, pas de SMTP tiers).
+- Petit volume par tick (max 5 envois) avec pauses aléatoires entre chaque.
+
+### Fiabilité
+- Toutes les données (comptes, campagnes, contacts, statuts, historique des envois) sont stockées dans **SQLite** (`data/sequence-mail.db`, mode WAL).
+- Au redémarrage, le scheduler reprend exactement où il s'était arrêté : rien n'est perdu, aucun email n'est renvoyé en double (l'état est mis à jour transactionnellement après chaque envoi).
+- En cas d'échec d'envoi, 3 tentatives espacées de 1–2 h, puis le contact passe en `failed` avec le message d'erreur visible via l'API.
+
+## API
+
+| Méthode | Route | Description |
+|---|---|---|
+| GET | `/auth/google` | Connecter un compte Google |
+| GET | `/api/accounts` | Liste des comptes d'envoi |
+| PATCH | `/api/accounts/:id` | Modifier quota / actif |
+| GET | `/api/campaigns` | Campagnes + statistiques (taux de réponse, progression, volume) |
+| POST | `/api/campaigns` | Créer une campagne `{ name, steps: [{subject, body, wait_days}] }` |
+| POST | `/api/campaigns/:id/pause` · `/resume` | Mettre en pause / reprendre |
+| PATCH | `/api/campaigns/:id` | Modifier les champs fournis `{ name?, steps?, account_ids?, li_account_ids? }` |
+| PATCH | `/api/campaigns/:id/steps/:n` | Modifier une étape `{ subject?, subject_b?, body?, wait_days?, channel?, li_action? }` |
+| GET | `/api/campaigns/:id/preview` | Variables vides sur tous les contacts, étapes sautées, rendu (`status`, `samples`, `limit`) |
+| POST | `/api/campaigns/:id/import` | Importer un CSV (body brut, `Content-Type: text/csv`) ; `?campaign_vars=a,b` : colonnes propres à cette campagne |
+| POST | `/api/campaigns/:id/attio-sync` | `{ status_attribute, statuses[] }` |
+| GET | `/api/campaigns/:id/contacts` | Détail par contact (statut, étape, émetteur, erreurs) |
+
+## Licence
+
+MIT
