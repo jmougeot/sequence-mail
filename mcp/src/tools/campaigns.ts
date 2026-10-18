@@ -188,11 +188,40 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Détail d'une campagne",
       description:
-        "Renvoie le détail d'une campagne (description comprise) et la liste ordonnée de ses étapes (sujet, corps, wait_days, channel, li_action, branch). account_ids / li_account_ids absents = tous les comptes ; une relance sans subject part dans le fil du premier email. À lire avant de modifier le texte d'une étape (update_step) ou la séquence (update_campaign).",
+        "Renvoie le détail d'une campagne (description comprise) et la liste ordonnée de ses étapes (sujet, corps, wait_days, channel, li_action, branch). variables : les variables de personnalisation de la séquence (hors first_name, company… que l'app remplit) avec leur consigne (instruction : ce que la variable contient, sa longueur, son ton) — à lire avant de remplir une variable pour des contacts ; sans instruction, demande à l'utilisateur. account_ids / li_account_ids absents = tous les comptes ; une relance sans subject part dans le fil du premier email. À lire avant de modifier le texte d'une étape (update_step) ou la séquence (update_campaign).",
       inputSchema: { campaign_id: z.number().int().describe("Identifiant de la campagne.") },
       annotations: READ,
     },
     handler(({ campaign_id }: { campaign_id: number }) => api("GET", `/api/campaigns/${campaign_id}`))
+  );
+
+  server.registerTool(
+    "list_variable_instructions",
+    {
+      title: "Consignes des variables",
+      description:
+        "Renvoie la consigne de chaque variable de personnalisation ({{personnalisation}}…) qui en a une : {variable: consigne}. Une consigne vaut pour toutes les campagnes. Pour celles d'une séquence précise, get_campaign suffit.",
+      inputSchema: {},
+      annotations: READ,
+    },
+    handler(() => api("GET", "/api/variable-instructions"))
+  );
+
+  server.registerTool(
+    "set_variable_instruction",
+    {
+      title: "Écrire la consigne d'une variable",
+      description:
+        "Écrit la consigne d'une variable de personnalisation : ce qu'elle contient, sa longueur, son ton, où chercher l'information. Remplace l'existante, pour toutes les campagnes qui utilisent la variable ; chaîne vide = la retirer. Écrite pour qu'un agent qui remplit la variable des contacts n'ait rien d'autre à demander.",
+      inputSchema: {
+        name: z.string().describe("Nom de la variable, sans accolades (ex. personnalisation)."),
+        instruction: z.string().describe("Consigne ; chaîne vide = la retirer."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    handler(({ name, instruction }: { name: string; instruction: string }) =>
+      api("PUT", `/api/variable-instructions/${encodeURIComponent(name)}`, { json: { instruction } })
+    )
   );
 
   server.registerTool(

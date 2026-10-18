@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Campagnes</title>
-<link rel="stylesheet" href="style.css?v=15">
+<link rel="stylesheet" href="style.css?v=16">
 </head>
 <body>
 <div class="wrap wide">
-  <!-- Une seule barre : campagne (pastille de statut + nom, qui ouvre la liste), onglets, action -->
+  <!-- Une ligne : nom de la campagne en titre (pastille de statut, ouvre la liste), onglets, actions à droite -->
   <div class="camp-head">
     <span class="menu">
       <button class="camp-title" onclick="toggleMenu(event)" title="Changer de campagne"><i id="campDot" class="dot-st"></i><span id="campTitle">Nouvelle campagne</span><span class="chev">▾</span></button>
@@ -21,27 +21,30 @@
       <button class="tab-btn"        id="tab-import"   onclick="showTab('import')">Import</button>
     </div>
     <span class="spacer"></span>
+    <span class="menu">
+      <button class="ghost sender-btn" onclick="toggleMenu(event)" title="Comptes qui envoient cette campagne"><span id="senderLabel">Comptes d'envoi</span><span class="chev">▾</span></button>
+      <span class="menu-list sender-list" id="senderList" hidden></span>
+    </span>
     <span id="statusZone" class="inline"></span>
   </div>
 
-  <!-- Séquence -->
+  <!-- Séquence : une colonne centrée ; à sa droite, le panneau des variables (repliable) -->
   <div id="paneSeq" class="editor">
-    <input id="campName" class="camp-name-input" placeholder="Nom de la campagne">
-    <textarea id="campDesc" class="desc" style="resize:none;overflow:hidden;line-height:1.5" placeholder="Description : à qui s'adresse la campagne, quels contacts y mettre, l'angle du message"></textarea>
-    <div class="senders">
-      <span class="muted">Comptes d'envoi</span>
-      <span id="senderList" class="chips"></span>
-    </div>
-    <div id="steps"></div>
-    <div class="add-row" id="addRow">
-      <span class="muted">Ajouter</span>
-      <button class="ghost" onclick="addStepOfType('email')">✉️ Email</button>
-      <button class="ghost" onclick="addStepOfType('invite')">🔗 Invitation LinkedIn</button>
-      <button class="ghost" onclick="addStepOfType('message')">💬 Message LinkedIn</button>
-    </div>
-    <div class="editor-foot">
-      <button onclick="saveCampaign()" id="saveBtn">Créer la campagne</button>
-      <span id="campMsg"></span>
+    <div class="seq-layout">
+      <div class="seq-main">
+        <input id="campName" class="camp-name-input" placeholder="Nom de la campagne">
+        <textarea id="campDesc" class="desc" style="resize:none;overflow:hidden;line-height:1.5" placeholder="Description : à qui s'adresse la campagne, quels contacts y mettre, l'angle du message"></textarea>
+        <div class="seq-tools">
+          <button class="ghost var-toggle" id="varToggle" onclick="toggleVars()" hidden>Variables</button>
+        </div>
+        <div id="steps"></div>
+        <div class="add-row" id="addRow"></div>
+        <div class="editor-foot">
+          <button onclick="saveCampaign()" id="saveBtn">Créer la campagne</button>
+          <span id="campMsg"></span>
+        </div>
+      </div>
+      <aside class="seq-side" id="varPanel" hidden></aside>
     </div>
   </div>
 
@@ -100,14 +103,14 @@
   </div>
 </div>
 
-<!-- Panneau latéral : aperçu d'une étape (👁) ou d'un contact (clic dans le tableau) -->
+<!-- Panneau latéral : aperçu d'une étape (œil) ou d'un contact (clic dans le tableau) -->
 <aside id="drawer" class="drawer" hidden>
   <div class="drawer-head">
     <div style="min-width:0">
       <div id="drawerTitle" class="drawer-title"></div>
       <div id="drawerSub" class="muted"></div>
     </div>
-    <button class="icon-btn" title="Fermer (Échap)" onclick="closeDrawer()">✕</button>
+    <button class="icon-btn" title="Fermer (Échap)" onclick="closeDrawer()"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
   </div>
   <div class="drawer-scroll">
     <div class="inline" style="margin-bottom:12px">
@@ -154,10 +157,21 @@ const firstCampaign = campaigns => campaigns.find(c => c.status !== "archived") 
 // (branch « accepted ») et les autres (« not_accepted »). Ordre des étapes : tronc
 // commun jusqu'à l'invitation, chemin « acceptée », puis chemin « non acceptée ».
 // ---------------------------------------------------------------------------
+// Icônes (SVG en ligne, trait fin, couleur du texte) : type d'étape et actions
+const ICONS = {
+  mail: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+  invite: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/>',
+  message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
+  x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+};
+const ico = name => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
+
 const STEP_TYPES = {
-  email:   { icon: "✉️", label: "Email" },
-  invite:  { icon: "🔗", label: "Invitation LinkedIn" },
-  message: { icon: "💬", label: "Message LinkedIn" },
+  email:   { icon: "mail",    label: "Email" },
+  invite:  { icon: "invite",  label: "Invitation LinkedIn" },
+  message: { icon: "message", label: "Message LinkedIn" },
 };
 
 const BRANCH_LABELS = {
@@ -177,87 +191,67 @@ function bodyPlaceholder(chan) {
     : "Bonjour {{first_name}},\n...";
 }
 
-// Résumé d'une étape repliée : objet et début du message (sans la formule d'appel).
-function stepSummary(chan, subject, body, firstEmail, subjectB) {
-  const line = (body || "").split("\n").map(l => l.trim()).filter(l => l && !/^(hello|bonjour|hi|salut|hey)\b/i.test(l))[0] || "";
-  const main = chan === "email" ? (subject || (firstEmail ? "Sans objet" : "Re: (même fil)"))
-    : chan === "invite" ? (line ? "Invitation avec note" : "Invitation, sans note")
-    : line || "Message vide";
-  const sub = chan === "message" ? "" : line;
-  return `<span class="sum-main">${esc(main)}</span>${subjectB ? `<span class="ab-tag" title="A/B test : « ${esc(subject)} » / « ${esc(subjectB)} »">A/B</span>` : ""}${sub ? `<span class="sum-sub">${esc(sub)}</span>` : ""}`;
-}
+// Boutons d'ajout d'étape (sous la séquence, sous chaque chemin)
+const addButtons = (types, handler) => `<span class="muted">Ajouter</span>` +
+  types.map(k => `<button class="ghost" onclick="${handler(k)}">${ico(STEP_TYPES[k].icon)}${STEP_TYPES[k].label}</button>`).join("");
+$("#addRow").innerHTML = addButtons(Object.keys(STEP_TYPES), k => `addStepOfType('${k}')`);
 
+const subjectRow = (cls, label, placeholder, value) =>
+  `<label class="step-row"><span class="row-l">${label}</span><input class="${cls}" placeholder="${esc(placeholder)}" value="${esc(value || "")}"></label>`;
+
+// Une étape = une carte toujours ouverte : en-tête (type, numéro, actions), objet, corps.
 // n = numéro (1..), firstEmail = cette étape est le premier email de la séquence
 // ou d'un chemin (objet obligatoire), abTest = premier email de la séquence (A/B test
 // possible), single = seule étape (non supprimable), types = types proposés,
-// deadline = première étape « non acceptée » : son délai court depuis l'invitation,
-// open = étape dépliée (une seule à la fois).
-function stepHtml(n, s, { firstEmail, abTest, single, types, deadline, open }) {
+// deadline = première étape « non acceptée » : son délai court depuis l'invitation.
+function stepHtml(n, s, { firstEmail, abTest, single, types, deadline }) {
   const chan = stepChannel(s);
   const t = STEP_TYPES[chan];
   const isEmail = chan === "email";
-  const branch = s.branch || "";
-  return `<div class="step ${open ? "open" : ""}" data-chan="${chan}" data-branch="${branch}" data-first="${firstEmail ? 1 : ""}">
+  const ab = isEmail && abTest && s.subject_b;
+  return `<div class="step" data-chan="${chan}" data-branch="${s.branch || ""}" data-first="${firstEmail ? 1 : ""}">
     ${n > 1 ? `<div class="step-delay">
-      <span class="menu"><button class="ins" title="Insérer une étape ici" onclick="insertMenu(event)">+</button><span class="menu-list ins-list" hidden></span></span>
-      <span>${deadline ? "Sans acceptation après" : "Attendre"}</span>
-      <input class="wait" type="number" value="${s.wait_days || 3}" min="1">
-      <span>${deadline ? "jours d’invitation" : "jours"}</span>
+      <span class="menu"><button class="ins" title="Insérer une étape ici" onclick="insertMenu(event)">${ico("plus")}</button><span class="menu-list ins-list" hidden></span></span>
+      <span class="delay-txt">${deadline ? "Sans acceptation après" : "Attendre"} <input class="wait" type="number" value="${s.wait_days || 3}" min="1"> jours</span>
     </div>` : ""}
     <div class="step-box">
-      <div class="step-sum" onclick="toggleStep(this)" title="${open ? "Replier" : "Modifier"}">
-        <span class="step-ic">${t.icon}</span><span class="step-n">${n}</span>
-        <span class="sum">${stepSummary(chan, s.subject, s.body, firstEmail, abTest && s.subject_b)}</span>
-        <span class="chev">›</span>
+      <div class="step-head">
+        <span class="step-ic">${ico(t.icon)}</span>
+        <span class="step-n">Étape ${n}</span>
+        ${types.length > 1 ? `<span class="step-kind"><span>${t.label}</span><select title="Type de l’étape" onchange="changeStepType(this)">
+          ${types.map(k => `<option value="${k}" ${k === chan ? "selected" : ""}>${STEP_TYPES[k].label}</option>`).join("")}
+        </select></span>` : `<span class="step-kind-label">${t.label}</span>`}
+        <span class="spacer"></span>
+        ${isEmail && abTest && !s.subject_b ? `<button class="link-btn ab" title="A/B test : la moitié des contacts reçoit l'objet A, l'autre moitié l'objet B" onclick="addSubjectB(this)">+ Objet B</button>` : ""}
+        <button class="icon-btn" title="Aperçu" onclick="previewStep(this)">${ico("eye")}</button>
+        <button class="icon-btn danger" title="Supprimer l’étape" onclick="removeStep(this)" ${single ? "disabled" : ""}>${ico("x")}</button>
       </div>
-      <div class="step-card">
-        <div class="step-head">
-          ${types.length > 1 ? `<select class="step-kind" title="Type de l’étape" onchange="changeStepType(this)">
-            ${types.map(k => `<option value="${k}" ${k === chan ? "selected" : ""}>${STEP_TYPES[k].label}</option>`).join("")}
-          </select>` : `<span class="step-kind-label">${t.label}</span>`}
-          ${isEmail ? `<input class="subject" placeholder="${firstEmail ? "Objet" : "Objet (vide = même fil, Re:)"}" value="${esc(s.subject)}">` : `<span class="spacer"></span>`}
-          ${isEmail && abTest && !s.subject_b ? `<button class="link-btn ab" title="La moitié des contacts reçoit l'objet A, l'autre moitié l'objet B" onclick="addSubjectB(this)">+ Objet B (A/B test)</button>` : ""}
-          <button class="icon-btn" title="Aperçu" onclick="previewStep(this)">👁</button>
-          <button class="icon-btn danger" title="Supprimer l’étape" onclick="removeStep(this)" ${single ? "disabled" : ""}>✕</button>
-        </div>
-        ${isEmail && abTest && s.subject_b ? `<input class="subjectB" placeholder="Objet B (A/B test 50/50 ; vide = pas de test)" value="${esc(s.subject_b)}">` : ""}
-        <textarea class="body" rows="1" placeholder="${esc(bodyPlaceholder(chan))}">${esc(s.body)}</textarea>
-      </div>
+      ${isEmail ? subjectRow("subject", ab ? "Objet A" : "Objet", firstEmail ? "Objet de l’email" : "Même fil que l’email précédent (Re:)", s.subject) : ""}
+      ${ab ? subjectRow("subjectB", "Objet B", "Vide = pas de test A/B", s.subject_b) : ""}
+      <textarea class="body" rows="1" placeholder="${esc(bodyPlaceholder(chan))}">${esc(s.body)}</textarea>
     </div>
   </div>`;
 }
 
-// Étape dépliée (index dans l'ordre d'affichage) ; -1 = toutes repliées
-let openStep = -1;
-function showOpenStep() {
-  $$("#steps .step").forEach((d, j) => d.classList.toggle("open", j === openStep));
-  const div = $$("#steps .step")[openStep];
-  if (div) autosize(div.querySelector(".body"));
-}
-function toggleStep(el) {
-  const i = stepIndex(el);
-  openStep = openStep === i ? -1 : i;
-  showOpenStep();
-}
-// Le résumé suit la saisie
+// Le menu des variables suit la saisie
 $("#steps").addEventListener("input", (e) => {
-  const div = e.target.closest(".step");
-  if (!div || !e.target.matches(".subject, .subjectB, .body")) return;
-  $(".sum", div).innerHTML = stepSummary(div.dataset.chan, $(".subject", div)?.value, $(".body", div).value, div.dataset.first === "1", $(".subjectB", div)?.value);
+  if (e.target.matches(".subject, .subjectB, .body")) renderVarPanel();
 });
 
-// Le corps grandit tout seul avec le texte (pas de redimensionnement manuel) ; vide, il tient sur deux lignes.
+// Le corps grandit tout seul avec le texte (pas de redimensionnement manuel).
 function autosize(el) {
   el.style.height = "auto";
-  el.style.height = Math.max(el.scrollHeight + 2, 56) + "px";
+  el.style.height = Math.max(el.scrollHeight + 2, 44) + "px";
 }
 
-// Second objet de l'étape 1 : affiché à la demande, sous la ligne de titre
+// Second objet de l'étape 1 : affiché à la demande, sous l'objet A
 function addSubjectB(btn) {
-  const card = btn.closest(".step-card");
+  const box = btn.closest(".step-box");
   btn.remove();
-  card.querySelector(".step-head").insertAdjacentHTML("afterend", `<input class="subjectB" placeholder="Objet B (A/B test 50/50 ; vide = pas de test)">`);
-  card.querySelector(".subjectB").focus();
+  const rowA = box.querySelector(".step-row");
+  rowA.querySelector(".row-l").textContent = "Objet A";
+  rowA.insertAdjacentHTML("afterend", subjectRow("subjectB", "Objet B", "Vide = pas de test A/B", ""));
+  box.querySelector(".subjectB").focus();
 }
 
 // Les corps se réajustent quand la largeur change (barre de défilement, deux
@@ -309,20 +303,18 @@ function setSteps(list) {
     // une seule invitation : elle ouvre les deux chemins
     types: s.branch ? LANE_TYPES[s.branch] : Object.keys(STEP_TYPES).filter(k => k !== "invite" || inviteIdx < 0 || i === inviteIdx),
     deadline: i === deadlineIdx,
-    open: i === openStep,
   });
   const trunk = list.map((s, i) => s.branch ? "" : html(s, i)).join("");
   const lanes = inviteIdx < 0 ? "" : `<div class="split">${Object.entries(BRANCH_LABELS).map(([b, label]) => `
     <div class="lane" data-lane="${b}">
       <div class="lane-head">${label}</div>
       ${list.some(s => s.branch === b) ? list.map((s, i) => s.branch === b ? html(s, i) : "").join("") : `<div class="lane-end">Fin de la séquence</div>`}
-      <div class="add-row">
-        ${LANE_TYPES[b].map(k => `<button class="ghost" onclick="addStepToLane('${b}', '${k}')">${STEP_TYPES[k].icon} ${STEP_TYPES[k].label}</button>`).join("")}
-      </div>
+      <div class="add-row">${addButtons(LANE_TYPES[b], k => `addStepToLane('${b}', '${k}')`)}</div>
     </div>`).join("")}</div>`;
   $("#steps").innerHTML = trunk + lanes;
   $("#addRow").hidden = inviteIdx >= 0;
   $$("#steps .body").forEach(autosize);
+  renderVarPanel();
 }
 
 function readSteps() {
@@ -341,6 +333,66 @@ function readSteps() {
   });
 }
 
+// Consigne des variables de personnalisation ({{personnalisation}}…) : une par nom de variable, pour toutes les campagnes,
+// dite à l'agent qui remplit la variable des contacts (get_campaign). Le menu de droite liste celles de la séquence,
+// puis celles qui n'ont de consigne que dans d'autres campagnes ; une variable se crée en la tapant dans un texte.
+// Enregistrées avec la campagne.
+let varInstructions = {};      // {variable: consigne}, telle qu'à l'écran
+let savedVarInstructions = {}; // telle qu'enregistrée : seules les différences sont envoyées
+const VAR_RE = /\{\{\s*(?:si\s+)?([\p{L}\p{N}_]+)\s*(?::[^|{}]*\|[^{}]*)?\}\}/gu;
+function seqVarNames() {
+  const names = new Set();
+  for (const el of $$("#steps .subject, #steps .subjectB, #steps .body")) {
+    for (const m of el.value.matchAll(VAR_RE)) names.add(m[1]);
+  }
+  return [...names].filter(n => !BASE_VARS.includes(n) && n !== "sinon" && n !== "fin");
+}
+// Panneau replié ou non : choix mémorisé dans le navigateur
+let varsHidden = localStorage.getItem("seq.varsHidden") === "1";
+function toggleVars() {
+  varsHidden = !varsHidden;
+  localStorage.setItem("seq.varsHidden", varsHidden ? "1" : "0");
+  renderVarPanel();
+  if (!varsHidden) $$("#varPanel textarea").forEach(autosize);
+}
+function renderVarPanel() {
+  const panel = $("#varPanel");
+  const inSeq = seqVarNames();
+  const others = Object.keys(varInstructions).filter(k => varInstructions[k].trim() && !inSeq.includes(k)).sort();
+  const any = inSeq.length + others.length;
+  $("#varToggle").hidden = !any;
+  $("#varToggle").innerHTML = `Variables${inSeq.length ? ` <span class="tab-n">${inSeq.length}</span>` : ""}`;
+  $("#varToggle").classList.toggle("active", !varsHidden);
+  panel.hidden = !any || varsHidden;
+  const key = inSeq.join() + "|" + others.join();
+  if (panel.dataset.key === key) return; // mêmes variables : on ne touche pas au texte en cours de saisie
+  panel.dataset.key = key;
+  const card = n => `<div class="var-card" data-var="${esc(n)}">
+    <code>{{${esc(n)}}}</code>
+    <textarea class="desc" rows="1" placeholder="Ce que contient {{${esc(n)}}} : contenu, longueur, ton">${esc(varInstructions[n] || "")}</textarea>
+  </div>`;
+  panel.innerHTML = `<div class="muted">Variables</div>${inSeq.map(card).join("")}`
+    + (others.length ? `<div class="muted">Autres campagnes</div>${others.map(card).join("")}` : "");
+  $$("#varPanel textarea").forEach(autosize);
+}
+$("#varPanel").addEventListener("input", e => {
+  const card = e.target.closest(".var-card");
+  if (card) varInstructions[card.dataset.var] = e.target.value;
+});
+async function loadVarInstructions() {
+  varInstructions = await api("/api/variable-instructions");
+  savedVarInstructions = { ...varInstructions };
+  delete $("#varPanel").dataset.key;
+  renderVarPanel();
+}
+async function saveVarInstructions() {
+  for (const [name, text] of Object.entries(varInstructions)) {
+    if ((savedVarInstructions[name] ?? "") === text.trim()) continue;
+    await api(`/api/variable-instructions/${encodeURIComponent(name)}`, { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ instruction: text }) });
+    savedVarInstructions[name] = text.trim();
+  }
+}
+
 const stepIndex = el => $$("#steps .step").indexOf(el.closest(".step"));
 
 const newStep = (chan, extra = {}) => chan === "email" ? { channel: "email", ...extra } : { channel: "linkedin", li_action: chan, ...extra };
@@ -354,8 +406,6 @@ function openPaths(list) {
 }
 
 function focusStep(i) {
-  openStep = i;
-  showOpenStep();
   const div = $$("#steps .step")[i];
   if (!div) return;
   div.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -372,13 +422,13 @@ function insertMenu(e) {
   const branch = steps[i].branch;
   const hasInvite = steps.some(x => stepChannel(x) === "invite");
   const types = branch ? LANE_TYPES[branch] : Object.keys(STEP_TYPES).filter(k => k !== "invite" || !hasInvite);
-  list.innerHTML = types.map(k => `<button type="button" onclick="insertStep(${i}, '${k}')">${STEP_TYPES[k].icon} ${STEP_TYPES[k].label}</button>`).join("");
+  list.innerHTML = types.map(k => `<button type="button" onclick="insertStep(${i}, '${k}')">${ico(STEP_TYPES[k].icon)}${STEP_TYPES[k].label}</button>`).join("");
   const open = list.hidden;
   $$(".menu-list").forEach(m => m.hidden = true);
   list.hidden = !open;
 }
 
-// Insère une étape avant l'étape i, dans le même chemin ; elle s'ouvre pour être écrite.
+// Insère une étape avant l'étape i, dans le même chemin, et y place le curseur.
 function insertStep(i, chan) {
   $$(".menu-list").forEach(m => m.hidden = true);
   const list = readSteps();
@@ -411,9 +461,8 @@ function changeStepType(sel) {
   const list = readSteps();
   const chan = sel.value;
   list[i] = { ...list[i], channel: chan === "email" ? "email" : "linkedin", li_action: chan === "email" ? undefined : chan };
-  openStep = i;
   setSteps(openPaths(list));
-  $$("#steps .step")[i].querySelector(".step-kind")?.focus();
+  $$("#steps .step")[i].querySelector(".step-kind select")?.focus();
 }
 
 function removeStep(btn) {
@@ -421,18 +470,34 @@ function removeStep(btn) {
   const list = readSteps();
   if (list.length <= 1) return;
   list.splice(i, 1);
-  openStep = -1;
   setSteps(list);
   if (preview?.kind === "step") closeDrawer();
 }
 
-// --- Comptes d'envoi de la campagne : tous cochés par défaut (null = tous) ---
+// --- Comptes d'envoi de la campagne : un bouton qui résume la sélection, un menu à cocher ; tous cochés par défaut (null = tous) ---
 function renderSenders(selectedIds) {
   $("#senderList").innerHTML = accounts.map(a => `
-    <label class="chip ${!selectedIds || selectedIds.includes(a.id) ? "active" : ""}" title="${a.active ? "" : "Compte inactif"}">
-      <input type="checkbox" class="senderChk" value="${a.id}" ${!selectedIds || selectedIds.includes(a.id) ? "checked" : ""} onchange="this.closest('.chip').classList.toggle('active', this.checked); refreshPreviewAccounts()" hidden>
-      ${esc(a.email)}${a.active ? "" : " (inactif)"}
-    </label>`).join("") || '<span class="muted">Aucun compte connecté — voir Paramètres</span>';
+    <label class="sender-row ${a.active ? "" : "inactive"}">
+      <input type="checkbox" class="senderChk" value="${a.id}" ${!selectedIds || selectedIds.includes(a.id) ? "checked" : ""} onchange="senderChanged()">
+      <span>${esc(a.email)}</span>${a.active ? "" : `<span class="muted">inactif</span>`}
+    </label>`).join("") || '<span class="muted" style="padding:8px 10px;white-space:nowrap">Aucun compte connecté — voir Paramètres</span>';
+  senderLabel();
+}
+// Un changement s'enregistre aussitôt sur une campagne existante (le menu est dans l'en-tête, visible sur tous les onglets)
+async function senderChanged() {
+  senderLabel();
+  refreshPreviewAccounts();
+  if (!selectedId) return;
+  try {
+    await api(`/api/campaigns/${selectedId}`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ account_ids: readSenderIds() }) });
+  } catch (e) { notify(e.message, false); }
+}
+function senderLabel() {
+  const all = $$(".senderChk"), on = all.filter(c => c.checked).length;
+  $("#senderLabel").textContent = !all.length ? "Aucun compte d'envoi"
+    : on === all.length ? `Tous les comptes d'envoi (${all.length})`
+    : on === 0 ? "Aucun compte d'envoi coché"
+    : `${on} compte${on > 1 ? "s" : ""} d'envoi sur ${all.length}`;
 }
 
 // null = tous cochés (la campagne suivra aussi les comptes connectés plus tard)
@@ -470,7 +535,6 @@ function newCampaign() {
   $("#campMsg").textContent = "";
   renderSenders(null);
   refreshPreviewAccounts();
-  openStep = 0;
   setSteps([{ channel: "email" }]);
   $("#campTabs").hidden = true;
   showPane("paneSeq");
@@ -488,7 +552,7 @@ function showTab(name) {
   if (name === "contacts") loadContacts();
   if (name === "info") loadStats();
   // Réajuste la hauteur des corps une fois le pane visible (scrollHeight = 0 si caché)
-  if (name === "seq") $$("#steps .body").forEach(autosize);
+  if (name === "seq") $$("#steps .body, #varPanel textarea").forEach(autosize);
 }
 
 function showPane(id) {
@@ -603,7 +667,6 @@ async function selectCampaign(id, tab = "seq") {
   $("#campMsg").textContent = "";
   renderSenders(c.account_ids);
   refreshPreviewAccounts();
-  openStep = c.steps.length ? -1 : 0;
   setSteps(c.steps.length ? c.steps : [{ channel: "email" }]);
   $("#campTabs").hidden = false;
   $("#tab-contacts").textContent = "Contacts";
@@ -655,6 +718,7 @@ async function saveCampaign() {
   const btn = $("#saveBtn");
   btn.disabled = true;
   try {
+    await saveVarInstructions();
     if (selectedId) {
       await api(`/api/campaigns/${selectedId}`, { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
       msg.textContent = "Enregistré ✓";
@@ -671,7 +735,7 @@ async function saveCampaign() {
 }
 
 // ---------------------------------------------------------------------------
-// Aperçu (panneau latéral). Deux entrées : 👁 sur une étape (contact d'exemple)
+// Aperçu (panneau latéral). Deux entrées : l'œil d'une étape (contact d'exemple)
 // ou clic sur un contact du tableau (toute la séquence telle que CE prospect la recevra).
 // ---------------------------------------------------------------------------
 let preview = null;          // { kind: "step", index } | { kind: "contact", contact }
@@ -730,7 +794,7 @@ async function renderStepPreview(steps, i, { contact, accountId }) {
     ? `<div class="hline">De : ${esc(r.from)}</div>
        ${skipped ? `<div class="hline skip">Pas d’email — cette étape sera sautée</div>` : `<div class="hline">À : ${esc(r.to)}</div>`}
        <div class="hline"><b>Objet : ${esc(r.subject)}</b></div>`
-    : `<div class="hline"><b>${STEP_TYPES[chan].icon} ${STEP_TYPES[chan].label}</b></div>
+    : `<div class="hline"><b>${ico(STEP_TYPES[chan].icon)} ${STEP_TYPES[chan].label}</b></div>
        ${skipped ? `<div class="hline skip">Pas de profil LinkedIn — cette étape sera sautée</div>` : ""}`);
   const body = chan === "invite" && !r.body ? '<span class="muted">(invitation sans note)</span>' : fmtBody(r.body);
   return { r, skipped, html: `${header}<pre>${body}</pre>` };
@@ -1019,6 +1083,7 @@ async function attioSync(btn) {
   $("#statusSet").innerHTML = `<option value="">Changer le statut…</option>` +
     SETTABLE_STATUSES.map(s => `<option value="${s}">→ ${STATUS_LABELS[s]}</option>`).join("");
   accounts = await api("/api/accounts");
+  await loadVarInstructions();
   refreshPreviewAccounts(); // rempli avec tous les comptes tant qu'aucune campagne n'est sélectionnée
   const campaigns = await loadList();
   const [hid, htab] = location.hash.slice(1).split("/");

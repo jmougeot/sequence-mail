@@ -402,3 +402,8 @@ addColumnIfMissing("campaign_contacts", "li_accepted", "li_accepted INTEGER");
 // l'angle du message. Saisie à la création, lue par les agents (MCP) avant
 // d'ajouter des contacts ou de retoucher la séquence.
 addColumnIfMissing("campaigns", "description", "description TEXT");
+
+// Consigne d'une variable de personnalisation ({{personnalisation}}…) : à quoi elle correspond, ce qu'elle
+// contient, sa longueur, son ton. Une seule par nom de variable, pour toutes les campagnes ; saisie sous le
+// texte des étapes, lue par l'agent (MCP) qui remplit la variable des contacts.
+db.exec("CREATE TABLE IF NOT EXISTS variable_instructions (name TEXT PRIMARY KEY, instruction TEXT NOT NULL)");

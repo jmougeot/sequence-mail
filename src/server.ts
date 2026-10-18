@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { db } from "./db.js";
 import { authUrl, handleOAuthCallback } from "./services/google.js";
-import { importContacts, KNOWN_COLUMNS, MERGED_EXTRA, normalizeColumn, parseCsv, renderTemplate } from "./services/contacts.js";
+import { BUILT_IN_VARIABLES, importContacts, KNOWN_COLUMNS, MERGED_EXTRA, normalizeColumn, parseCsv, renderTemplate, templateVariables } from "./services/contacts.js";
 import { syncFromAttio } from "./services/attio.js";
 import { effectiveDailyLimit, nextEmailEstimate, sendWindowState } from "./services/scheduler.js";
 import { registerOutreachRoutes } from "./services/outreach-routes.js";
@@ -257,6 +257,26 @@ export function createServer(): express.Express {
     res.json({ id: result });
   });
 
+  // --- Consigne des variables de personnalisation : une par nom de variable, pour toutes les campagnes ---
+  app.get("/api/variable-instructions", (_req, res) => {
+    const rows = db.prepare("SELECT name, instruction FROM variable_instructions ORDER BY name").all() as Array<{ name: string; instruction: string }>;
+    res.json(Object.fromEntries(rows.map((r) => [r.name, r.instruction])));
+  });
+
+  // Texte vide = plus de consigne
+  app.put("/api/variable-instructions/:name", (req, res) => {
+    const { name } = req.params;
+    if (!/^[\p{L}\p{N}_]+$/u.test(name)) return res.status(400).json({ error: `« ${name} » n'est pas un nom de variable` });
+    const instruction = req.body?.instruction;
+    if (typeof instruction !== "string") return res.status(400).json({ error: "instruction doit être un texte" });
+    if (instruction.trim()) {
+      db.prepare("INSERT INTO variable_instructions (name, instruction) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET instruction = excluded.instruction").run(name, instruction.trim());
+    } else {
+      db.prepare("DELETE FROM variable_instructions WHERE name = ?").run(name);
+    }
+    res.json({ ok: true });
+  });
+
   app.get("/api/campaigns", (_req, res) => {
     const campaigns = db
       .prepare(
@@ -327,9 +347,20 @@ export function createServer(): express.Express {
         "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch FROM steps WHERE campaign_id = ? ORDER BY step_number"
       )
       .all(req.params.id);
+    // Variables de personnalisation de la séquence (hors celles de l'app), avec leur consigne : à lire avant de les remplir
+    const instructions = new Map(
+      (db.prepare("SELECT name, instruction FROM variable_instructions").all() as Array<{ name: string; instruction: string }>).map((r) => [r.name, r.instruction])
+    );
+    const names = new Set<string>();
+    for (const s of steps as Array<{ subject: string; subject_b: string | null; body: string }>) {
+      for (const text of [s.subject, s.subject_b, s.body]) {
+        if (text) for (const key of templateVariables(text).keys()) if (!BUILT_IN_VARIABLES.has(key)) names.add(key);
+      }
+    }
     // account_ids / li_account_ids : null = tous les comptes, sinon liste d'ids (JSON en base)
     res.json({
       ...campaign,
+      variables: [...names].map((name) => ({ name, instruction: instructions.get(name) })),
       account_ids: campaign.account_ids ? JSON.parse(campaign.account_ids) : null,
       li_account_ids: campaign.li_account_ids ? JSON.parse(campaign.li_account_ids) : null,
       steps,

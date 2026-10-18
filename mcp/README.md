@@ -75,7 +75,8 @@ règles de sécurité d'abord, puis identifiants, flux d'une campagne et des ré
 client MCP les charge — à garder sous 2 000 caractères : Claude Code tronque à 2 048.
 
 **Campagnes** — `list_campaigns` (archives masquées par défaut, `include_archived`),
-`get_campaign`, `get_activity` (journal : totaux et événements sur N jours),
+`get_campaign` (avec les variables de la séquence et leur consigne), `list_variable_instructions`,
+`set_variable_instruction`, `get_activity` (journal : totaux et événements sur N jours),
 `preview_campaign` (variables vides sur tous les contacts d'une campagne, étapes sautées,
 rendu des étapes), `preview_email`, `send_test_email` (email `[TEST]` d'une étape,
 `dry_run` par défaut), `create_campaign` (avec `contacts` : création et import en un

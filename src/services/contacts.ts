@@ -246,6 +246,9 @@ export function renderTemplate(
     .replace(/\{\{\s*([\p{L}\p{N}_]+)\s*\}\}/gu, (_, key: string) => vars[key] ?? "");
 }
 
+/** Variables que l'app remplit elle-même ; les autres sont des champs de contact ou des variables de campagne. */
+export const BUILT_IN_VARIABLES = new Set(["email", "first_name", "last_name", "company", "sender_name", "signature", "link"]);
+
 /**
  * Variables référencées par un template, avec les mêmes motifs que
  * renderTemplate. La valeur indique si la variable n'apparaît que dans un accord
