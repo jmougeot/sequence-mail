@@ -1,60 +1,60 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sequence Mail — Paramètres</title>
+<title>Sequence Mail — Settings</title>
 <link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
 <div class="wrap">
-  <h1>Paramètres</h1>
+  <h1>Settings</h1>
 
   <div class="card">
     <div class="inline" style="justify-content:space-between;margin-bottom:12px">
-      <h2 style="margin:0">Comptes email</h2>
+      <h2 style="margin:0">Email accounts</h2>
       <div class="inline">
-        <button id="googleEdit" class="ghost" hidden onclick="$('#googleSetup').hidden = !$('#googleSetup').hidden">Identifiants Google</button>
-        <a class="btn" id="googleConnect" href="/auth/google">+ Connecter un compte Google</a>
+        <button id="googleEdit" class="ghost" hidden onclick="$('#googleSetup').hidden = !$('#googleSetup').hidden">Google credentials</button>
+        <a class="btn" id="googleConnect" href="/auth/google">+ Connect a Google account</a>
       </div>
     </div>
     <div id="googleSetup" hidden style="margin-bottom:12px">
       <ol style="margin:0 0 10px;padding-left:20px;line-height:1.8">
-        <li><a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">Activer l'API Gmail</a></li>
-        <li><a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Audience</a> : Interne (Google Workspace), sinon Externe puis « Publier l'application » (en mode Test, les connexions expirent après 7 jours)</li>
-        <li><a href="https://console.cloud.google.com/auth/clients/create" target="_blank" rel="noopener">Client OAuth « Application Web »</a>, URI de redirection
+        <li><a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">Enable the Gmail API</a></li>
+        <li><a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Audience</a>: Internal (Google Workspace), otherwise External then "Publish app" (in Testing mode, connections expire after 7 days)</li>
+        <li><a href="https://console.cloud.google.com/auth/clients/create" target="_blank" rel="noopener">OAuth client "Web application"</a>, redirect URI
           <code id="googleRedirect" style="user-select:all"></code>
-          <button class="ghost" onclick="copyText($('#googleRedirect').textContent).then(ok => ok && notify('URI copiée'))">Copier</button></li>
+          <button class="ghost" onclick="copyText($('#googleRedirect').textContent).then(ok => ok && notify('URI copied'))">Copy</button></li>
       </ol>
       <div class="inline">
         <input id="googleId" placeholder="Client ID" style="width:320px">
         <input id="googleSecret" type="password" placeholder="Client secret" style="width:220px">
-        <button onclick="saveGoogle()">Enregistrer</button>
+        <button onclick="saveGoogle()">Save</button>
       </div>
     </div>
     <table id="accounts"><thead><tr>
-      <th>Email</th><th>Nom d'expéditeur</th>
-      <th title="Insérée à l'emplacement de {{signature}} dans les étapes">Signature</th>
-      <th>Envois / jour</th>
+      <th>Email</th><th>Sender name</th>
+      <th title="Inserted in place of {{signature}} in the steps">Signature</th>
+      <th>Sends / day</th>
       <th id="warmupTh">Warm-up</th>
-      <th title="Décoché tout seul : accès Google révoqué, reconnecter la même adresse">Actif</th>
+      <th title="Unchecked automatically: Google access revoked, reconnect the same address">Active</th>
       <th></th>
     </tr></thead><tbody></tbody></table>
   </div>
 
   <div class="card">
     <div class="inline" style="justify-content:space-between;margin-bottom:12px">
-      <h2 style="margin:0">Comptes LinkedIn</h2>
+      <h2 style="margin:0">LinkedIn accounts</h2>
       <button id="liToggle" class="ghost" hidden onclick="toggleLi()"></button>
     </div>
     <p class="err" id="liWarn" hidden></p>
     <table id="liAccounts">
-      <thead><tr><th>Compte</th><th>Exécution</th><th>Invitations / jour</th><th>Messages / jour</th><th id="liQueueTh">En file</th><th>Actif</th><th></th></tr></thead>
+      <thead><tr><th>Account</th><th>Runs on</th><th>Invites / day</th><th>Messages / day</th><th id="liQueueTh">Queued</th><th>Active</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
     <div class="inline" style="margin-top:12px">
-      <input id="liNewName" placeholder="Nom du compte" style="width:220px">
-      <button onclick="addLiAccount()">+ Ajouter un compte LinkedIn</button>
+      <input id="liNewName" placeholder="Account name" style="width:220px">
+      <button onclick="addLiAccount()">+ Add a LinkedIn account</button>
     </div>
     <div id="liToken" class="card" hidden style="margin:12px 0 0;background:var(--hover)"></div>
   </div>
@@ -66,7 +66,7 @@ renderNav("settings.html");
 
 const connected = new URLSearchParams(location.search).get("connected");
 if (connected) {
-  notify(`${connected} connecté`);
+  notify(`${connected} connected`);
   history.replaceState(null, "", location.pathname);
 }
 
@@ -90,12 +90,12 @@ async function updateAccount(id, patch) {
 
 async function deleteAccount(id) {
   const a = accounts.find(x => x.id === id);
-  if (!a || !confirm(`Supprimer ${a.email} ?\nSon historique d'envois est effacé et ses contacts encore en séquence sont arrêtés.`)) return;
+  if (!a || !confirm(`Delete ${a.email}?\nIts send history will be erased and its contacts still in a sequence will be stopped.`)) return;
   try {
     // L'API ne supprime qu'un compte désactivé
     if (a.active) await api(`/api/accounts/${id}`, jsonPost("PATCH", { active: false }));
     const r = await api(`/api/accounts/${id}`, { method: "DELETE" });
-    notify(`${a.email} supprimé` + (r.contacts_stopped ? ` · ${r.contacts_stopped} contact(s) arrêté(s)` : ""));
+    notify(`${a.email} deleted` + (r.contacts_stopped ? ` · ${r.contacts_stopped} contact(s) stopped` : ""));
   } catch (e) { fail(e); }
   refresh();
 }
@@ -107,13 +107,13 @@ async function refresh() {
   $("#accounts tbody").innerHTML = accounts.map(a => `
     <tr><td>${esc(a.email)}</td>
     <td><input value="${esc(a.from_name)}" placeholder="Jacques M." style="width:150px" onchange="updateAccount(${a.id}, {from_name: this.value})"></td>
-    <td><textarea style="min-height:40px; width:240px" placeholder="Cordialement,&#10;Jacques" onchange="updateAccount(${a.id}, {signature: this.value})">${esc(a.signature)}</textarea></td>
+    <td><textarea style="min-height:40px; width:240px" placeholder="Best regards,&#10;Jacques" onchange="updateAccount(${a.id}, {signature: this.value})">${esc(a.signature)}</textarea></td>
     <td style="white-space:nowrap">${a.sent_today_date === today ? a.sent_today : 0} / <input type="number" min="0" value="${a.daily_limit}" style="width:70px" onchange="updateAccount(${a.id}, {daily_limit: +this.value})">
-      ${a.warmup && a.effective_limit < a.daily_limit ? `<div class="muted">warm-up : ${a.effective_limit}/j</div>` : ""}</td>
+      ${a.warmup && a.effective_limit < a.daily_limit ? `<div class="muted">warm-up: ${a.effective_limit}/day</div>` : ""}</td>
     <td><input type="checkbox" ${a.warmup ? "checked" : ""} onchange="updateAccount(${a.id}, {warmup: this.checked})"></td>
     <td><input type="checkbox" ${a.active ? "checked" : ""} onchange="updateAccount(${a.id}, {active: this.checked})"></td>
-    <td><button class="icon-btn danger" title="Supprimer" onclick="deleteAccount(${a.id})">✕</button></td></tr>
-  `).join("") || '<tr><td colspan="7" class="muted">Aucun compte connecté</td></tr>';
+    <td><button class="icon-btn danger" title="Delete" onclick="deleteAccount(${a.id})">✕</button></td></tr>
+  `).join("") || '<tr><td colspan="7" class="muted">No connected accounts</td></tr>';
 }
 
 async function loadSettings() {
@@ -124,7 +124,7 @@ async function loadSettings() {
   $("#googleEdit").hidden = s.google_source !== "app";
   if (!s.google_configured) $("#googleSetup").hidden = false;
   $("#googleRedirect").textContent = s.google_redirect_uri;
-  $("#warmupTh").title = `Montée en charge : ${d.warmupStart} emails/jour au départ, +${d.warmupRamp} par semaine jusqu'au quota`;
+  $("#warmupTh").title = `Ramp-up: ${d.warmupStart} emails/day at first, +${d.warmupRamp} per week up to the quota`;
 }
 
 async function saveGoogle() {
@@ -134,7 +134,7 @@ async function saveGoogle() {
     await api("/api/settings/google", jsonPost("PUT", { client_id, client_secret }));
     $("#googleId").value = $("#googleSecret").value = "";
     $("#googleSetup").hidden = true;
-    notify("Identifiants Google enregistrés");
+    notify("Google credentials saved");
   } catch (e) { fail(e); }
   loadSettings();
 }
@@ -149,43 +149,43 @@ function liWarn(lines) {
 
 async function loadLi() {
   try { li = await api("/api/li/status"); }
-  catch { return liWarn(["Statut LinkedIn indisponible."]); }
+  catch { return liWarn(["LinkedIn status unavailable."]); }
   const s = li;
 
   liWarn(!s.server_mode_ready && s.accounts.some(a => a.mode === "server")
-    ? ["Mode serveur indisponible : LI_SECRET_KEY / LI_RUNNER_SECRET manquants (.env)"] : []);
-  $("#liQueueTh").textContent = "En file" + (s.queue.unassigned ? ` (+${s.queue.unassigned} sans compte)` : "");
+    ? ["Server mode unavailable: LI_SECRET_KEY / LI_RUNNER_SECRET missing (.env)"] : []);
+  $("#liQueueTh").textContent = "Queued" + (s.queue.unassigned ? ` (+${s.queue.unassigned} unassigned)` : "");
   const btn = $("#liToggle");
   btn.hidden = !s.accounts.length;
-  btn.textContent = s.enabled ? "⏸ Tout mettre en pause" : "▶ Tout réactiver";
+  btn.textContent = s.enabled ? "⏸ Pause all" : "▶ Resume all";
 
   if (typingIn("#liAccounts")) return;
   $("#liAccounts tbody").innerHTML = s.accounts.map(a => {
     const server = a.mode === "server";
-    const state = a.paused_until ? `<div class="err">pause jusqu'à ${new Date(a.paused_until).toLocaleString("fr-FR", {weekday:"short", hour:"2-digit", minute:"2-digit"})}</div>` : "";
+    const state = a.paused_until ? `<div class="err">paused until ${new Date(a.paused_until).toLocaleString("en-GB", {weekday:"short", hour:"2-digit", minute:"2-digit"})}</div>` : "";
     // Session du navigateur serveur : seuls les problèmes s'affichent
-    const sessLabel = { wrong_account: "mauvais profil connecté", expired: "session expirée", checkpoint: "session bloquée" }[a.session.state] || "session manquante";
+    const sessLabel = { wrong_account: "wrong profile signed in", expired: "session expired", checkpoint: "session blocked" }[a.session.state] || "session missing";
     const sess = !server || a.session.state === "ok" ? ""
-      : `<div class="err" title="${esc([a.session.error, "À renvoyer depuis l'extension"].filter(Boolean).join(" — "))}">${sessLabel}</div>`;
-    const proxy = !server ? "" : `<div><input value="" title="Proxy résidentiel ou ISP fixe, propre au compte : sans proxy, le serveur ne lance rien" placeholder="${a.has_proxy ? "proxy configuré ✓ (remplacer…)" : "⚠️ proxy http://user:mdp@hôte:port"}" style="width:220px" onchange="patchLi(${a.id}, {proxy: this.value})"></div>`;
-    const quota = (kind, field, label) => `<td style="white-space:nowrap">${a.today[kind].sent} / <input type="number" min="0" value="${a[field]}" title="${label} / jour" style="width:60px" onchange="patchLi(${a.id}, {${field}: this.value})"></td>`;
+      : `<div class="err" title="${esc([a.session.error, "Resend it from the extension"].filter(Boolean).join(" — "))}">${sessLabel}</div>`;
+    const proxy = !server ? "" : `<div><input value="" title="Residential or static ISP proxy, dedicated to this account: without a proxy, the server runs nothing" placeholder="${a.has_proxy ? "proxy configured ✓ (replace…)" : "⚠️ proxy http://user:pass@host:port"}" style="width:220px" onchange="patchLi(${a.id}, {proxy: this.value})"></div>`;
+    const quota = (kind, field, label) => `<td style="white-space:nowrap">${a.today[kind].sent} / <input type="number" min="0" value="${a[field]}" title="${label} / day" style="width:60px" onchange="patchLi(${a.id}, {${field}: this.value})"></td>`;
     return `<tr>
       <td><input value="${esc(a.name)}" style="width:150px" onchange="patchLi(${a.id}, {name: this.value})">
-        ${a.member ? `<div><a href="${esc(a.member.url)}" target="_blank" rel="noopener" title="Profil vérifié avant chaque action">✓ ${esc(a.member.name || a.member.slug)}</a></div>` : `<div class="muted">profil non vérifié</div>`}
-        ${a.owner_ref ? `<div class="muted" title="Compte d'un utilisateur Azerit : ses campagnes seulement">client ${esc(a.owner_ref)}</div>` : ""}</td>
+        ${a.member ? `<div><a href="${esc(a.member.url)}" target="_blank" rel="noopener" title="Profile checked before each action">✓ ${esc(a.member.name || a.member.slug)}</a></div>` : `<div class="muted">profile not verified</div>`}
+        ${a.owner_ref ? `<div class="muted" title="Azerit user account: their campaigns only">client ${esc(a.owner_ref)}</div>` : ""}</td>
       <td><select style="width:170px" onchange="patchLi(${a.id}, {mode: this.value})">
-          <option value="extension" ${server ? "" : "selected"}>Extension Chrome</option>
-          <option value="server" ${server ? "selected" : ""}>Navigateur serveur</option></select>
+          <option value="extension" ${server ? "" : "selected"}>Chrome extension</option>
+          <option value="server" ${server ? "selected" : ""}>Server browser</option></select>
         <div><span style="width:9px;height:9px;border-radius:50%;background:var(--${a.connected ? "ok" : "bad"});display:inline-block"></span>
-        <span class="muted">${a.last_seen_at ? `vu ${timeAgo(a.last_seen_at)}` : "jamais vu"}</span></div>${sess}${proxy}${state}</td>
-      ${quota("invite", "invites_per_day", "Invitations")}
+        <span class="muted">${a.last_seen_at ? `seen ${timeAgo(a.last_seen_at)}` : "never seen"}</span></div>${sess}${proxy}${state}</td>
+      ${quota("invite", "invites_per_day", "Invites")}
       ${quota("message", "messages_per_day", "Messages")}
-      <td>${a.queue.pending}${a.queue.failed ? ` <span class="err">· ${a.queue.failed} échec(s)</span>` : ""}</td>
+      <td>${a.queue.pending}${a.queue.failed ? ` <span class="err">· ${a.queue.failed} failed</span>` : ""}</td>
       <td><input type="checkbox" ${a.active ? "checked" : ""} onchange="patchLi(${a.id}, {active: this.checked})"></td>
-      <td style="white-space:nowrap"><button class="ghost" onclick="rotateLi(${a.id})" title="Générer un nouveau jeton (l'ancien cesse de fonctionner)">Jeton</button>
-          <button class="icon-btn danger" onclick="deleteLi(${a.id})" title="Supprimer (seulement si le compte n'a encore rien fait)">✕</button></td>
+      <td style="white-space:nowrap"><button class="ghost" onclick="rotateLi(${a.id})" title="Generate a new token (the old one stops working)">Token</button>
+          <button class="icon-btn danger" onclick="deleteLi(${a.id})" title="Delete (only if the account hasn't done anything yet)">✕</button></td>
     </tr>`;
-  }).join("") || '<tr><td colspan="7" class="muted">Aucun compte LinkedIn</td></tr>';
+  }).join("") || '<tr><td colspan="7" class="muted">No LinkedIn accounts</td></tr>';
 }
 
 let shownToken = "";
@@ -194,10 +194,10 @@ function showToken(name, token) {
   shownToken = token;
   const box = $("#liToken");
   box.hidden = false;
-  box.innerHTML = `<b>Jeton de « ${esc(name)} »</b> <span class="muted">affiché une seule fois</span>
+  box.innerHTML = `<b>Token for “${esc(name)}”</b> <span class="muted">shown only once</span>
     <div class="inline" style="margin-top:8px"><code style="user-select:all;word-break:break-all">${esc(token)}</code>
-    <button class="ghost" onclick="copyText(shownToken).then(ok => ok && notify('Jeton copié'))">Copier</button>
-    <button class="ghost" onclick="$('#liToken').hidden = true">Fermer</button></div>`;
+    <button class="ghost" onclick="copyText(shownToken).then(ok => ok && notify('Token copied'))">Copy</button>
+    <button class="ghost" onclick="$('#liToken').hidden = true">Close</button></div>`;
 }
 
 async function addLiAccount() {
@@ -218,7 +218,7 @@ async function patchLi(id, patch) {
 }
 
 async function rotateLi(id) {
-  if (!confirm("Générer un nouveau jeton ? L'extension qui utilise l'ancien sera refusée jusqu'à ce que vous y colliez le nouveau.")) return;
+  if (!confirm("Generate a new token? The extension using the old one will be rejected until you paste the new one into it.")) return;
   try {
     const r = await api(`/api/li/accounts/${id}/token`, jsonPost("POST"));
     const a = li.accounts.find(x => x.id === id);
@@ -227,7 +227,7 @@ async function rotateLi(id) {
 }
 
 async function deleteLi(id) {
-  if (!confirm("Supprimer ce compte LinkedIn ?")) return;
+  if (!confirm("Delete this LinkedIn account?")) return;
   try { await api(`/api/li/accounts/${id}`, { method: "DELETE" }); }
   catch (e) { fail(e); }
   loadLi();
@@ -235,10 +235,10 @@ async function deleteLi(id) {
 
 function timeAgo(ts) {
   const s = Math.round((Date.now() - ts) / 1000);
-  if (s < 60) return "à l'instant";
-  if (s < 3600) return `il y a ${Math.round(s / 60)} min`;
-  if (s < 86400) return `il y a ${Math.round(s / 3600)} h`;
-  return new Date(ts).toLocaleString("fr-FR");
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return new Date(ts).toLocaleString("en-GB");
 }
 
 async function toggleLi() {

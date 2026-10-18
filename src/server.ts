@@ -49,7 +49,7 @@ export function createServer(): express.Express {
     const { client_id, client_secret } = req.body as { client_id?: string; client_secret?: string };
     const id = String(client_id ?? "").trim();
     const secret = String(client_secret ?? "").trim();
-    if (!id || !secret) return res.status(400).json({ error: "client_id et client_secret sont requis" });
+    if (!id || !secret) return res.status(400).json({ error: "client_id and client_secret are required" });
     try {
       saveGoogleCredentials(id, secret);
     } catch (err) {
@@ -63,7 +63,7 @@ export function createServer(): express.Express {
       const email = await handleOAuthCallback(String(req.query.code ?? ""));
       res.redirect(`/settings.html?connected=${encodeURIComponent(email)}`);
     } catch (err) {
-      res.status(500).send(`Erreur OAuth : ${err instanceof Error ? err.message : err}`);
+      res.status(500).send(`OAuth error: ${err instanceof Error ? err.message : err}`);
     }
   });
 
@@ -112,9 +112,9 @@ export function createServer(): express.Express {
     const account = db.prepare("SELECT id, email, active FROM accounts WHERE id = ?").get(id) as
       | { id: number; email: string; active: number }
       | undefined;
-    if (!account) return res.status(404).json({ error: "Compte introuvable" });
+    if (!account) return res.status(404).json({ error: "Account not found" });
     if (account.active) {
-      return res.status(409).json({ error: `${account.email} est actif : désactivez-le d'abord (active: false)` });
+      return res.status(409).json({ error: `${account.email} is active: deactivate it first (active: false)` });
     }
     const report = db.transaction(() => {
       const running = db
@@ -210,16 +210,16 @@ export function createServer(): express.Express {
   function normalizeAccountIds(ids: unknown, field = "account_ids"): { value: string | null } | { error: string } {
     if (ids == null) return { value: null };
     if (!Array.isArray(ids) || !ids.every((x) => Number.isInteger(x))) {
-      return { error: `${field} doit être une liste d'identifiants de comptes` };
+      return { error: `${field} must be a list of account ids` };
     }
-    if (!ids.length) return { error: "Sélectionnez au moins un compte d'envoi" };
+    if (!ids.length) return { error: "Select at least one sending account" };
     return { value: JSON.stringify([...new Set(ids as number[])]) };
   }
 
   /** Description d'une campagne : texte libre, vide = aucune (null). */
   function normalizeDescription(value: unknown): { value: string | null } | { error: string } {
     if (value == null) return { value: null };
-    if (typeof value !== "string") return { error: "description doit être un texte" };
+    if (typeof value !== "string") return { error: "description must be a string" };
     return { value: value.trim() || null };
   }
 
@@ -280,9 +280,9 @@ export function createServer(): express.Express {
   // Texte vide = plus de consigne
   app.put("/api/variable-instructions/:name", (req, res) => {
     const { name } = req.params;
-    if (!/^[\p{L}\p{N}_]+$/u.test(name)) return res.status(400).json({ error: `« ${name} » n'est pas un nom de variable` });
+    if (!/^[\p{L}\p{N}_]+$/u.test(name)) return res.status(400).json({ error: `"${name}" is not a valid variable name` });
     const instruction = req.body?.instruction;
-    if (typeof instruction !== "string") return res.status(400).json({ error: "instruction doit être un texte" });
+    if (typeof instruction !== "string") return res.status(400).json({ error: "instruction must be a string" });
     if (instruction.trim()) {
       db.prepare("INSERT INTO variable_instructions (name, instruction) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET instruction = excluded.instruction").run(name, instruction.trim());
     } else {
@@ -355,7 +355,7 @@ export function createServer(): express.Express {
     const campaign = db
       .prepare("SELECT id, name, description, status, account_ids, li_account_ids FROM campaigns WHERE id = ?")
       .get(req.params.id) as { account_ids: string | null; li_account_ids: string | null } | undefined;
-    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
     const steps = db
       .prepare(
         "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch FROM steps WHERE campaign_id = ? ORDER BY step_number"
@@ -387,7 +387,7 @@ export function createServer(): express.Express {
   // nouvelle séquence sera marqué 'completed' au prochain passage.
   app.put("/api/campaigns/:id", (req, res) => {
     const exists = db.prepare("SELECT id FROM campaigns WHERE id = ?").get(req.params.id);
-    if (!exists) return res.status(404).json({ error: "Campagne introuvable" });
+    if (!exists) return res.status(404).json({ error: "Campaign not found" });
     const { name, steps, account_ids, li_account_ids } = req.body as {
       name: string;
       steps: StepInput[];
@@ -426,7 +426,7 @@ export function createServer(): express.Express {
     const campaign = db.prepare("SELECT id, name FROM campaigns WHERE id = ?").get(req.params.id) as
       | { id: number; name: string }
       | undefined;
-    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
     const body = (req.body ?? {}) as {
       name?: unknown;
       description?: unknown;
@@ -435,7 +435,7 @@ export function createServer(): express.Express {
       li_account_ids?: number[] | null;
     };
     if (body.name !== undefined && (typeof body.name !== "string" || !body.name.trim())) {
-      return res.status(400).json({ error: "name ne peut pas être vide" });
+      return res.status(400).json({ error: "name cannot be empty" });
     }
     const name = typeof body.name === "string" ? body.name.trim() : campaign.name;
     if (body.steps !== undefined) {
@@ -449,7 +449,7 @@ export function createServer(): express.Express {
     const desc = "description" in body ? normalizeDescription(body.description) : null;
     if (desc && "error" in desc) return res.status(400).json({ error: desc.error });
     if (body.name === undefined && body.steps === undefined && !senders && !liSenders && !desc) {
-      return res.status(400).json({ error: "Aucun champ à modifier" });
+      return res.status(400).json({ error: "No field to update" });
     }
     db.transaction(() => {
       db.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run(name, campaign.id);
@@ -471,29 +471,29 @@ export function createServer(): express.Express {
     const campaign = db.prepare("SELECT id, name FROM campaigns WHERE id = ?").get(req.params.id) as
       | { id: number; name: string }
       | undefined;
-    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
     const selectSteps = db.prepare(
       "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch FROM steps WHERE campaign_id = ? ORDER BY step_number"
     );
     const steps = selectSteps.all(campaign.id) as Array<{ step_number: number } & Record<string, unknown>>;
     const n = Number(req.params.n);
     const index = steps.findIndex((s) => s.step_number === n);
-    if (index < 0) return res.status(404).json({ error: `Étape ${req.params.n} introuvable (la campagne en a ${steps.length})` });
+    if (index < 0) return res.status(404).json({ error: `Step ${req.params.n} not found (the campaign has ${steps.length})` });
 
     const body = (req.body ?? {}) as Record<string, unknown>;
     const patch: Record<string, unknown> = {};
     for (const key of ["subject", "subject_b", "body", "channel", "li_action", "branch"]) {
       if (body[key] === undefined) continue;
-      if (typeof body[key] !== "string") return res.status(400).json({ error: `${key} doit être un texte` });
+      if (typeof body[key] !== "string") return res.status(400).json({ error: `${key} must be a string` });
       patch[key] = body[key];
     }
     if (body.wait_days !== undefined) {
       if (!Number.isInteger(body.wait_days) || (body.wait_days as number) < 0) {
-        return res.status(400).json({ error: "wait_days doit être un entier positif ou nul" });
+        return res.status(400).json({ error: "wait_days must be a non-negative integer" });
       }
       patch.wait_days = body.wait_days;
     }
-    if (!Object.keys(patch).length) return res.status(400).json({ error: "Aucun champ à modifier" });
+    if (!Object.keys(patch).length) return res.status(400).json({ error: "No field to update" });
 
     // null en base (subject_b, li_action, branch) = champ absent pour insertSteps
     const next = steps.map((s, i) =>
@@ -623,7 +623,7 @@ export function createServer(): express.Express {
   app.post("/api/campaigns/:id/launch-contacts", (req, res) => {
     const { ids } = req.body as { ids?: number[] };
     if (!Array.isArray(ids) || !ids.length) {
-      return res.status(400).json({ error: "ids[] est requis" });
+      return res.status(400).json({ error: "ids[] is required" });
     }
     if (isArchived(req.params.id)) return res.status(409).json({ error: ARCHIVED });
     const placeholders = ids.map(() => "?").join(",");
@@ -643,7 +643,7 @@ export function createServer(): express.Express {
   app.post("/api/campaigns/:id/stop-contacts", (req, res) => {
     const { ids } = req.body as { ids?: number[] };
     if (!Array.isArray(ids) || !ids.length) {
-      return res.status(400).json({ error: "ids[] est requis" });
+      return res.status(400).json({ error: "ids[] is required" });
     }
     const placeholders = ids.map(() => "?").join(",");
     const changes = db.transaction(() => {
@@ -664,7 +664,7 @@ export function createServer(): express.Express {
     const { ids, status } = req.body as { ids?: number[]; status?: string };
     const allowed = ["held", "pending", "in_progress", "replied", "opted_out", "bounced", "completed", "stopped", "failed"];
     if (!Array.isArray(ids) || !ids.length || !status || !allowed.includes(status)) {
-      return res.status(400).json({ error: "ids[] et un statut valide sont requis" });
+      return res.status(400).json({ error: "ids[] and a valid status are required" });
     }
     const placeholders = ids.map(() => "?").join(",");
     const changed = db.transaction(() => {
@@ -696,7 +696,7 @@ export function createServer(): express.Express {
   app.post("/api/campaigns/:id/remove-contacts", (req, res) => {
     const { ids } = req.body as { ids?: number[] };
     if (!Array.isArray(ids) || !ids.length) {
-      return res.status(400).json({ error: "ids[] est requis" });
+      return res.status(400).json({ error: "ids[] is required" });
     }
     const placeholders = ids.map(() => "?").join(",");
     const { changes } = db
@@ -710,7 +710,7 @@ export function createServer(): express.Express {
     const contact = db.prepare("SELECT id, extra FROM contacts WHERE id = ?").get(req.params.id) as
       | { id: number; extra: string | null }
       | undefined;
-    if (!contact) return res.status(404).json({ error: "Contact introuvable" });
+    if (!contact) return res.status(404).json({ error: "Contact not found" });
     const { first_name, last_name, company, linkedin, extra } = req.body as {
       first_name?: string;
       last_name?: string;
@@ -725,7 +725,7 @@ export function createServer(): express.Express {
       for (const [k, v] of Object.entries(extra)) {
         const key = k.trim();
         if (!/^[\p{L}\p{N}_]+$/u.test(key)) {
-          return res.status(400).json({ error: `Nom de champ invalide : « ${k} » (lettres, chiffres et _ uniquement)` });
+          return res.status(400).json({ error: `Invalid field name: "${k}" (letters, digits and _ only)` });
         }
         if (String(v).trim() === "") delete merged[key];
         else merged[key] = String(v);
@@ -753,34 +753,34 @@ export function createServer(): express.Express {
   // --- Suppression d'une campagne (étapes, inscriptions et historique en cascade) ---
   app.delete("/api/campaigns/:id", (req, res) => {
     const { changes } = db.prepare("DELETE FROM campaigns WHERE id = ?").run(req.params.id);
-    if (!changes) return res.status(404).json({ error: "Campagne introuvable" });
+    if (!changes) return res.status(404).json({ error: "Campaign not found" });
     res.json({ ok: true });
   });
 
   // --- Import CSV (body = contenu CSV brut) ---
   app.post("/api/campaigns/:id/import", async (req, res) => {
     const campaign = db.prepare("SELECT id FROM campaigns WHERE id = ?").get(req.params.id);
-    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
     try {
       const rows = parseCsv(String(req.body ?? ""));
-      if (!rows.length) return res.status(400).json({ error: "CSV vide ou illisible" });
+      if (!rows.length) return res.status(400).json({ error: "Empty or unreadable CSV" });
       if (!("email" in rows[0]) && !("linkedin" in rows[0])) {
-        return res.status(400).json({ error: "Le CSV doit contenir une colonne 'email' ou 'linkedin'" });
+        return res.status(400).json({ error: "The CSV must have an 'email' or 'linkedin' column" });
       }
       // ?campaign_vars=a,b : ces colonnes deviennent des variables propres à cette
       // campagne (campaign_contacts.vars) au lieu de champs du contact, partagés.
       const campaignVars = [...new Set(String(req.query.campaign_vars ?? "").split(",").map(normalizeColumn).filter(Boolean))];
       const reserved = campaignVars.filter((k) => KNOWN_COLUMNS.has(k));
       if (reserved.length) {
-        return res.status(400).json({ error: `campaign_vars : ${reserved.join(", ")} sont des champs du contact, pas des variables de campagne` });
+        return res.status(400).json({ error: `campaign_vars: ${reserved.join(", ")} are contact fields, not campaign variables` });
       }
       const unknown = campaignVars.filter((k) => !(k in rows[0]));
       if (unknown.length) {
-        return res.status(400).json({ error: `campaign_vars : colonne(s) absente(s) du CSV : ${unknown.join(", ")}` });
+        return res.status(400).json({ error: `campaign_vars: column(s) missing from the CSV: ${unknown.join(", ")}` });
       }
       res.json(await importContacts(Number(req.params.id), rows, { campaignVars }));
     } catch (err) {
-      res.status(400).json({ error: `CSV invalide : ${err instanceof Error ? err.message : err}` });
+      res.status(400).json({ error: `Invalid CSV: ${err instanceof Error ? err.message : err}` });
     }
   });
 
@@ -792,7 +792,7 @@ export function createServer(): express.Express {
     };
     const attr = status_attribute || config.attioImportAttribute;
     if (!attr || !statuses?.length) {
-      return res.status(400).json({ error: "status_attribute et statuses[] sont requis" });
+      return res.status(400).json({ error: "status_attribute and statuses[] are required" });
     }
     try {
       res.json(await syncFromAttio(Number(req.params.id), attr, statuses));

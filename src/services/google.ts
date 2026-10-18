@@ -39,7 +39,7 @@ export function googleCredentialsSource(): "env" | "app" | null {
 }
 
 export function saveGoogleCredentials(clientId: string, clientSecret: string): void {
-  if (googleFromEnv) throw new Error("Identifiants Google définis dans .env : les modifier là");
+  if (googleFromEnv) throw new Error("Google credentials are set in .env: change them there");
   db.prepare(
     "INSERT INTO app_settings (key, value) VALUES ('google', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).run(JSON.stringify({ clientId, clientSecret }));
@@ -78,7 +78,7 @@ async function exchangeCodeForTokens(code: string): Promise<Credentials> {
     }),
   });
   if (!res.ok) {
-    throw new Error(`Échange du code OAuth échoué (${res.status}) : ${await res.text()}`);
+    throw new Error(`OAuth code exchange failed (${res.status}): ${await res.text()}`);
   }
   const t = (await res.json()) as {
     access_token: string;
@@ -112,7 +112,7 @@ export async function handleOAuthCallback(code: string): Promise<string> {
   const tokens = await exchangeCodeForTokens(code);
   client.setCredentials(tokens);
   const email = await fetchUserEmail(tokens.access_token!);
-  if (!email) throw new Error("Impossible de récupérer l'adresse email du compte Google");
+  if (!email) throw new Error("Could not read the Google account's email address");
 
   const existing = db.prepare("SELECT id, oauth_tokens FROM accounts WHERE email = ?").get(email) as
     | { id: number; oauth_tokens: string }

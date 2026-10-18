@@ -21,7 +21,7 @@ import type express from "express";
 import { config } from "../config.js";
 import { db } from "../db.js";
 import { MERGED_EXTRA, renderTemplate, templateVariables } from "./contacts.js";
-import { resolveSections } from "./template-sections.js";
+import { resolveSections, UNCLOSED_SECTION } from "./template-sections.js";
 import {
   getThreadMessages,
   googleErrorMessage,
@@ -159,13 +159,13 @@ export function registerInboxRoutes(app: express.Express): void {
         .map((s) => s.trim())
         .filter(Boolean);
       if (!statuses.length || statuses.some((s) => !INBOX_STATUSES.includes(s))) {
-        return res.status(400).json({ error: `status : valeurs possibles ${INBOX_STATUSES.join(", ")} (séparées par des virgules)` });
+        return res.status(400).json({ error: `status: allowed values ${INBOX_STATUSES.join(", ")} (comma-separated)` });
       }
       const campaignId = optInt(req.query.campaign_id);
       const since = optInt(req.query.since);
       const limit = optInt(req.query.limit) ?? 50;
       if ([campaignId, since, limit].some((n) => Number.isNaN(n))) {
-        return res.status(400).json({ error: "campaign_id, since et limit doivent être des entiers" });
+        return res.status(400).json({ error: "campaign_id, since and limit must be integers" });
       }
       const includeText = req.query.include_text === "1" || req.query.include_text === "true";
       // done=0 : réponses à traiter ; done=1 : déjà traitées ; absent : toutes
@@ -231,7 +231,7 @@ export function registerInboxRoutes(app: express.Express): void {
             if (!accounts.has(account_id)) accounts.set(account_id, accountById(account_id));
             const account = accounts.get(account_id);
             if (!account) {
-              item.reply_error = "Compte Google du fil introuvable";
+              item.reply_error = "Google account of this thread not found";
               return;
             }
             const known = authErrors.get(account_id);
@@ -275,7 +275,7 @@ export function registerInboxRoutes(app: express.Express): void {
   // --- Suivi d'une réponse : ouverte (seen) et traitée (done), réversibles ---
   app.post("/api/campaign-contacts/:ccId/inbox", (req, res) => {
     const { seen, done } = (req.body ?? {}) as { seen?: unknown; done?: unknown };
-    if (seen === undefined && done === undefined) return res.status(400).json({ error: "seen ou done est requis" });
+    if (seen === undefined && done === undefined) return res.status(400).json({ error: "seen or done is required" });
     const now = Date.now();
     const r = db
       .prepare(
@@ -290,7 +290,7 @@ export function registerInboxRoutes(app: express.Express): void {
         seen: seen === undefined ? null : seen ? 1 : 0,
         done: done === undefined ? null : done ? 1 : 0,
       });
-    if (!r.changes) return res.status(404).json({ error: "Contact de campagne introuvable" });
+    if (!r.changes) return res.status(404).json({ error: "Campaign contact not found" });
     res.json({ ok: true });
   });
 
@@ -340,14 +340,14 @@ export function registerInboxRoutes(app: express.Express): void {
             li_sender: string | null;
           }
         | undefined;
-      if (!cc) return res.status(404).json({ error: "Contact de campagne introuvable" });
+      if (!cc) return res.status(404).json({ error: "Campaign contact not found" });
 
       let emailThread: Array<Record<string, unknown>> | null = null;
       let emailThreadError: string | undefined;
       if (cc.thread_id) {
         const account = cc.account_id != null ? accountById(cc.account_id) : undefined;
         if (!account) {
-          emailThreadError = "Compte Google du fil introuvable";
+          emailThreadError = "Google account of this thread not found";
         } else {
           try {
             emailThread = (await getThreadMessages(account, cc.thread_id)).map((m) => {
@@ -443,15 +443,15 @@ export function registerInboxRoutes(app: express.Express): void {
             variant: string | null;
           })
         | undefined;
-      if (!cc) return res.status(404).json({ error: "Contact de campagne introuvable" });
-      if (typeof body !== "string" || !body.trim()) return res.status(400).json({ error: "body est requis" });
-      if (subject != null && typeof subject !== "string") return res.status(400).json({ error: "subject doit être un texte" });
+      if (!cc) return res.status(404).json({ error: "Campaign contact not found" });
+      if (typeof body !== "string" || !body.trim()) return res.status(400).json({ error: "body is required" });
+      if (subject != null && typeof subject !== "string") return res.status(400).json({ error: "subject must be a string" });
       if (!cc.thread_id || cc.account_id == null) {
-        return res.status(400).json({ error: "Pas de fil email pour ce contact : aucun email ne lui a encore été envoyé" });
+        return res.status(400).json({ error: "No email thread for this contact: no email has been sent to them yet" });
       }
-      if (!cc.email) return res.status(400).json({ error: "Ce contact n'a pas d'adresse email" });
+      if (!cc.email) return res.status(400).json({ error: "This contact has no email address" });
       const account = accountById(cc.account_id);
-      if (!account) return res.status(400).json({ error: "Compte Google du fil introuvable" });
+      if (!account) return res.status(400).json({ error: "Google account of this thread not found" });
 
       // Le fil est relu (même en simulation) : sujet et Message-ID du message
       // auquel on répond. Un accès expiré se voit donc dès le dry_run.
@@ -507,9 +507,9 @@ export function registerInboxRoutes(app: express.Express): void {
   // --- Recherche globale de contacts (toutes campagnes) ---
   app.get("/api/contacts", (req, res) => {
     const q = String(req.query.q ?? "").trim();
-    if (q.length < 2) return res.status(400).json({ error: "q est requis (2 caractères au moins)" });
+    if (q.length < 2) return res.status(400).json({ error: "q is required (at least 2 characters)" });
     const limit = optInt(req.query.limit) ?? 50;
-    if (Number.isNaN(limit)) return res.status(400).json({ error: "limit doit être un entier" });
+    if (Number.isNaN(limit)) return res.status(400).json({ error: "limit must be an integer" });
     // LIKE insensible à la casse (ASCII) ; % et _ saisis sont cherchés tels quels
     const like = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
     const contacts = db
@@ -556,7 +556,7 @@ export function registerInboxRoutes(app: express.Express): void {
     const days = optInt(req.query.days) ?? 7;
     const campaignId = optInt(req.query.campaign_id);
     if (Number.isNaN(days) || Number.isNaN(campaignId)) {
-      return res.status(400).json({ error: "days et campaign_id doivent être des entiers" });
+      return res.status(400).json({ error: "days and campaign_id must be integers" });
     }
     const since = Date.now() - Math.min(Math.max(days, 1), 90) * DAY_MS;
     // Un événement par ligne ; totals et events lisent la même union (même périmètre)
@@ -632,16 +632,16 @@ export function registerInboxRoutes(app: express.Express): void {
     safe(async (req, res) => {
       const b = (req.body ?? {}) as Record<string, unknown>;
       const to = typeof b.to === "string" ? b.to.trim() : "";
-      if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(to)) return res.status(400).json({ error: "to : adresse email valide requise" });
+      if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(to)) return res.status(400).json({ error: "to: a valid email address is required" });
       const campaignId = optInt(b.campaign_id);
       const stepNumber = optInt(b.step_number) ?? 1;
       const accountId = optInt(b.account_id);
       const contactId = optInt(b.contact_id);
       if (campaignId === undefined || [campaignId, stepNumber, accountId, contactId].some((v) => Number.isNaN(v))) {
-        return res.status(400).json({ error: "campaign_id (entier) est requis ; step_number, account_id et contact_id sont des entiers" });
+        return res.status(400).json({ error: "campaign_id (integer) is required; step_number, account_id and contact_id are integers" });
       }
       if (b.variant != null && b.variant !== "A" && b.variant !== "B") {
-        return res.status(400).json({ error: "variant : \"A\" ou \"B\"" });
+        return res.status(400).json({ error: "variant: \"A\" or \"B\"" });
       }
       const variant = b.variant === "B" ? "B" : "A";
       const dryRun = isDryRun(b.dry_run);
@@ -649,12 +649,12 @@ export function registerInboxRoutes(app: express.Express): void {
       const campaign = db.prepare("SELECT id, account_ids FROM campaigns WHERE id = ?").get(campaignId) as
         | { id: number; account_ids: string | null }
         | undefined;
-      if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+      if (!campaign) return res.status(404).json({ error: "Campaign not found" });
       const steps = db
         .prepare("SELECT step_number, subject, subject_b, body, channel FROM steps WHERE campaign_id = ? ORDER BY step_number")
         .all(campaignId) as Array<{ step_number: number; subject: string; subject_b: string | null; body: string; channel: string }>;
       const step = steps.find((s) => s.step_number === stepNumber);
-      if (!step) return res.status(404).json({ error: `Étape ${stepNumber} introuvable dans cette campagne` });
+      if (!step) return res.status(404).json({ error: `Step ${stepNumber} not found in this campaign` });
 
       // Contact : celui demandé, sinon le 1er de la campagne, sinon un contact d'exemple
       let contact: ContactVars | undefined;
@@ -666,7 +666,7 @@ export function registerInboxRoutes(app: express.Express): void {
              WHERE c.id = ?`
           )
           .get(campaignId, contactId) as ContactVars | undefined;
-        if (!contact) return res.status(404).json({ error: "Contact introuvable" });
+        if (!contact) return res.status(404).json({ error: "Contact not found" });
       } else {
         contact = db
           .prepare(
@@ -682,7 +682,7 @@ export function registerInboxRoutes(app: express.Express): void {
         // Rendu tel que mis en file pour LinkedIn (sans expéditeur ni signature)
         const rendered = step.body?.trim() ? renderTemplate(step.body, sample, { sender_name: "", signature: "" }) : "";
         return res.status(400).json({
-          error: `L'étape ${stepNumber} est une étape LinkedIn : pas d'email de test possible`,
+          error: `Step ${stepNumber} is a LinkedIn step: no test email possible`,
           rendered_body: rendered,
         });
       }
@@ -691,14 +691,14 @@ export function registerInboxRoutes(app: express.Express): void {
       let account: AccountRow | undefined;
       if (accountId !== undefined) {
         account = accountById(accountId);
-        if (!account) return res.status(404).json({ error: "Compte Google introuvable" });
+        if (!account) return res.status(404).json({ error: "Google account not found" });
       } else {
         const allowed = parseAccountIds(campaign.account_ids);
         const active = db.prepare("SELECT * FROM accounts WHERE active = 1 ORDER BY id").all() as AccountRow[];
         account = active.find((a) => !allowed || allowed.includes(a.id)) ?? active[0];
       }
       if (!account && !dryRun) {
-        return res.status(400).json({ error: "Aucun compte Google actif : connectez-en un via /auth/google" });
+        return res.status(400).json({ error: "No active Google account: connect one via /auth/google" });
       }
 
       const vars = senderVars(account, sample, config.visit.enabled ? `${config.visit.baseUrl}/p/exemple` : "");
@@ -741,17 +741,17 @@ export function registerInboxRoutes(app: express.Express): void {
     const campaign = db.prepare("SELECT id, name, status, account_ids FROM campaigns WHERE id = ?").get(req.params.id) as
       | { id: number; name: string; status: string; account_ids: string | null }
       | undefined;
-    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    if (!campaign) return res.status(404).json({ error: "Campaign not found" });
     const statuses = String(req.query.status ?? PREVIEW_STATUSES.join(","))
       .split(",")
       .map((x) => x.trim())
       .filter(Boolean);
     if (!statuses.length || statuses.some((x) => !CC_STATUSES.includes(x))) {
-      return res.status(400).json({ error: `status : valeurs possibles ${CC_STATUSES.join(", ")} (séparées par des virgules)` });
+      return res.status(400).json({ error: `status: allowed values ${CC_STATUSES.join(", ")} (comma-separated)` });
     }
     const samples = optInt(req.query.samples) ?? 1;
     const limit = optInt(req.query.limit) ?? 50;
-    if (Number.isNaN(samples) || Number.isNaN(limit)) return res.status(400).json({ error: "samples et limit doivent être des entiers" });
+    if (Number.isNaN(samples) || Number.isNaN(limit)) return res.status(400).json({ error: "samples and limit must be integers" });
 
     type Step = { step_number: number; subject: string; subject_b: string | null; body: string; channel: string; li_action: string | null; branch: string | null };
     const steps = db
@@ -832,23 +832,23 @@ export function registerInboxRoutes(app: express.Express): void {
     const usedIn = (list: Step[], key: string) => list.filter((s) => stepVars.get(s.step_number)!.has(key));
     const warnings: string[] = [];
     if (emailSteps.length && !senders.length) {
-      warnings.push("Aucun compte Google actif autorisé pour cette campagne : les emails ne partiront pas.");
+      warnings.push("No active Google account allowed for this campaign: emails will not be sent.");
     }
     const unsigned = senders.filter((a) => !a.signature?.trim()).map((a) => a.email);
     if (usedIn(emailSteps, "signature").length && unsigned.length) {
-      warnings.push(`{{signature}} sera vide pour ${unsigned.join(", ")} (compte sans signature).`);
+      warnings.push(`{{signature}} will be empty for ${unsigned.join(", ")} (account without a signature).`);
     }
     if (usedIn(emailSteps, "link").length && !config.visit.enabled) {
-      warnings.push("{{link}} sera vide : le lien de suivi est désactivé (VISIT_ENABLED=false).");
+      warnings.push("{{link}} will be empty: the tracked link is disabled (VISIT_ENABLED=false).");
     }
     for (const s of steps) {
       // un {{si …}} resté après résolution n'a pas de {{fin}} : il partirait tel quel dans le message
-      if (/\{\{\s*si\s/iu.test(resolveSections(stepText(s), {}))) warnings.push(`Étape ${s.step_number} : bloc {{si …}} sans {{fin}}.`);
+      if (UNCLOSED_SECTION.test(resolveSections(stepText(s), {}))) warnings.push(`Step ${s.step_number}: {{if …}} block without {{end}}.`);
     }
     for (const s of steps.filter((x) => x.channel === "linkedin")) {
       const empty = [...SENDER_VARS].filter((key) => stepVars.get(s.step_number)!.has(key));
       if (empty.length) {
-        warnings.push(`Étape ${s.step_number} (LinkedIn) : ${empty.map((k) => `{{${k}}}`).join(", ")} toujours vide dans un message LinkedIn.`);
+        warnings.push(`Step ${s.step_number} (LinkedIn): ${empty.map((k) => `{{${k}}}`).join(", ")} always empty in a LinkedIn message.`);
       }
     }
 

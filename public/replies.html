@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sequence Mail — Réponses</title>
+<title>Sequence Mail — Replies</title>
 <link rel="stylesheet" href="style.css?v=15">
 </head>
 <body class="inbox-page">
@@ -11,12 +11,12 @@
   <section class="ib-list">
     <div class="ib-list-head">
       <div class="ib-tabs" id="tabs">
-        <button data-tab="todo" class="active">À traiter <span id="cTodo"></span></button>
-        <button data-tab="done">Traitées</button>
+        <button data-tab="todo" class="active">To do <span id="cTodo"></span></button>
+        <button data-tab="done">Done</button>
       </div>
-      <input id="q" type="search" placeholder="Rechercher">
+      <input id="q" type="search" placeholder="Search">
     </div>
-    <div class="ib-items" id="items"><div class="ib-empty">Chargement…</div></div>
+    <div class="ib-items" id="items"><div class="ib-empty">Loading…</div></div>
   </section>
 
   <section class="ib-detail" id="detail">
@@ -49,12 +49,12 @@ function when(ms) {
   const d = new Date(ms), now = new Date();
   const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const days = Math.round((day(now) - day(d)) / 86400e3);
-  if (days === 0) return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-  if (days === 1) return "hier";
-  if (days < 7) return d.toLocaleDateString("fr-FR", { weekday: "short" });
-  return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+  if (days === 0) return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  if (days === 1) return "yesterday";
+  if (days < 7) return d.toLocaleDateString("en-GB", { weekday: "short" });
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
-const fullDate = (ms) => (ms ? new Date(ms).toLocaleString("fr-FR", { dateStyle: "medium", timeStyle: "short" }) : "");
+const fullDate = (ms) => (ms ? new Date(ms).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }) : "");
 
 /**
  * Ce que la personne a écrit, sans le reste : message cité (« Le … a écrit », bloc Outlook
@@ -128,20 +128,20 @@ function visibleItems() {
 function snippet(i) {
   const t = texts.get(i.cc_id);
   const s = t?.text ? cleanReply(t.text).replace(/\s+/g, " ") : "";
-  return s ? `<div class="snip">${esc(s)}</div>` : `<div class="snip wait">${t ? (i.channel === "linkedin" ? "Réponse sur LinkedIn" : "") : "…"}</div>`;
+  return s ? `<div class="snip">${esc(s)}</div>` : `<div class="snip wait">${t ? (i.channel === "linkedin" ? "Replied on LinkedIn" : "") : "…"}</div>`;
 }
 
 function renderList() {
   const list = visibleItems();
   if (!list.length) {
-    $("#items").innerHTML = `<div class="ib-empty">${tab === "todo" ? "Rien à traiter." : "Aucune réponse traitée."}</div>`;
+    $("#items").innerHTML = `<div class="ib-empty">${tab === "todo" ? "Nothing to do." : "No replies done yet."}</div>`;
     return;
   }
   $("#items").innerHTML = list.map((i) => `
     <div class="ib-item ${i.cc_id === selected ? "sel" : ""} ${i.seen ? "" : "unseen"}" data-cc="${i.cc_id}">
       <div class="l1">
         <span class="who">${esc(fullName(i))}</span>
-        ${i.status === "opted_out" ? `<span class="refus">refus</span>` : ""}
+        ${i.status === "opted_out" ? `<span class="refus">opted out</span>` : ""}
         <span class="when" title="${esc(fullDate(i.replied_at))}">${i.channel === "linkedin" ? `<span class="li-mini">in</span>` : ""}${esc(when(i.replied_at))}</span>
       </div>
       <div class="co">${esc(i.company || "")}</div>
@@ -165,12 +165,12 @@ $("#q").addEventListener("input", renderList);
 // ───────────────────────────── Conversation ─────────────────────────────
 
 async function openReply(ccId, { keepChannel = false } = {}) {
-  if (pendingSend) return notify("Un envoi est en attente : annulez-le ou attendez qu'il parte.", false);
+  if (pendingSend) return notify("A send is pending: undo it or wait for it to go out.", false);
   selected = ccId;
   history.replaceState(null, "", `#cc=${ccId}`);
   $("#inbox").classList.add("open");
   renderList();
-  if (!keepChannel) $("#detail").innerHTML = `<div class="ib-placeholder">Chargement…</div>`;
+  if (!keepChannel) $("#detail").innerHTML = `<div class="ib-placeholder">Loading…</div>`;
   try {
     const c = await api(`/api/campaign-contacts/${ccId}/conversation`);
     if (selected !== ccId) return;
@@ -213,7 +213,7 @@ function messages(c) {
 
 function bubble(m, who, { clamp = false } = {}) {
   const short = m.mine ? m.text : cleanReply(m.text) || m.text;
-  const more = clamp ? "Afficher tout" : short !== m.text ? "Afficher le message complet" : "";
+  const more = clamp ? "Show all" : short !== m.text ? "Show full message" : "";
   return `
     <div class="msg ${m.mine ? "out" : "in"} ${clamp ? "clamp" : ""}">
       <div class="msg-h"><b>${esc(who)}</b><span class="t" title="${esc(fullDate(m.at))}">${esc(when(m.at))}</span></div>
@@ -233,10 +233,10 @@ function renderThread(c) {
   const older = all.slice(0, start);
   const html = [];
   if (older.length) {
-    html.push(`<button class="older" id="older">${older.length} message${older.length > 1 ? "s" : ""} précédent${older.length > 1 ? "s" : ""}</button>`);
-    html.push(`<div id="olderList" hidden>${older.map((m) => bubble(m, m.mine ? "Vous" : them, { clamp: m.mine })).join("")}</div>`);
+    html.push(`<button class="older" id="older">${older.length} earlier message${older.length > 1 ? "s" : ""}</button>`);
+    html.push(`<div id="olderList" hidden>${older.map((m) => bubble(m, m.mine ? "You" : them, { clamp: m.mine })).join("")}</div>`);
   }
-  all.slice(start).forEach((m, i, rest) => html.push(bubble(m, m.mine ? "Vous" : them, { clamp: m.mine && i < rest.length - 1 })));
+  all.slice(start).forEach((m, i, rest) => html.push(bubble(m, m.mine ? "You" : them, { clamp: m.mine && i < rest.length - 1 })));
   return html.join("");
 }
 
@@ -246,11 +246,11 @@ function renderComposer(c) {
   const other = channel === "email" ? canLinkedin(c) && "linkedin" : canEmail(c) && "email";
   return `
     <div class="composer" id="composer">
-      <textarea id="reply" placeholder="${channel === "email" ? `Répondre à ${esc(first)}…` : `Message LinkedIn à ${esc(first)}…`}">${esc(store.get(`draft:${c.cc_id}:${channel}`, ""))}</textarea>
+      <textarea id="reply" placeholder="${channel === "email" ? `Reply to ${esc(first)}…` : `LinkedIn message to ${esc(first)}…`}">${esc(store.get(`draft:${c.cc_id}:${channel}`, ""))}</textarea>
       <div class="cfoot" id="cfoot">
-        ${channel === "email" ? `<button id="send">Envoyer</button>` : `<button id="copyLi">Copier et ouvrir LinkedIn</button>`}
+        ${channel === "email" ? `<button id="send">Send</button>` : `<button id="copyLi">Copy and open LinkedIn</button>`}
         <span class="spacer"></span>
-        ${other ? `<button class="link-btn" id="switch">${other === "email" ? "Répondre par email" : "Répondre sur LinkedIn"}</button>` : ""}
+        ${other ? `<button class="link-btn" id="switch">${other === "email" ? "Reply by email" : "Reply on LinkedIn"}</button>` : ""}
       </div>
     </div>`;
 }
@@ -267,13 +267,13 @@ function renderDetail() {
         <div class="sub">${esc([extra.poste, c.contact.company].filter(Boolean).join(" · "))}</div>
       </div>
       <div class="acts">
-        <button class="${c.done ? "ghost" : ""}" id="done">${c.done ? "Remettre à traiter" : "Traitée ✓"}</button>
+        <button class="${c.done ? "ghost" : ""}" id="done">${c.done ? "Move back to To do" : "Done ✓"}</button>
         <div class="menu"><button class="icon-btn" id="more">⋯</button>
           <div class="menu-list" id="moreList" hidden>
-            ${c.gmail_url ? `<button data-href="${esc(c.gmail_url)}">Ouvrir dans Gmail</button>` : ""}
-            ${liLink ? `<button data-href="${esc(liLink)}">Ouvrir sur LinkedIn</button>` : ""}
-            <button data-href="campaigns.html#${c.campaign.id}" data-same="1">Voir la campagne</button>
-            <button id="unseen">Marquer comme non lue</button>
+            ${c.gmail_url ? `<button data-href="${esc(c.gmail_url)}">Open in Gmail</button>` : ""}
+            ${liLink ? `<button data-href="${esc(liLink)}">Open on LinkedIn</button>` : ""}
+            <button data-href="campaigns.html#${c.campaign.id}" data-same="1">View campaign</button>
+            <button id="unseen">Mark as unread</button>
           </div>
         </div>
       </div>
@@ -307,9 +307,9 @@ function wireDetail() {
     if (!b) return;
     const msg = b.closest(".msg"), body = $(".msg-b", msg);
     if (msg.classList.contains("clamp")) { msg.classList.remove("clamp"); b.remove(); return; }
-    const full = b.textContent.startsWith("Afficher");
+    const full = b.textContent.startsWith("Show");
     body.textContent = full ? body.dataset.full : body.dataset.short;
-    b.textContent = full ? "Masquer" : "Afficher le message complet";
+    b.textContent = full ? "Hide" : "Show full message";
   });
   const sw = $("#switch");
   if (sw) sw.onclick = () => { channel = channel === "email" ? "linkedin" : "email"; renderDetail(); $("#reply").focus(); };
@@ -342,7 +342,7 @@ async function setDone(done) {
   const rest = visibleItems();
   const next = rest[Math.min(idx, rest.length - 1)];
   if (next && window.innerWidth > 900) openReply(next.cc_id);
-  else closeDetail(tab === "todo" && !rest.length ? "Tout est traité." : "");
+  else closeDetail(tab === "todo" && !rest.length ? "All done." : "");
   refreshCounts();
 }
 
@@ -350,18 +350,18 @@ async function setDone(done) {
 function sendEmail() {
   const c = conv, ta = $("#reply");
   const text = ta.value.trim();
-  if (!text) return notify("Écrivez d'abord votre réponse.", false);
+  if (!text) return notify("Write your reply first.", false);
   if (pendingSend) return;
   ta.disabled = true;
   const foot = $("#cfoot");
   const saved = foot.innerHTML;
   let left = Math.round(UNDO_MS / 1000);
-  foot.innerHTML = `<span class="hint" id="countdown">Envoi dans ${left} s…</span><button class="ghost" id="undo">Annuler</button>`;
-  const tick = setInterval(() => { left--; const el = $("#countdown"); if (el && left > 0) el.textContent = `Envoi dans ${left} s…`; }, 1000);
+  foot.innerHTML = `<span class="hint" id="countdown">Sending in ${left} s…</span><button class="ghost" id="undo">Undo</button>`;
+  const tick = setInterval(() => { left--; const el = $("#countdown"); if (el && left > 0) el.textContent = `Sending in ${left} s…`; }, 1000);
   const restore = () => { clearInterval(tick); pendingSend = null; ta.disabled = false; foot.innerHTML = saved; wireDetail(); };
   const timer = setTimeout(async () => {
     clearInterval(tick);
-    $("#countdown") && ($("#countdown").textContent = "Envoi…");
+    $("#countdown") && ($("#countdown").textContent = "Sending…");
     $("#undo")?.remove();
     try {
       await api(`/api/campaign-contacts/${c.cc_id}/reply`, {
@@ -370,26 +370,26 @@ function sendEmail() {
       });
       pendingSend = null;
       store.set(`draft:${c.cc_id}:email`, "");
-      notify("Réponse envoyée");
+      notify("Reply sent");
       refreshCounts();
       // Gmail met un instant à ranger l'envoi dans le fil
       setTimeout(() => { if (selected === c.cc_id) openReply(c.cc_id, { keepChannel: true }); }, 1500);
     } catch (e) {
       restore();
-      notify(`Envoi impossible : ${e.message}`, false);
+      notify(`Could not send: ${e.message}`, false);
     }
   }, UNDO_MS);
   pendingSend = { timer };
-  $("#undo").onclick = () => { clearTimeout(timer); restore(); notify("Envoi annulé"); };
+  $("#undo").onclick = () => { clearTimeout(timer); restore(); notify("Send cancelled"); };
 }
 
 async function copyLinkedin() {
   const c = conv, ta = $("#reply");
   const text = ta.value.trim();
-  if (!text) return notify("Écrivez d'abord votre message.", false);
+  if (!text) return notify("Write your message first.", false);
   const ok = await copyText(text);
   window.open(c.li_thread_url || liUrl(c.contact.linkedin), "_blank", "noopener");
-  notify(ok ? "Message copié : collez-le dans LinkedIn" : "Copie impossible : copiez le texte à la main", ok);
+  notify(ok ? "Message copied: paste it into LinkedIn" : "Could not copy: copy the text manually", ok);
 }
 
 document.addEventListener("click", () => { const m = $("#moreList"); if (m) m.hidden = true; });

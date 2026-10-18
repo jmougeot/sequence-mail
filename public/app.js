@@ -22,10 +22,10 @@ function fmtBody(s) {
 
 function renderNav(active) {
   const links = [
-    ["index.html", "Tableau de bord"],
-    ["campaigns.html", "Campagnes"],
-    ["replies.html", "Réponses"],
-    ["settings.html", "Paramètres"],
+    ["index.html", "Dashboard"],
+    ["campaigns.html", "Campaigns"],
+    ["replies.html", "Replies"],
+    ["settings.html", "Settings"],
   ];
   document.body.insertAdjacentHTML(
     "afterbegin",
@@ -47,26 +47,26 @@ async function refreshNavBadge() {
     badge.hidden = !todo;
     badge.textContent = todo;
     badge.classList.toggle("unseen", unseen > 0);
-    badge.title = unseen ? `${todo} à traiter, dont ${unseen} non lue(s)` : `${todo} à traiter`;
+    badge.title = unseen ? `${todo} to handle, ${unseen} unread` : `${todo} to handle`;
   } catch {
     badge.hidden = true;
   }
 }
 
 const STATUS_LABELS = {
-  pending: "en attente",
-  in_progress: "en cours",
-  awaiting_li: "action LinkedIn",
-  replied: "a répondu",
-  opted_out: "désinscrit",
-  bounced: "bounce",
-  completed: "terminé",
-  stopped: "stoppé",
-  failed: "échec",
+  pending: "pending",
+  in_progress: "in progress",
+  awaiting_li: "LinkedIn action",
+  replied: "replied",
+  opted_out: "unsubscribed",
+  bounced: "bounced",
+  completed: "completed",
+  stopped: "stopped",
+  failed: "failed",
   active: "active",
-  paused: "en pause",
-  archived: "archivée",
-  held: "non lancé",
+  paused: "paused",
+  archived: "archived",
+  held: "not launched",
 };
 
 function pill(status) {

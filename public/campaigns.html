@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sequence Mail — Campagnes</title>
+<title>Sequence Mail — Campaigns</title>
 <link rel="stylesheet" href="style.css?v=16">
 </head>
 <body>
@@ -11,18 +11,18 @@
   <!-- Une ligne : nom de la campagne en titre (pastille de statut, ouvre la liste), onglets, actions à droite -->
   <div class="camp-head">
     <span class="menu">
-      <button class="camp-title" onclick="toggleMenu(event)" title="Changer de campagne"><i id="campDot" class="dot-st"></i><span id="campTitle">Nouvelle campagne</span><span class="chev">▾</span></button>
+      <button class="camp-title" onclick="toggleMenu(event)" title="Switch campaign"><i id="campDot" class="dot-st"></i><span id="campTitle">New campaign</span><span class="chev">▾</span></button>
       <span class="menu-list camp-list" id="campList" hidden></span>
     </span>
     <div id="campTabs" hidden class="camp-tabs">
-      <button class="tab-btn active" id="tab-seq"      onclick="showTab('seq')">Séquence</button>
+      <button class="tab-btn active" id="tab-seq"      onclick="showTab('seq')">Sequence</button>
       <button class="tab-btn"        id="tab-contacts" onclick="showTab('contacts')">Contacts</button>
       <button class="tab-btn"        id="tab-info"     onclick="showTab('info')">Info</button>
       <button class="tab-btn"        id="tab-import"   onclick="showTab('import')">Import</button>
     </div>
     <span class="spacer"></span>
     <span class="menu">
-      <button class="ghost sender-btn" onclick="toggleMenu(event)" title="Comptes qui envoient cette campagne"><span id="senderLabel">Comptes d'envoi</span><span class="chev">▾</span></button>
+      <button class="ghost sender-btn" onclick="toggleMenu(event)" title="Accounts sending this campaign"><span id="senderLabel">Sending accounts</span><span class="chev">▾</span></button>
       <span class="menu-list sender-list" id="senderList" hidden></span>
     </span>
     <span id="statusZone" class="inline"></span>
@@ -32,15 +32,15 @@
   <div id="paneSeq" class="editor">
     <div class="seq-layout">
       <div class="seq-main">
-        <input id="campName" class="camp-name-input" placeholder="Nom de la campagne">
-        <textarea id="campDesc" class="desc" style="resize:none;overflow:hidden;line-height:1.5" placeholder="Description : à qui s'adresse la campagne, quels contacts y mettre, l'angle du message"></textarea>
+        <input id="campName" class="camp-name-input" placeholder="Campaign name">
+        <textarea id="campDesc" class="desc" style="resize:none;overflow:hidden;line-height:1.5" placeholder="Description: who the campaign is for, which contacts to add, the angle of the message"></textarea>
         <div class="seq-tools">
           <button class="ghost var-toggle" id="varToggle" onclick="toggleVars()" hidden>Variables</button>
         </div>
         <div id="steps"></div>
         <div class="add-row" id="addRow"></div>
         <div class="editor-foot">
-          <button onclick="saveCampaign()" id="saveBtn">Créer la campagne</button>
+          <button onclick="saveCampaign()" id="saveBtn">Create campaign</button>
           <span id="campMsg"></span>
         </div>
       </div>
@@ -52,9 +52,9 @@
   <div id="paneInfo" hidden>
     <div class="card">
       <div class="muted">Description</div>
-      <textarea id="infoDesc" class="desc" style="resize:none;overflow:hidden;line-height:1.5" placeholder="À qui s'adresse la campagne, quels contacts y mettre, l'angle du message"></textarea>
+      <textarea id="infoDesc" class="desc" style="resize:none;overflow:hidden;line-height:1.5" placeholder="Who the campaign is for, which contacts to add, the angle of the message"></textarea>
       <div class="editor-foot">
-        <button onclick="saveDescription()" id="descBtn">Enregistrer</button>
+        <button onclick="saveDescription()" id="descBtn">Save</button>
         <span id="descMsg"></span>
       </div>
     </div>
@@ -65,21 +65,21 @@
   <div id="paneContacts" hidden>
     <div class="card" style="overflow-x:auto">
       <div class="toolbar">
-        <input id="contactSearch" placeholder="Rechercher (email, nom, société…)" style="width:240px" oninput="renderContacts()">
+        <input id="contactSearch" placeholder="Search (email, name, company…)" style="width:240px" oninput="renderContacts()">
         <div id="statusChips" class="chips"></div>
       </div>
       <div class="toolbar bulk" id="bulkBar" hidden>
-        <b><span id="selCount">0</span> sélectionné(s)</b>
-        <button id="launchBtn" onclick="launchSelected()" style="background:var(--ok)">▶ Lancer les envois</button>
-        <button id="stopBtn" class="ghost" onclick="stopSelected()">⏸ Arrêter la séquence</button>
+        <b><span id="selCount">0</span> selected</b>
+        <button id="launchBtn" onclick="launchSelected()" style="background:var(--ok)">▶ Launch</button>
+        <button id="stopBtn" class="ghost" onclick="stopSelected()">⏸ Stop sequence</button>
         <select id="statusSet" style="width:auto" onchange="setStatusSelected(this)">
-          <option value="">Changer le statut…</option>
+          <option value="">Change status…</option>
         </select>
-        <button id="removeBtn" class="ghost" onclick="removeSelected()">Retirer de la campagne</button>
+        <button id="removeBtn" class="ghost" onclick="removeSelected()">Remove from campaign</button>
       </div>
       <table id="contacts"><thead><tr>
-        <th style="width:36px"><input type="checkbox" id="selectAll" title="Tout sélectionner" onchange="toggleSelectAll(this)"></th>
-        <th>Contact</th><th>Statut</th><th>Étape</th><th title="A ouvert son lien personnalisé {{link}}">Visite</th><th>Variante</th><th>Compte d'envoi</th><th>Prochain envoi</th>
+        <th style="width:36px"><input type="checkbox" id="selectAll" title="Select all" onchange="toggleSelectAll(this)"></th>
+        <th>Contact</th><th>Status</th><th>Step</th><th title="Opened their personalized link {{link}}">Visit</th><th>Variant</th><th>Sending account</th><th>Next send</th>
       </tr></thead><tbody></tbody></table>
     </div>
   </div>
@@ -90,14 +90,14 @@
       <div class="card grow">
         <h2>Import CSV</h2>
         <input id="csvFile" type="file" accept=".csv">
-        <p class="muted">Colonnes : email et/ou linkedin (au moins l'un des deux), first_name, last_name, company, … — un contact sans email saute les étapes email, un contact sans profil saute les étapes LinkedIn.</p>
-        <button onclick="importCsv(this)">Importer</button> <span id="csvMsg" class="muted"></span>
+        <p class="muted">Columns: email and/or linkedin (at least one of the two), first_name, last_name, company, … — a contact without an email skips email steps, a contact without a profile skips LinkedIn steps.</p>
+        <button onclick="importCsv(this)">Import</button> <span id="csvMsg" class="muted"></span>
       </div>
       <div class="card grow">
-        <h2>Synchroniser depuis Attio</h2>
-        <input id="attioAttr" placeholder="Slug de l'attribut statut (ex: stage)">
-        <input id="attioStatuses" placeholder="Statuts, séparés par des virgules">
-        <button onclick="attioSync(this)">Synchroniser</button> <span id="attioMsg" class="muted"></span>
+        <h2>Sync from Attio</h2>
+        <input id="attioAttr" placeholder="Status attribute slug (e.g. stage)">
+        <input id="attioStatuses" placeholder="Statuses, comma-separated">
+        <button onclick="attioSync(this)">Sync</button> <span id="attioMsg" class="muted"></span>
       </div>
     </div>
   </div>
@@ -110,15 +110,15 @@
       <div id="drawerTitle" class="drawer-title"></div>
       <div id="drawerSub" class="muted"></div>
     </div>
-    <button class="icon-btn" title="Fermer (Échap)" onclick="closeDrawer()"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    <button class="icon-btn" title="Close (Esc)" onclick="closeDrawer()"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
   </div>
   <div class="drawer-scroll">
     <div class="inline" style="margin-bottom:12px">
-      <span class="muted" style="white-space:nowrap">Compte</span>
+      <span class="muted" style="white-space:nowrap">Account</span>
       <select id="previewAccount" onchange="rerunPreview()"></select>
     </div>
     <details id="contactFields" hidden>
-      <summary>Champs du contact</summary>
+      <summary>Contact fields</summary>
       <div id="contactFieldsBody"></div>
     </details>
     <div id="drawerBody"></div>
@@ -139,11 +139,11 @@ async function loadList() {
   // Les campagnes archivées sont masquées du sélecteur (on les retrouve depuis le tableau de bord),
   // sauf celle qui est ouverte.
   const current = campaigns.find(c => c.id === selectedId);
-  $("#campTitle").textContent = current ? current.name : "Nouvelle campagne";
+  $("#campTitle").textContent = current ? current.name : "New campaign";
   $("#campList").innerHTML =
     campaigns.filter(c => c.status !== "archived" || c.id === selectedId)
       .map(c => `<button type="button" class="${c.id === selectedId ? "cur" : ""}" onclick="$('#campList').hidden = true; selectCampaign(${c.id})"><i class="dot-st ${esc(c.status)}"></i>${esc(c.name)}</button>`).join("") +
-    `<button type="button" class="new" onclick="$('#campList').hidden = true; newCampaign()">+ Nouvelle campagne</button>`;
+    `<button type="button" class="new" onclick="$('#campList').hidden = true; newCampaign()">+ New campaign</button>`;
   return campaigns;
 }
 
@@ -170,13 +170,13 @@ const ico = name => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${IC
 
 const STEP_TYPES = {
   email:   { icon: "mail",    label: "Email" },
-  invite:  { icon: "invite",  label: "Invitation LinkedIn" },
-  message: { icon: "message", label: "Message LinkedIn" },
+  invite:  { icon: "invite",  label: "Connection request" },
+  message: { icon: "message", label: "LinkedIn message" },
 };
 
 const BRANCH_LABELS = {
-  accepted: "Invitation acceptée",
-  not_accepted: "Invitation non acceptée",
+  accepted: "Request accepted",
+  not_accepted: "Request not accepted",
 };
 // Types possibles dans chaque chemin (pas de message LinkedIn sans relation)
 const LANE_TYPES = { accepted: ["message", "email"], not_accepted: ["email"] };
@@ -186,13 +186,13 @@ function stepChannel(s) {
 }
 
 function bodyPlaceholder(chan) {
-  return chan === "invite" ? "Note d’invitation (optionnelle, 200 caractères max une fois personnalisée) — Bonjour {{first_name}}…"
-    : chan === "message" ? "Message LinkedIn — Bonjour {{first_name}}…"
-    : "Bonjour {{first_name}},\n...";
+  return chan === "invite" ? "Connection note (optional, 200 characters max once personalized) — Hi {{first_name}}…"
+    : chan === "message" ? "LinkedIn message — Hi {{first_name}}…"
+    : "Hi {{first_name}},\n...";
 }
 
 // Boutons d'ajout d'étape (sous la séquence, sous chaque chemin)
-const addButtons = (types, handler) => `<span class="muted">Ajouter</span>` +
+const addButtons = (types, handler) => `<span class="muted">Add</span>` +
   types.map(k => `<button class="ghost" onclick="${handler(k)}">${ico(STEP_TYPES[k].icon)}${STEP_TYPES[k].label}</button>`).join("");
 $("#addRow").innerHTML = addButtons(Object.keys(STEP_TYPES), k => `addStepOfType('${k}')`);
 
@@ -211,23 +211,23 @@ function stepHtml(n, s, { firstEmail, abTest, single, types, deadline }) {
   const ab = isEmail && abTest && s.subject_b;
   return `<div class="step" data-chan="${chan}" data-branch="${s.branch || ""}" data-first="${firstEmail ? 1 : ""}">
     ${n > 1 ? `<div class="step-delay">
-      <span class="menu"><button class="ins" title="Insérer une étape ici" onclick="insertMenu(event)">${ico("plus")}</button><span class="menu-list ins-list" hidden></span></span>
-      <span class="delay-txt">${deadline ? "Sans acceptation après" : "Attendre"} <input class="wait" type="number" value="${s.wait_days || 3}" min="1"> jours</span>
+      <span class="menu"><button class="ins" title="Insert a step here" onclick="insertMenu(event)">${ico("plus")}</button><span class="menu-list ins-list" hidden></span></span>
+      <span class="delay-txt">${deadline ? "If not accepted after" : "Wait"} <input class="wait" type="number" value="${s.wait_days || 3}" min="1"> days</span>
     </div>` : ""}
     <div class="step-box">
       <div class="step-head">
         <span class="step-ic">${ico(t.icon)}</span>
-        <span class="step-n">Étape ${n}</span>
-        ${types.length > 1 ? `<span class="step-kind"><span>${t.label}</span><select title="Type de l’étape" onchange="changeStepType(this)">
+        <span class="step-n">Step ${n}</span>
+        ${types.length > 1 ? `<span class="step-kind"><span>${t.label}</span><select title="Step type" onchange="changeStepType(this)">
           ${types.map(k => `<option value="${k}" ${k === chan ? "selected" : ""}>${STEP_TYPES[k].label}</option>`).join("")}
         </select></span>` : `<span class="step-kind-label">${t.label}</span>`}
         <span class="spacer"></span>
-        ${isEmail && abTest && !s.subject_b ? `<button class="link-btn ab" title="A/B test : la moitié des contacts reçoit l'objet A, l'autre moitié l'objet B" onclick="addSubjectB(this)">+ Objet B</button>` : ""}
-        <button class="icon-btn" title="Aperçu" onclick="previewStep(this)">${ico("eye")}</button>
-        <button class="icon-btn danger" title="Supprimer l’étape" onclick="removeStep(this)" ${single ? "disabled" : ""}>${ico("x")}</button>
+        ${isEmail && abTest && !s.subject_b ? `<button class="link-btn ab" title="A/B test: half the contacts get subject A, the other half subject B" onclick="addSubjectB(this)">+ Subject B</button>` : ""}
+        <button class="icon-btn" title="Preview" onclick="previewStep(this)">${ico("eye")}</button>
+        <button class="icon-btn danger" title="Delete step" onclick="removeStep(this)" ${single ? "disabled" : ""}>${ico("x")}</button>
       </div>
-      ${isEmail ? subjectRow("subject", ab ? "Objet A" : "Objet", firstEmail ? "Objet de l’email" : "Même fil que l’email précédent (Re:)", s.subject) : ""}
-      ${ab ? subjectRow("subjectB", "Objet B", "Vide = pas de test A/B", s.subject_b) : ""}
+      ${isEmail ? subjectRow("subject", ab ? "Subject A" : "Subject", firstEmail ? "Email subject" : "Same thread as the previous email (Re:)", s.subject) : ""}
+      ${ab ? subjectRow("subjectB", "Subject B", "Empty = no A/B test", s.subject_b) : ""}
       <textarea class="body" rows="1" placeholder="${esc(bodyPlaceholder(chan))}">${esc(s.body)}</textarea>
     </div>
   </div>`;
@@ -249,8 +249,8 @@ function addSubjectB(btn) {
   const box = btn.closest(".step-box");
   btn.remove();
   const rowA = box.querySelector(".step-row");
-  rowA.querySelector(".row-l").textContent = "Objet A";
-  rowA.insertAdjacentHTML("afterend", subjectRow("subjectB", "Objet B", "Vide = pas de test A/B", ""));
+  rowA.querySelector(".row-l").textContent = "Subject A";
+  rowA.insertAdjacentHTML("afterend", subjectRow("subjectB", "Subject B", "Empty = no A/B test", ""));
   box.querySelector(".subjectB").focus();
 }
 
@@ -308,7 +308,7 @@ function setSteps(list) {
   const lanes = inviteIdx < 0 ? "" : `<div class="split">${Object.entries(BRANCH_LABELS).map(([b, label]) => `
     <div class="lane" data-lane="${b}">
       <div class="lane-head">${label}</div>
-      ${list.some(s => s.branch === b) ? list.map((s, i) => s.branch === b ? html(s, i) : "").join("") : `<div class="lane-end">Fin de la séquence</div>`}
+      ${list.some(s => s.branch === b) ? list.map((s, i) => s.branch === b ? html(s, i) : "").join("") : `<div class="lane-end">End of sequence</div>`}
       <div class="add-row">${addButtons(LANE_TYPES[b], k => `addStepToLane('${b}', '${k}')`)}</div>
     </div>`).join("")}</div>`;
   $("#steps").innerHTML = trunk + lanes;
@@ -339,13 +339,13 @@ function readSteps() {
 // Enregistrées avec la campagne.
 let varInstructions = {};      // {variable: consigne}, telle qu'à l'écran
 let savedVarInstructions = {}; // telle qu'enregistrée : seules les différences sont envoyées
-const VAR_RE = /\{\{\s*(?:si\s+)?([\p{L}\p{N}_]+)\s*(?::[^|{}]*\|[^{}]*)?\}\}/gu;
+const VAR_RE = /\{\{\s*(?:(?:si|if)\s+)?([\p{L}\p{N}_]+)\s*(?::[^|{}]*\|[^{}]*)?\}\}/gu;
 function seqVarNames() {
   const names = new Set();
   for (const el of $$("#steps .subject, #steps .subjectB, #steps .body")) {
     for (const m of el.value.matchAll(VAR_RE)) names.add(m[1]);
   }
-  return [...names].filter(n => !BASE_VARS.includes(n) && n !== "sinon" && n !== "fin");
+  return [...names].filter(n => !BASE_VARS.includes(n) && !["sinon", "fin", "else", "end"].includes(n));
 }
 // Panneau replié ou non : choix mémorisé dans le navigateur
 let varsHidden = localStorage.getItem("seq.varsHidden") === "1";
@@ -369,10 +369,10 @@ function renderVarPanel() {
   panel.dataset.key = key;
   const card = n => `<div class="var-card" data-var="${esc(n)}">
     <code>{{${esc(n)}}}</code>
-    <textarea class="desc" rows="1" placeholder="Ce que contient {{${esc(n)}}} : contenu, longueur, ton">${esc(varInstructions[n] || "")}</textarea>
+    <textarea class="desc" rows="1" placeholder="What {{${esc(n)}}} contains: content, length, tone">${esc(varInstructions[n] || "")}</textarea>
   </div>`;
   panel.innerHTML = `<div class="muted">Variables</div>${inSeq.map(card).join("")}`
-    + (others.length ? `<div class="muted">Autres campagnes</div>${others.map(card).join("")}` : "");
+    + (others.length ? `<div class="muted">Other campaigns</div>${others.map(card).join("")}` : "");
   $$("#varPanel textarea").forEach(autosize);
 }
 $("#varPanel").addEventListener("input", e => {
@@ -479,8 +479,8 @@ function renderSenders(selectedIds) {
   $("#senderList").innerHTML = accounts.map(a => `
     <label class="sender-row ${a.active ? "" : "inactive"}">
       <input type="checkbox" class="senderChk" value="${a.id}" ${!selectedIds || selectedIds.includes(a.id) ? "checked" : ""} onchange="senderChanged()">
-      <span>${esc(a.email)}</span>${a.active ? "" : `<span class="muted">inactif</span>`}
-    </label>`).join("") || '<span class="muted" style="padding:8px 10px;white-space:nowrap">Aucun compte connecté — voir Paramètres</span>';
+      <span>${esc(a.email)}</span>${a.active ? "" : `<span class="muted">inactive</span>`}
+    </label>`).join("") || '<span class="muted" style="padding:8px 10px;white-space:nowrap">No account connected — see Settings</span>';
   senderLabel();
 }
 // Un changement s'enregistre aussitôt sur une campagne existante (le menu est dans l'en-tête, visible sur tous les onglets)
@@ -494,10 +494,10 @@ async function senderChanged() {
 }
 function senderLabel() {
   const all = $$(".senderChk"), on = all.filter(c => c.checked).length;
-  $("#senderLabel").textContent = !all.length ? "Aucun compte d'envoi"
-    : on === all.length ? `Tous les comptes d'envoi (${all.length})`
-    : on === 0 ? "Aucun compte d'envoi coché"
-    : `${on} compte${on > 1 ? "s" : ""} d'envoi sur ${all.length}`;
+  $("#senderLabel").textContent = !all.length ? "No sending account"
+    : on === all.length ? `All sending accounts (${all.length})`
+    : on === 0 ? "No sending account selected"
+    : `${on} of ${all.length} sending accounts`;
 }
 
 // null = tous cochés (la campagne suivra aussi les comptes connectés plus tard)
@@ -515,7 +515,7 @@ function refreshPreviewAccounts() {
   const pool = ids ? accounts.filter(a => ids.includes(a.id)) : accounts;
   const el = $("#previewAccount");
   const prev = el.value;
-  el.innerHTML = `<option value="">(1er compte actif)</option>` +
+  el.innerHTML = `<option value="">(first active account)</option>` +
     pool.map(a => `<option value="${a.id}">${esc(a.email)}</option>`).join("");
   el.value = [...el.options].some(o => o.value === prev) ? prev : "";
 }
@@ -523,7 +523,7 @@ function refreshPreviewAccounts() {
 function newCampaign() {
   selectedId = null;
   location.hash = "new";
-  $("#saveBtn").textContent = "Créer la campagne";
+  $("#saveBtn").textContent = "Create campaign";
   $("#statusZone").innerHTML = "";
   $("#campDot").className = "dot-st";
   $("#campDot").title = "";
@@ -564,30 +564,30 @@ function showPane(id) {
 // Stats : l'entonnoir en quatre chiffres, les envois, puis la répartition des contacts par statut.
 function renderStats(c) {
   const n = (v) => Number(v || 0);
-  const pct = (a, b) => (b > 0 ? `${Math.round((a / b) * 100)} %` : "");
+  const pct = (a, b) => (b > 0 ? `${Math.round((a / b) * 100)}%` : "");
   const tile = (value, label, sub = "") => `<div class="st"><div class="sv">${value}</div><div class="sl">${label}</div>${sub ? `<div class="ss">${sub}</div>` : ""}</div>`;
   const plural = (v, one, many) => `${v} ${v > 1 ? many : one}`;
   const sent = [
     n(c.emails_sent) && plural(n(c.emails_sent), "email", "emails"),
-    n(c.li_invites_sent) && plural(n(c.li_invites_sent), "invitation LinkedIn", "invitations LinkedIn"),
-    n(c.li_messages_sent) && plural(n(c.li_messages_sent), "message LinkedIn", "messages LinkedIn"),
-    n(c.visited) && plural(n(c.visited), "visite du lien", "visites du lien"),
+    n(c.li_invites_sent) && plural(n(c.li_invites_sent), "connection request", "connection requests"),
+    n(c.li_messages_sent) && plural(n(c.li_messages_sent), "LinkedIn message", "LinkedIn messages"),
+    n(c.visited) && plural(n(c.visited), "link visit", "link visits"),
   ].filter(Boolean);
   // répartition, dans l'ordre de la séquence ; seuls les statuts présents
   const parts = [
-    ["held", "non lancés", "#d0d7de"], ["pending", "en attente", "#9ab6f0"], ["in_progress", "en cours", "#2f6feb"],
-    ["awaiting_li", "action LinkedIn", "#0a66c2"], ["completed", "terminés", "#8c959f"], ["replied", "ont répondu", "#1a7f37"],
-    ["opted_out", "refus", "#cf222e"], ["bounced", "bounces", "#fa7a7a"], ["failed", "échecs", "#9a6700"], ["stopped", "arrêtés", "#57606a"],
+    ["held", "not started", "#d0d7de"], ["pending", "pending", "#9ab6f0"], ["in_progress", "in progress", "#2f6feb"],
+    ["awaiting_li", "LinkedIn action", "#0a66c2"], ["completed", "completed", "#8c959f"], ["replied", "replied", "#1a7f37"],
+    ["opted_out", "opted out", "#cf222e"], ["bounced", "bounced", "#fa7a7a"], ["failed", "failed", "#9a6700"], ["stopped", "stopped", "#57606a"],
   ].filter(([k]) => n(c[k]) > 0);
   const total = n(c.contacts) || 1;
   $("#statsContent").innerHTML = `
     <div class="st-row">
       ${tile(n(c.contacts), "contacts")}
-      ${tile(n(c.launched), "lancés", pct(n(c.launched), n(c.contacts)))}
-      ${tile(n(c.contacted), "contactés")}
-      ${tile(n(c.replied), "réponses", n(c.contacted) ? `${c.reply_rate} %${c.ab_test ? ` · A ${c.reply_rate_a} % / B ${c.reply_rate_b} %` : ""}` : "")}
+      ${tile(n(c.launched), "launched", pct(n(c.launched), n(c.contacts)))}
+      ${tile(n(c.contacted), "contacted")}
+      ${tile(n(c.replied), "replies", n(c.contacted) ? `${c.reply_rate}%${c.ab_test ? ` · A ${c.reply_rate_a}% / B ${c.reply_rate_b}%` : ""}` : "")}
     </div>
-    <p class="st-sent">${sent.length ? `Envoyés : ${sent.join(" · ")}` : "Rien n'est encore parti."}</p>
+    <p class="st-sent">${sent.length ? `Sent: ${sent.join(" · ")}` : "Nothing sent yet."}</p>
     ${parts.length ? `
     <div class="st-bar">${parts.map(([k, , color]) => `<div style="width:${(n(c[k]) / total) * 100}%;background:${color}" title="${n(c[k])}"></div>`).join("")}</div>
     <div class="st-legend">${parts.map(([k, label, color]) => `<span><i style="background:${color}"></i>${n(c[k])} ${label}</span>`).join("")}</div>` : ""}`;
@@ -605,7 +605,7 @@ async function saveDescription() {
   btn.disabled = true;
   try {
     await api(`/api/campaigns/${selectedId}`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ description: $("#infoDesc").value }) });
-    msg.textContent = "Enregistré ✓";
+    msg.textContent = "Saved ✓";
     msg.className = "ok";
   } catch (e) { msg.textContent = e.message; msg.className = "err"; }
   btn.disabled = false;
@@ -615,19 +615,19 @@ async function saveDescription() {
 // Une campagne archivée ne se relance qu'après désarchivage.
 function renderStatusZone(c) {
   const main = c.status === "archived"
-    ? `<button class="ghost" onclick="setArchived(${c.id}, false)">Désarchiver</button>`
+    ? `<button class="ghost" onclick="setArchived(${c.id}, false)">Unarchive</button>`
     : c.status === "active"
-      ? `<button class="ghost" onclick="toggleStatus(${c.id}, 'active')">Mettre en pause</button>`
-      : `<button onclick="toggleStatus(${c.id}, '${c.status}')">Lancer les envois</button>`;
+      ? `<button class="ghost" onclick="toggleStatus(${c.id}, 'active')">Pause</button>`
+      : `<button onclick="toggleStatus(${c.id}, '${c.status}')">Launch</button>`;
   $("#campDot").className = `dot-st ${c.status}`;
   $("#campDot").title = STATUS_LABELS[c.status] || c.status;
   $("#statusZone").innerHTML = `${main}
     <span class="menu">
-      <button class="icon-btn" title="Plus d’actions" onclick="toggleMenu(event)">⋯</button>
+      <button class="icon-btn" title="More actions" onclick="toggleMenu(event)">⋯</button>
       <span class="menu-list" hidden>
-        <button type="button" onclick="renameCampaign()">Renommer</button>
-        ${c.status === "archived" ? "" : `<button type="button" onclick="setArchived(${c.id}, true)">Archiver</button>`}
-        <button type="button" class="danger" onclick="deleteCampaign()">Supprimer</button>
+        <button type="button" onclick="renameCampaign()">Rename</button>
+        ${c.status === "archived" ? "" : `<button type="button" onclick="setArchived(${c.id}, true)">Archive</button>`}
+        <button type="button" class="danger" onclick="deleteCampaign()">Delete</button>
       </span>
     </span>`;
 }
@@ -656,7 +656,7 @@ document.addEventListener("click", e => {
 async function selectCampaign(id, tab = "seq") {
   selectedId = id;
   const c = await api(`/api/campaigns/${id}`);
-  $("#saveBtn").textContent = "Enregistrer";
+  $("#saveBtn").textContent = "Save";
   renderStatusZone(c);
   $("#campName").value = c.name;
   $("#campName").hidden = true; // le nom est dans l'en-tête ; « Renommer » le rend modifiable ici
@@ -694,7 +694,7 @@ async function setArchived(id, archived) {
 
 async function deleteCampaign() {
   const name = $("#campName").value;
-  if (!confirm(`Supprimer définitivement la campagne « ${name} » ?\n\nLes envois en cours seront arrêtés et tout l'historique de la campagne sera perdu. Les contacts restent dans le carnet global.`)) return;
+  if (!confirm(`Permanently delete the campaign “${name}”?\n\nOngoing sends will be stopped and the campaign's entire history will be lost. Contacts stay in the global address book.`)) return;
   try {
     await api(`/api/campaigns/${selectedId}`, { method: "DELETE" });
     selectedId = null;
@@ -709,7 +709,7 @@ async function saveCampaign() {
   const account_ids = readSenderIds();
   const msg = $("#campMsg");
   if (account_ids && !account_ids.length) {
-    msg.textContent = "Sélectionnez au moins un compte d'envoi";
+    msg.textContent = "Select at least one sending account";
     msg.className = "err";
     return;
   }
@@ -721,12 +721,12 @@ async function saveCampaign() {
     await saveVarInstructions();
     if (selectedId) {
       await api(`/api/campaigns/${selectedId}`, { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
-      msg.textContent = "Enregistré ✓";
-      notify("Modifications enregistrées — les prochains envois utiliseront le nouveau contenu");
+      msg.textContent = "Saved ✓";
+      notify("Changes saved — upcoming sends will use the new content");
       loadList();
     } else {
       const { id } = await api("/api/campaigns", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
-      notify("Campagne créée — ajoutez des contacts via l'onglet Import");
+      notify("Campaign created — add contacts from the Import tab");
       await selectCampaign(id, "import");
     }
     msg.className = "ok";
@@ -791,12 +791,12 @@ async function renderStepPreview(steps, i, { contact, accountId }) {
   const skipped = contact && (chan === "email" ? !contact.email : !contact.linkedin);
   const branch = div.dataset.branch ? `<div class="hline">${BRANCH_LABELS[div.dataset.branch]}</div>` : "";
   const header = branch + (chan === "email"
-    ? `<div class="hline">De : ${esc(r.from)}</div>
-       ${skipped ? `<div class="hline skip">Pas d’email — cette étape sera sautée</div>` : `<div class="hline">À : ${esc(r.to)}</div>`}
-       <div class="hline"><b>Objet : ${esc(r.subject)}</b></div>`
+    ? `<div class="hline">From: ${esc(r.from)}</div>
+       ${skipped ? `<div class="hline skip">No email — this step will be skipped</div>` : `<div class="hline">To: ${esc(r.to)}</div>`}
+       <div class="hline"><b>Subject: ${esc(r.subject)}</b></div>`
     : `<div class="hline"><b>${ico(STEP_TYPES[chan].icon)} ${STEP_TYPES[chan].label}</b></div>
-       ${skipped ? `<div class="hline skip">Pas de profil LinkedIn — cette étape sera sautée</div>` : ""}`);
-  const body = chan === "invite" && !r.body ? '<span class="muted">(invitation sans note)</span>' : fmtBody(r.body);
+       ${skipped ? `<div class="hline skip">No LinkedIn profile — this step will be skipped</div>` : ""}`);
+  const body = chan === "invite" && !r.body ? '<span class="muted">(request without a note)</span>' : fmtBody(r.body);
   return { r, skipped, html: `${header}<pre>${body}</pre>` };
 }
 
@@ -809,7 +809,7 @@ async function runPreview() {
 
   if (p.kind === "step") {
     const i = Math.min(p.index, steps.length - 1);
-    title.textContent = `Aperçu — étape ${i + 1}`;
+    title.textContent = `Preview — step ${i + 1}`;
     sub.textContent = "";
     $("#contactFields").hidden = true;
   } else {
@@ -819,7 +819,7 @@ async function runPreview() {
     sub.textContent = [name !== title.textContent ? name : "", c.company].filter(Boolean).join(" · ");
     $("#contactFields").hidden = false;
   }
-  body.innerHTML = '<p class="muted" style="margin:0">Chargement de l’aperçu…</p>';
+  body.innerHTML = '<p class="muted" style="margin:0">Loading preview…</p>';
   note.textContent = "";
   openDrawer();
 
@@ -830,8 +830,8 @@ async function runPreview() {
       if (preview !== p) return; // un autre aperçu a été demandé entre-temps
       body.innerHTML = `<div class="preview">${html}</div>`;
       note.textContent = r.sample_contact
-        ? "Aperçu avec un contact d'exemple (la campagne n'a pas encore de contacts)."
-        : "Aperçu avec le premier contact de la campagne — cliquez sur un contact du tableau pour le personnaliser.";
+        ? "Preview with a sample contact (the campaign has no contacts yet)."
+        : "Preview with the campaign's first contact — click a contact in the table to personalize it.";
       return;
     }
 
@@ -844,17 +844,17 @@ async function runPreview() {
     contactPreviewMsgs = renders.map(x => x.r.body || "");
     body.innerHTML = renders.map(({ r, html, skipped }, i) => {
       const waitDays = steps[i].querySelector(".wait")?.value;
-      return `${i ? `<div class="pv-wait">↓ J+${waitDays || "?"}</div>` : ""}
+      return `${i ? `<div class="pv-wait">↓ +${waitDays || "?"} days</div>` : ""}
         <div class="preview ${i === current ? "current" : ""} ${skipped ? "skipped" : ""}">
           <div class="pv-head">
-            <span>Étape ${i + 1}/${total}${i === current && contact.current_step < total ? " · prochaine" : ""}</span>
-            ${r.body && !skipped ? `<button class="ghost" title="Copier le message" onclick="copyStepMsg(${i})">Copier</button>` : ""}
+            <span>Step ${i + 1}/${total}${i === current && contact.current_step < total ? " · next" : ""}</span>
+            ${r.body && !skipped ? `<button class="ghost" title="Copy message" onclick="copyStepMsg(${i})">Copy</button>` : ""}
           </div>
           ${html}
         </div>`;
     }).join("");
-    note.textContent = contact.current_step >= total ? "Ce contact a reçu toute la séquence." :
-      contact.variant ? `Variante ${contact.variant}.` : "";
+    note.textContent = contact.current_step >= total ? "This contact has received the whole sequence." :
+      contact.variant ? `Variant ${contact.variant}.` : "";
   } catch (e) {
     if (preview !== p) return;
     body.innerHTML = `<p class="err" style="margin:0">${esc(e.message)}</p>`;
@@ -865,7 +865,7 @@ async function copyStepMsg(i) {
   const msg = contactPreviewMsgs[i];
   if (!msg) return;
   const ok = await copyText(msg);
-  notify(ok ? "Message copié — prêt à coller" : "Impossible de copier le message", ok);
+  notify(ok ? "Message copied — ready to paste" : "Couldn't copy the message", ok);
 }
 
 // --- Champs du contact (standards + colonnes CSV personnalisées) ---
@@ -884,10 +884,10 @@ function renderContactFields(contact) {
     row("data-field", "linkedin", contact.linkedin) +
     Object.entries(extra).map(([k, v]) => row("data-extra", k, v)).join("") + `
     <div class="field-row">
-      <input id="newFieldName" placeholder="nouveau_champ" style="flex:0 0 110px">
-      <input id="newFieldValue" placeholder="valeur">
+      <input id="newFieldName" placeholder="new_field" style="flex:0 0 110px">
+      <input id="newFieldValue" placeholder="value">
     </div>
-    <button class="ghost" onclick="saveContactFields()" style="width:100%;margin-top:4px">Enregistrer les champs</button>`;
+    <button class="ghost" onclick="saveContactFields()" style="width:100%;margin-top:4px">Save fields</button>`;
 }
 
 async function saveContactFields() {
@@ -900,7 +900,7 @@ async function saveContactFields() {
   if (nk) body.extra[nk] = nv;
   try {
     await api(`/api/contacts/${c.contact_id}`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
-    notify("Champs enregistrés — aperçu mis à jour");
+    notify("Fields saved — preview updated");
     await loadContacts();
     const updated = contactRows.find(r => r.contact_id === c.contact_id);
     if (updated) {
@@ -931,30 +931,30 @@ function renderContacts() {
   const counts = {};
   contactRows.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
   $("#statusChips").innerHTML = contactRows.length ? `
-    <button class="chip ${!statusFilter ? "active" : ""}" onclick="setStatusFilter('')">Tous (${contactRows.length})</button>` +
+    <button class="chip ${!statusFilter ? "active" : ""}" onclick="setStatusFilter('')">All (${contactRows.length})</button>` +
     Object.entries(counts).map(([s, n]) =>
       `<button class="chip ${statusFilter === s ? "active" : ""}" onclick="setStatusFilter('${s}')">${STATUS_LABELS[s] || s} (${n})</button>`
     ).join("") : "";
 
   $("#contacts tbody").innerHTML = rows.map(r => `
-    <tr class="${r.contact_id === openId ? "sel" : ""}" data-contact="${r.contact_id}" title="Voir l'aperçu personnalisé pour ce contact" onclick="previewContact(${r.contact_id})">
+    <tr class="${r.contact_id === openId ? "sel" : ""}" data-contact="${r.contact_id}" title="See the personalized preview for this contact" onclick="previewContact(${r.contact_id})">
       <td onclick="event.stopPropagation()"><input type="checkbox" class="contactChk" data-id="${r.cc_id}" data-status="${r.status}" ${checked.has(r.cc_id) ? "checked" : ""} onchange="updateSelection()"></td>
       <td class="contact-cell">
         <div class="contact-name">${esc([r.first_name, r.last_name].filter(Boolean).join(" ") || r.email || r.linkedin)}${r.linkedin
-          ? ` <a class="li-link" href="${esc(liUrl(r.linkedin))}" target="_blank" rel="noopener" title="Profil LinkedIn : ${esc(r.linkedin)}" onclick="event.stopPropagation()">in</a>`
-          : (hasLiSteps ? ` <span class="err" title="Aucune URL LinkedIn — les étapes LinkedIn seront sautées">⚠️</span>` : "")}</div>
-        <div class="muted">${esc([r.company, r.email || "pas d’email"].filter(Boolean).join(" · "))}</div>
+          ? ` <a class="li-link" href="${esc(liUrl(r.linkedin))}" target="_blank" rel="noopener" title="LinkedIn profile: ${esc(r.linkedin)}" onclick="event.stopPropagation()">in</a>`
+          : (hasLiSteps ? ` <span class="err" title="No LinkedIn URL — LinkedIn steps will be skipped">⚠️</span>` : "")}</div>
+        <div class="muted">${esc([r.company, r.email || "no email"].filter(Boolean).join(" · "))}</div>
       </td>
-      <td>${pill(r.status)}${r.status === "replied" || r.status === "opted_out" ? ` <a href="replies.html#cc=${r.cc_id}" title="Lire la réponse et y répondre" onclick="event.stopPropagation()">💬</a>` : r.li_thread_url ? ` <a href="${esc(r.li_thread_url)}" target="_blank" rel="noopener" title="Conversation LinkedIn" onclick="event.stopPropagation()">💬</a>` : ""}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
+      <td>${pill(r.status)}${r.status === "replied" || r.status === "opted_out" ? ` <a href="replies.html#cc=${r.cc_id}" title="Read the reply and answer it" onclick="event.stopPropagation()">💬</a>` : r.li_thread_url ? ` <a href="${esc(r.li_thread_url)}" target="_blank" rel="noopener" title="LinkedIn conversation" onclick="event.stopPropagation()">💬</a>` : ""}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
       <td>${r.current_step || "—"}</td>
-      <td>${r.visit_count ? `<span title="${new Date(r.last_visit_at).toLocaleString("fr-FR")} — ${r.visit_count} visite(s)">🌐 ${r.visit_count}</span>` : "—"}</td>
+      <td>${r.visit_count ? `<span title="${new Date(r.last_visit_at).toLocaleString("en-GB")} — ${r.visit_count} visit(s)">🌐 ${r.visit_count}</span>` : "—"}</td>
       <td>${r.variant || "—"}</td>
       <td class="muted">${esc([r.sender, r.li_sender && `in: ${r.li_sender}`].filter(Boolean).join(" · ") || "—")}</td>
-      <td class="muted">${r.next_send_at ? new Date(r.next_send_at).toLocaleString("fr-FR") : "—"}</td>
+      <td class="muted">${r.next_send_at ? new Date(r.next_send_at).toLocaleString("en-GB") : "—"}</td>
     </tr>
   `).join("") || `<tr><td colspan="8" class="muted">${contactRows.length
-    ? "Aucun contact ne correspond à la recherche."
-    : `Aucun contact — <a href="#" onclick="showTab('import');return false">ajoutez-en via l'onglet Import</a>.`}</td></tr>`;
+    ? "No contact matches the search."
+    : `No contacts — <a href="#" onclick="showTab('import');return false">add some from the Import tab</a>.`}</td></tr>`;
   updateSelection();
 }
 
@@ -1000,16 +1000,16 @@ async function bulkContacts(action, confirmMsg, toastOf) {
 
 function launchSelected() {
   bulkContacts("launch-contacts", null, r => r.launched
-    ? [`▶ ${r.launched} contact(s) lancé(s) — la campagne est active`, true]
-    : ["Aucun contact « non lancé » dans la sélection", false]);
+    ? [`▶ ${r.launched} contact(s) launched — the campaign is active`, true]
+    : ["No “Not started” contacts in the selection", false]);
 }
 function stopSelected() {
-  bulkContacts("stop-contacts", "Arrêter la séquence pour {n} contact(s) ? Plus aucun email ne leur sera envoyé dans cette campagne.",
-    r => [`⏸ ${r.stopped} séquence(s) arrêtée(s)`, true]);
+  bulkContacts("stop-contacts", "Stop the sequence for {n} contact(s)? They will receive no more emails from this campaign.",
+    r => [`⏸ ${r.stopped} sequence(s) stopped`, true]);
 }
 function removeSelected() {
-  bulkContacts("remove-contacts", "Retirer {n} contact(s) de la campagne ? Leur historique d'envoi dans cette campagne sera supprimé (le contact reste dans le carnet global).",
-    r => [`${r.removed} contact(s) retiré(s) de la campagne`, true]);
+  bulkContacts("remove-contacts", "Remove {n} contact(s) from the campaign? Their send history in this campaign will be deleted (contacts stay in the global address book).",
+    r => [`${r.removed} contact(s) removed from the campaign`, true]);
 }
 
 // Statuts assignables à la main (les autres entrées de STATUS_LABELS concernent les campagnes)
@@ -1022,40 +1022,40 @@ async function setStatusSelected(sel) {
   const ids = $$("#contacts .contactChk:checked").map(c => +c.dataset.id);
   if (!ids.length) return;
   const warn =
-    status === "opted_out" ? "\n\n⚠️ Ils seront aussi désinscrits auprès du propriétaire de cette campagne (plus jamais contactés dans ses campagnes)." :
-    status === "pending" ? "\n\nIls repartiront au prochain créneau d'envoi si la campagne est active." :
-    status === "in_progress" ? "\n\nLa séquence reprendra à leur prochaine étape dès le prochain créneau d'envoi." : "";
-  if (!confirm(`Passer ${ids.length} contact(s) au statut « ${STATUS_LABELS[status]} » ?${warn}`)) return;
+    status === "opted_out" ? "\n\n⚠️ They will also be opted out for this campaign's owner (never contacted again in any of their campaigns)." :
+    status === "pending" ? "\n\nThey will restart at the next sending slot if the campaign is active." :
+    status === "in_progress" ? "\n\nThe sequence will resume at their next step in the next sending slot." : "";
+  if (!confirm(`Set ${ids.length} contact(s) to “${STATUS_LABELS[status]}”?${warn}`)) return;
   try {
     const r = await api(`/api/campaigns/${selectedId}/set-status`, {
       method: "POST", headers: {"Content-Type":"application/json"},
       body: JSON.stringify({ ids, status })
     });
-    notify(`${r.changed} contact(s) passé(s) en « ${STATUS_LABELS[status]} »`);
+    notify(`${r.changed} contact(s) set to “${STATUS_LABELS[status]}”`);
     loadContacts(); loadList();
   } catch (e) { notify(e.message, false); }
 }
 
 async function importCsv(btn) {
   const file = $("#csvFile").files[0];
-  if (!file) { $("#csvMsg").textContent = "Choisissez un fichier"; return; }
-  btn.disabled = true; btn.textContent = "Import en cours…";
+  if (!file) { $("#csvMsg").textContent = "Choose a file"; return; }
+  btn.disabled = true; btn.textContent = "Importing…";
   try {
     const r = await api(`/api/campaigns/${selectedId}/import`, { method: "POST", headers: {"Content-Type":"text/csv"}, body: await file.text() });
-    $("#csvMsg").textContent = `${r.imported} importé(s), ${r.updated || 0} mis à jour, ${r.skipped} ignoré(s)` +
-      (r.errors?.length ? ` — ${r.errors.length} rejeté(s) : ${r.errors.slice(0, 3).join(" · ")}${r.errors.length > 3 ? "…" : ""}` : "");
+    $("#csvMsg").textContent = `${r.imported} imported, ${r.updated || 0} updated, ${r.skipped} skipped` +
+      (r.errors?.length ? ` — ${r.errors.length} rejected: ${r.errors.slice(0, 3).join(" · ")}${r.errors.length > 3 ? "…" : ""}` : "");
     loadList();
     if (r.imported || r.updated) {
-      notify(`${r.imported} contact(s) importé(s)${r.updated ? `, ${r.updated} mis à jour` : ""}`);
+      notify(`${r.imported} contact(s) imported${r.updated ? `, ${r.updated} updated` : ""}`);
       showTab("contacts");
     }
-    else notify("Aucun contact importé" + (r.errors?.length ? ` (${r.errors.length} rejeté(s))` : ""), false);
+    else notify("No contacts imported" + (r.errors?.length ? ` (${r.errors.length} rejected)` : ""), false);
   } catch (e) { $("#csvMsg").textContent = e.message; notify(e.message, false); }
-  btn.disabled = false; btn.textContent = "Importer";
+  btn.disabled = false; btn.textContent = "Import";
 }
 
 async function attioSync(btn) {
-  btn.disabled = true; btn.textContent = "Synchronisation…";
+  btn.disabled = true; btn.textContent = "Syncing…";
   try {
     const r = await api(`/api/campaigns/${selectedId}/attio-sync`, {
       method: "POST", headers: {"Content-Type":"application/json"},
@@ -1063,16 +1063,16 @@ async function attioSync(btn) {
         status_attribute: $("#attioAttr").value,
         statuses: $("#attioStatuses").value.split(",").map(s => s.trim()).filter(Boolean),
       })});
-    $("#attioMsg").textContent = `${r.fetched} récupéré(s), ${r.imported} inscrit(s), ${r.updated || 0} mis à jour` +
-      (r.errors?.length ? ` — ${r.errors.length} rejeté(s)` : "");
+    $("#attioMsg").textContent = `${r.fetched} fetched, ${r.imported} enrolled, ${r.updated || 0} updated` +
+      (r.errors?.length ? ` — ${r.errors.length} rejected` : "");
     loadList();
     if (r.imported || r.updated) {
-      notify(`Attio : ${r.imported} contact(s) importé(s)${r.updated ? `, ${r.updated} mis à jour` : ""}`);
+      notify(`Attio: ${r.imported} contact(s) imported${r.updated ? `, ${r.updated} updated` : ""}`);
       showTab("contacts");
     }
-    else notify(`Attio : ${r.fetched} trouvé(s), aucun nouveau contact inscrit`, false);
+    else notify(`Attio: ${r.fetched} found, no new contacts enrolled`, false);
   } catch (e) { $("#attioMsg").textContent = e.message; notify(e.message, false); }
-  btn.disabled = false; btn.textContent = "Synchroniser";
+  btn.disabled = false; btn.textContent = "Sync";
 }
 
 // --- Init ---
@@ -1080,7 +1080,7 @@ async function attioSync(btn) {
   api("/api/settings").then(s => {
     if (s.attio_import_attribute && !$("#attioAttr").value) $("#attioAttr").value = s.attio_import_attribute;
   });
-  $("#statusSet").innerHTML = `<option value="">Changer le statut…</option>` +
+  $("#statusSet").innerHTML = `<option value="">Change status…</option>` +
     SETTABLE_STATUSES.map(s => `<option value="${s}">→ ${STATUS_LABELS[s]}</option>`).join("");
   accounts = await api("/api/accounts");
   await loadVarInstructions();

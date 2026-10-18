@@ -1,29 +1,29 @@
 <!doctype html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sequence Mail — Tableau de bord</title>
+<title>Sequence Mail — Dashboard</title>
 <link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
 <div class="wrap">
-  <h1>Tableau de bord</h1>
+  <h1>Dashboard</h1>
 
   <div class="kpis" id="kpis"></div>
 
   <div class="card">
-    <h2>Comparaison des campagnes</h2>
+    <h2>Campaign comparison</h2>
     <table id="campaigns"><thead><tr>
-      <th>Campagne</th><th>Statut</th><th>Contacts</th><th>Emails envoyés</th><th>Réponses</th><th>Taux de réponse</th><th>Progression</th><th></th>
+      <th>Campaign</th><th>Status</th><th>Contacts</th><th>Emails sent</th><th>Replies</th><th>Reply rate</th><th>Progress</th><th></th>
     </tr></thead><tbody></tbody></table>
-    <p><a class="btn" href="campaigns.html#new">+ Nouvelle campagne</a></p>
+    <p><a class="btn" href="campaigns.html#new">+ New campaign</a></p>
   </div>
 
   <details class="card" id="archived" hidden>
-    <summary>Archivées (<span id="archivedCount"></span>)</summary>
+    <summary>Archived (<span id="archivedCount"></span>)</summary>
     <table id="archivedCampaigns"><thead><tr>
-      <th>Campagne</th><th>Statut</th><th>Contacts</th><th>Emails envoyés</th><th>Réponses</th><th>Taux de réponse</th><th>Progression</th><th></th>
+      <th>Campaign</th><th>Status</th><th>Contacts</th><th>Emails sent</th><th>Replies</th><th>Reply rate</th><th>Progress</th><th></th>
     </tr></thead><tbody></tbody></table>
   </details>
 </div>
@@ -48,28 +48,28 @@ async function refresh() {
 
   const mini = ratio => `<div class="mini"><div style="width:${Math.round(Math.min(1, ratio) * 100)}%"></div></div>`;
   $("#kpis").innerHTML = [
-    { v: `${activeAcc} / ${accounts.length}`, l: "comptes actifs", bar: accounts.length ? activeAcc / accounts.length : 0 },
-    { v: `${sentToday} / ${quota}`, l: "envoyés aujourd'hui", bar: quota ? sentToday / quota : 0 },
-    { v: inProgress, l: "contacts dans le workflow" },
-    { v: replied, l: "réponses obtenues" },
+    { v: `${activeAcc} / ${accounts.length}`, l: "active accounts", bar: accounts.length ? activeAcc / accounts.length : 0 },
+    { v: `${sentToday} / ${quota}`, l: "sent today", bar: quota ? sentToday / quota : 0 },
+    { v: inProgress, l: "contacts in the workflow" },
+    { v: replied, l: "replies received" },
   ].map(k => `<div class="kpi"><div class="v">${k.v}</div><div class="l">${k.l}</div>${k.bar != null ? mini(k.bar) : ""}</div>`).join("");
 
   const row = c => `
     <tr>
       <td>
         <a href="campaigns.html#${c.id}" class="camp-name">${esc(c.name)}</a>
-        <div class="muted">#${c.id} · ${plural(c.steps, "étape")}</div>
+        <div class="muted">#${c.id} · ${plural(c.steps, "step")}</div>
       </td>
       <td>${pill(c.status)}</td>
       <td>${c.contacts}${c.bounced ? `<div class="subnum"><span class="dot bad"></span>${plural(c.bounced, "bounce")}</div>` : ""}</td>
-      <td>${c.emails_sent}${c.li_steps ? `<div class="subnum"><span class="dot li"></span>${c.li_invites_sent} inv. · ${c.li_messages_sent} msg. LinkedIn</div>` : ""}</td>
-      <td>${c.replied}${c.opted_out ? `<div class="subnum"><span class="dot warn"></span>${plural(c.opted_out, "désinscrit")}</div>` : ""}</td>
+      <td>${c.emails_sent}${c.li_steps ? `<div class="subnum"><span class="dot li"></span>${c.li_invites_sent} inv. · ${c.li_messages_sent} LinkedIn msg.</div>` : ""}</td>
+      <td>${c.replied}${c.opted_out ? `<div class="subnum"><span class="dot warn"></span>${plural(c.opted_out, "opt-out")}</div>` : ""}</td>
       <td><span class="rate">${c.reply_rate}%</span>${c.ab_test ? `<div class="subnum">A ${c.reply_rate_a}% · B ${c.reply_rate_b}%</div>` : ""}</td>
       <td style="min-width:150px"><div class="prog"><div class="bar"><div style="width:${c.progress}%"></div></div><span class="pv">${c.progress}%</span></div></td>
-      <td><a class="btn ghost" href="campaigns.html#${c.id}">Gérer</a></td>
+      <td><a class="btn ghost" href="campaigns.html#${c.id}">Manage</a></td>
     </tr>
   `;
-  $("#campaigns tbody").innerHTML = campaigns.map(row).join("") || '<tr><td colspan="8" class="muted">Aucune campagne — créez-en une depuis la page Campagnes.</td></tr>';
+  $("#campaigns tbody").innerHTML = campaigns.map(row).join("") || '<tr><td colspan="8" class="muted">No campaigns yet — create one from the Campaigns page.</td></tr>';
   $("#archived").hidden = !archived.length;
   $("#archivedCount").textContent = archived.length;
   $("#archivedCampaigns tbody").innerHTML = archived.map(row).join("");

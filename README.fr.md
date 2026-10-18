@@ -76,7 +76,7 @@ Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroni
 ### Campagnes et séquences
 - Chaque campagne est indépendante et contient une séquence d'étapes (email initial + relances avec délai en jours).
 - Les corps et sujets acceptent des variables : `{{first_name}}`, `{{last_name}}`, `{{company}}`, `{{email}}`, `{{sender_name}}` et toute colonne supplémentaire du CSV.
-- Un **bloc conditionnel** adapte le texte aux données du contact : `{{si competences}}Vous cherchez {{competences}}.{{sinon}}Vous recrutez.{{fin}}` garde le premier texte si la variable est remplie, le second sinon (`{{sinon}}` facultatif, pas d'imbrication). L'aperçu d'une campagne ne signale alors une variable vide que chez les contacts qui recevront le texte où elle figure.
+- Un **bloc conditionnel** adapte le texte aux données du contact : `{{if competences}}Vous cherchez {{competences}}.{{else}}Vous recrutez.{{end}}` (la forme française `{{si}}…{{sinon}}…{{fin}}` reste acceptée) garde le premier texte si la variable est remplie, le second sinon (`{{else}}` facultatif, pas d'imbrication). L'aperçu d'une campagne ne signale alors une variable vide que chez les contacts qui recevront le texte où elle figure.
 - Une relance **sans sujet** part dans le même fil Gmail (`Re:`, en-têtes `In-Reply-To`/`References`), ce qui améliore la délivrabilité et le taux de réponse.
 - **A/B test** : l'étape 1 peut avoir un « Sujet B ». Chaque contact reçoit alors aléatoirement (50/50) la variante A ou B, conservée pour toute sa séquence, et le tableau de bord affiche le taux de réponse de chaque variante.
 
