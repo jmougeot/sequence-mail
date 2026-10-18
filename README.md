@@ -25,9 +25,6 @@ les fournir à ta place) :
 - des **identifiants Google OAuth** à toi (console.cloud.google.com → client « Web »),
   URI de redirection `https://<ton-domaine>/auth/google/callback`.
 
-Options avancées (prod partagée derrière un Caddy existant, sauvegardes, import d'une
-base SQLite existante) : voir **`DEPLOY.md`** / **`DEPLOY-SHARED.md`**.
-
 ## Démarrage
 
 ```bash
@@ -177,3 +174,7 @@ les profils bien référencés, pas l'organigramme complet.
 | GET | `/api/b2b/leads.csv` | Export CSV des prospects (mêmes filtres) |
 | PATCH | `/api/b2b/companies/:siren` | Corriger le domaine `{ domain }` |
 | POST | `/api/b2b/export` | Ajouter `{ campaign_id, lead_ids[] }` à une campagne |
+
+## Licence
+
+MIT

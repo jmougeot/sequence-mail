@@ -1,10 +1,30 @@
+# Dépendances
 node_modules/
-dist/
-data/
+
+# Secrets & config locale (NE JAMAIS versionner)
 .env
+.env.local
+
+# Données locales (bases, exports de prospects, logs)
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.csv
+*.db
+*.db-wal
+*.db-shm
 *.log
-.DS_Store
-# Caddyfile rendu par setup.sh (contient le hash du mot de passe) — jamais versionné.
-# Le modèle versionné est Caddyfile.template.
-Caddyfile
 *.bak
+
+# Build / cache
+dist/
+
+# Apps desktop générées
+*.app/
+
+# macOS
+.DS_Store
+
+# Caddyfile rendu par setup.sh (contient le hash du mot de passe). Le modèle versionné est Caddyfile.template.
+Caddyfile
+data/
