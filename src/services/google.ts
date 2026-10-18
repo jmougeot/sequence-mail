@@ -26,6 +26,26 @@ export interface AccountRow {
   signature: string | null;
 }
 
+// Identifiants OAuth saisis dans Paramètres : servent seulement quand le .env n'en fournit pas.
+const googleFromEnv = Boolean(config.google.clientId);
+const storedGoogle = db.prepare("SELECT value FROM app_settings WHERE key = 'google'").get() as
+  | { value: string }
+  | undefined;
+if (!googleFromEnv && storedGoogle) Object.assign(config.google, JSON.parse(storedGoogle.value));
+
+export function googleCredentialsSource(): "env" | "app" | null {
+  if (googleFromEnv) return "env";
+  return config.google.clientId ? "app" : null;
+}
+
+export function saveGoogleCredentials(clientId: string, clientSecret: string): void {
+  if (googleFromEnv) throw new Error("Identifiants Google définis dans .env : les modifier là");
+  db.prepare(
+    "INSERT INTO app_settings (key, value) VALUES ('google', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).run(JSON.stringify({ clientId, clientSecret }));
+  Object.assign(config.google, { clientId, clientSecret });
+}
+
 function newOAuthClient(): OAuth2Client {
   return new google.auth.OAuth2(
     config.google.clientId,

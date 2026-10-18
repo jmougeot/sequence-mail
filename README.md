@@ -2,55 +2,66 @@
 
 Outil de séquences email (cold outreach) multi-comptes Google Workspace : campagnes indépendantes, import CSV / Attio, détection automatique des réponses, répartition de charge entre comptes, protection de la délivrabilité — et **moteur de recherche B2B intégré** (recherche d'entreprises françaises + emails des dirigeants, sans outil payant).
 
-## Déploiement clé en main (Docker + HTTPS auto)
+## Démarrage rapide
 
-Pour héberger une instance en ligne (dashboard + suivi des liens) sur n'importe quel
-petit VPS avec Docker :
-
-```bash
-git clone <repo> && cd Sequence-mail
-./setup.sh                    # demande domaine + mot de passe dashboard → génère .env et Caddyfile
-nano .env                     # coller GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET (cf. ci-dessous)
-docker compose up -d --build  # Caddy obtient le certificat HTTPS tout seul (~30 s)
-```
-
-`setup.sh` produit un `Caddyfile` local (domaine + hash bcrypt du mot de passe, non
-versionné) et renseigne `BASE_URL`/`VISIT_BASE_URL`. Le suivi (`/p/`, `/t/`) est
-public ; le dashboard est protégé (`admin` + le mot de passe choisi).
-
-**Deux pré-requis incompressibles, propres à chaque instance** (aucune image ne peut
-les fournir à ta place) :
-- un **domaine** pointant vers le serveur : enregistrement `A  go.mondomaine.com → IP`
-  (proxy/Cloudflare désactivé, sinon Caddy ne peut pas obtenir le certificat) ;
-- des **identifiants Google OAuth** à toi (console.cloud.google.com → client « Web »),
-  URI de redirection `https://<ton-domaine>/auth/google/callback`.
-
-## Démarrage
+**Sur un serveur** (VPS Linux, 1 Go de RAM suffit), une seule commande :
 
 ```bash
-npm install
-cp .env.example .env   # puis renseigner GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
-npm start              # ouvre http://localhost:3000
+curl -fsSL https://raw.githubusercontent.com/jmougeot/sequence-mail/main/install.sh | sudo bash
 ```
 
-### Piloter depuis Claude (serveur MCP)
+Elle installe Docker si besoin, télécharge l'image précompilée et met l'app en
+ligne en HTTPS. Deux questions, toutes deux facultatives :
+- **domaine** : sans domaine, l'app est servie sur `<ip>.sslip.io`. Avec un domaine,
+  créer d'abord l'enregistrement `A  go.mondomaine.com → IP du serveur`
+  (proxy Cloudflare désactivé) ;
+- **mot de passe** du dashboard : généré et affiché s'il est laissé vide.
 
-Un serveur **MCP** (lecture + écriture) permet de gérer campagnes, contacts et
-comptes depuis Claude Desktop / Claude Code. Il appelle l'API HTTP de l'app (local
-ou prod) — voir **`mcp/README.md`** pour l'installation et le branchement.
+Pour l'automatiser : `curl -fsSL …/install.sh | sudo DOMAIN=go.mondomaine.com DASHBOARD_PASSWORD=… bash`.
+Mise à jour : `cd /opt/sequence-mail && docker compose pull && docker compose up -d`.
 
-### Configuration Google (obligatoire)
+**En local**, pour essayer :
 
-1. Sur [console.cloud.google.com](https://console.cloud.google.com), créer un projet et activer l'**API Gmail**.
-2. Créer des identifiants **OAuth client ID** de type *Web application*, avec l'URI de redirection `http://localhost:3000/auth/google/callback`.
-3. Copier le client ID / secret dans `.env`.
-4. Sur le tableau de bord, cliquer **« + Connecter un compte Google »** pour chaque adresse Google Workspace à utiliser pour les envois.
+```bash
+docker run -d --name sequence-mail -p 127.0.0.1:3000:3000 -v sequence-data:/data ghcr.io/jmougeot/sequence-mail
+```
+
+puis ouvrir http://localhost:3000. Le lien `{{link}}` et le suivi des visites ont
+besoin d'une adresse publique : ils ne marchent qu'avec l'installation serveur.
+
+Le suivi (`/p/`, `/t/`) est public ; tout le reste est protégé par le mot de passe
+(utilisateur `admin`).
+
+### Configuration Google (la seule étape manuelle)
+
+Les envois passent par l'API Gmail avec **vos** identifiants OAuth. La page
+**Paramètres** de l'app guide ces étapes et affiche l'URI de redirection à copier :
+
+1. [Activer l'API Gmail](https://console.cloud.google.com/apis/library/gmail.googleapis.com) dans un projet Google Cloud.
+2. [Audience](https://console.cloud.google.com/auth/audience) : *Interne* avec Google Workspace, sinon *Externe* puis « Publier l'application ».
+3. [Créer un client OAuth](https://console.cloud.google.com/auth/clients/create) de type *Application Web*, avec l'URI de redirection affichée dans Paramètres.
+4. Coller le client ID et le secret dans **Paramètres** (ou `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` dans `.env`, qui reste prioritaire).
+5. Dans Paramètres, cliquer **« + Connecter un compte Google »** pour chaque adresse Google Workspace à utiliser pour les envois.
 
 **Pour que la connexion dure indéfiniment** : sur l'écran *OAuth consent screen* de la console Google, l'application ne doit pas rester en mode **Testing** (les jetons y expirent au bout de 7 jours et il faudrait reconnecter les comptes chaque semaine). Deux options :
 - *User type: Internal* (recommandé avec Google Workspace) : seuls les comptes de votre organisation peuvent se connecter, aucune expiration, aucune validation Google ;
 - ou *Publishing status: In production* pour un user type External.
 
 Une fois cela fait, les jetons sont rafraîchis automatiquement et persistés en base : aucune reconnexion n'est nécessaire. Si Google révoque malgré tout un accès (changement de mot de passe, révocation manuelle…), le compte se désactive proprement dans le dashboard ; le reconnecter le réactive.
+
+### Piloter depuis Claude (serveur MCP)
+
+Un serveur **MCP** (lecture + écriture) permet de gérer campagnes, contacts et
+comptes depuis Claude Desktop / Claude Code. Il appelle l'API HTTP de l'app (local
+ou serveur) — voir **`mcp/README.md`** pour l'installation et le branchement.
+
+### Développement
+
+```bash
+npm install
+cp .env.example .env
+npm start              # http://localhost:3000
+```
 
 ### Configuration Attio (bonus, optionnel)
 

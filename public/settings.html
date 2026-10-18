@@ -13,9 +13,25 @@
   <div class="card">
     <div class="inline" style="justify-content:space-between;margin-bottom:12px">
       <h2 style="margin:0">Comptes email</h2>
-      <a class="btn" href="/auth/google">+ Connecter un compte Google</a>
+      <div class="inline">
+        <button id="googleEdit" class="ghost" hidden onclick="$('#googleSetup').hidden = !$('#googleSetup').hidden">Identifiants Google</button>
+        <a class="btn" id="googleConnect" href="/auth/google">+ Connecter un compte Google</a>
+      </div>
     </div>
-    <p class="err" id="googleWarn" hidden>Google OAuth non configuré (.env)</p>
+    <div id="googleSetup" hidden style="margin-bottom:12px">
+      <ol style="margin:0 0 10px;padding-left:20px;line-height:1.8">
+        <li><a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">Activer l'API Gmail</a></li>
+        <li><a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Audience</a> : Interne (Google Workspace), sinon Externe puis « Publier l'application » (en mode Test, les connexions expirent après 7 jours)</li>
+        <li><a href="https://console.cloud.google.com/auth/clients/create" target="_blank" rel="noopener">Client OAuth « Application Web »</a>, URI de redirection
+          <code id="googleRedirect" style="user-select:all"></code>
+          <button class="ghost" onclick="copyText($('#googleRedirect').textContent).then(ok => ok && notify('URI copiée'))">Copier</button></li>
+      </ol>
+      <div class="inline">
+        <input id="googleId" placeholder="Client ID" style="width:320px">
+        <input id="googleSecret" type="password" placeholder="Client secret" style="width:220px">
+        <button onclick="saveGoogle()">Enregistrer</button>
+      </div>
+    </div>
     <table id="accounts"><thead><tr>
       <th>Email</th><th>Nom d'expéditeur</th>
       <th title="Insérée à l'emplacement de {{signature}} dans les étapes">Signature</th>
@@ -103,8 +119,24 @@ async function refresh() {
 async function loadSettings() {
   const s = await api("/api/settings");
   const d = s.deliverability;
-  $("#googleWarn").hidden = s.google_configured;
+  // Identifiants du .env : rien à saisir ; sinon formulaire ouvert tant qu'ils manquent
+  $("#googleConnect").hidden = !s.google_configured;
+  $("#googleEdit").hidden = s.google_source !== "app";
+  if (!s.google_configured) $("#googleSetup").hidden = false;
+  $("#googleRedirect").textContent = s.google_redirect_uri;
   $("#warmupTh").title = `Montée en charge : ${d.warmupStart} emails/jour au départ, +${d.warmupRamp} par semaine jusqu'au quota`;
+}
+
+async function saveGoogle() {
+  const client_id = $("#googleId").value.trim(), client_secret = $("#googleSecret").value.trim();
+  if (!client_id || !client_secret) return $(client_id ? "#googleSecret" : "#googleId").focus();
+  try {
+    await api("/api/settings/google", jsonPost("PUT", { client_id, client_secret }));
+    $("#googleId").value = $("#googleSecret").value = "";
+    $("#googleSetup").hidden = true;
+    notify("Identifiants Google enregistrés");
+  } catch (e) { fail(e); }
+  loadSettings();
 }
 
 // --- Comptes LinkedIn (une extension Chrome par compte) ---

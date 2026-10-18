@@ -407,3 +407,6 @@ addColumnIfMissing("campaigns", "description", "description TEXT");
 // contient, sa longueur, son ton. Une seule par nom de variable, pour toutes les campagnes ; saisie sous le
 // texte des étapes, lue par l'agent (MCP) qui remplit la variable des contacts.
 db.exec("CREATE TABLE IF NOT EXISTS variable_instructions (name TEXT PRIMARY KEY, instruction TEXT NOT NULL)");
+
+// Réglages saisis dans l'interface (identifiants Google…), en complément du .env qui reste prioritaire.
+db.exec("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");

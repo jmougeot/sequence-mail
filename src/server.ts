@@ -1,8 +1,8 @@
 import express from "express";
 import { fileURLToPath } from "node:url";
-import { config } from "./config.js";
+import { config, googleRedirectUri } from "./config.js";
 import { db } from "./db.js";
-import { authUrl, handleOAuthCallback } from "./services/google.js";
+import { authUrl, googleCredentialsSource, handleOAuthCallback, saveGoogleCredentials } from "./services/google.js";
 import { BUILT_IN_VARIABLES, importContacts, KNOWN_COLUMNS, MERGED_EXTRA, normalizeColumn, parseCsv, renderTemplate, templateVariables } from "./services/contacts.js";
 import { syncFromAttio } from "./services/attio.js";
 import { effectiveDailyLimit, nextEmailEstimate, sendWindowState } from "./services/scheduler.js";
@@ -42,7 +42,21 @@ export function createServer(): express.Express {
   registerInboxRoutes(app);
 
   // --- Comptes Google ---
-  app.get("/auth/google", (_req, res) => res.redirect(authUrl()));
+  app.get("/auth/google", (_req, res) => res.redirect(config.google.clientId ? authUrl() : "/settings.html"));
+
+  // Identifiants OAuth saisis dans Paramètres (quand le .env n'en fournit pas)
+  app.put("/api/settings/google", (req, res) => {
+    const { client_id, client_secret } = req.body as { client_id?: string; client_secret?: string };
+    const id = String(client_id ?? "").trim();
+    const secret = String(client_secret ?? "").trim();
+    if (!id || !secret) return res.status(400).json({ error: "client_id et client_secret sont requis" });
+    try {
+      saveGoogleCredentials(id, secret);
+    } catch (err) {
+      return res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+    res.json({ ok: true });
+  });
 
   app.get("/auth/google/callback", async (req, res) => {
     try {
@@ -553,7 +567,7 @@ export function createServer(): express.Express {
     });
   });
 
-  // Paramètres effectifs (lecture seule, issus du .env)
+  // Paramètres effectifs (issus du .env, et des identifiants Google saisis dans Paramètres)
   app.get("/api/settings", (_req, res) => {
     // La fenêtre d'envoi se lit dans deliverability.sendWindowTimezone, qui peut différer du fuseau du serveur
     const now = new Date();
@@ -570,6 +584,8 @@ export function createServer(): express.Express {
       next_email: nextEmailEstimate(now.getTime()),
       deliverability: config.deliverability,
       google_configured: Boolean(config.google.clientId),
+      google_source: googleCredentialsSource(),
+      google_redirect_uri: googleRedirectUri(),
       attio_configured: Boolean(config.attioApiKey),
       attio_stage_attribute: config.attioStageAttribute || null,
       attio_import_attribute: config.attioImportAttribute || null,

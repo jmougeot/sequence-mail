@@ -7,7 +7,7 @@ const app = createServer();
 app.listen(config.port, () => {
   console.log(`Sequence Mail démarré : ${config.baseUrl}`);
   if (!config.google.clientId) {
-    console.warn("⚠ GOOGLE_CLIENT_ID/SECRET manquants — la connexion de comptes est désactivée (voir .env.example)");
+    console.warn("⚠ GOOGLE_CLIENT_ID/SECRET manquants — à renseigner dans Paramètres (ou .env) pour connecter des comptes");
   }
   startScheduler();
 });

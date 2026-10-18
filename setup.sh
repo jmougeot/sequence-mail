@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
-# Bootstrap « clé en main » de Sequence Mail.
-# Prépare une instance déployable (Docker + Caddy HTTPS) à partir des modèles
-# versionnés : crée .env, génère le Caddyfile (domaine + hash du mot de passe) et
-# renseigne le domaine public. Idempotent : relançable sans casser l'existant.
+# Bootstrap « clé en main » de Sequence Mail : configure puis démarre une instance
+# Docker + Caddy (HTTPS automatique). Idempotent : relançable sans casser l'existant.
 #
-# Usage :  ./setup.sh        (interactif)
+# Usage :  ./setup.sh        (interactif : deux questions, Entrée = valeur par défaut)
 #          DOMAIN=go.x.com DASHBOARD_PASSWORD=secret ./setup.sh   (non interactif)
+#
+# Sans domaine, l'instance est servie sur <ip>.sslip.io (HTTPS compris).
+# Sans mot de passe, il est généré et affiché à la fin.
 #
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -14,9 +15,20 @@ cd "$(dirname "$0")"
 err() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 ok()  { printf '\033[32m%s\033[0m\n' "$*"; }
 
-# --- Pré-requis : Docker en marche (sert au hash bcrypt ET au déploiement) ---
+# Questions lues sur le terminal, même quand le script arrive par `curl | bash`
+ask() { # ask VARIABLE "question" [-s]
+  local __v="$1" __q="$2" __flag="${3:-}" __ans=""
+  if [[ -r /dev/tty ]]; then
+    # shellcheck disable=SC2229
+    read -r $__flag -p "$__q" __ans </dev/tty || true
+    [[ "$__flag" == "-s" ]] && echo
+  fi
+  printf -v "$__v" '%s' "$__ans"
+}
+
+# --- Pré-requis : Docker en marche ---
 if ! command -v docker >/dev/null 2>&1; then
-  err "Docker est requis (génération du hash + déploiement). Installe-le puis relance."
+  err "Docker est requis. Sur Linux : curl -fsSL https://get.docker.com | sh"
   exit 1
 fi
 if ! docker info >/dev/null 2>&1; then
@@ -32,21 +44,25 @@ else
   ok "→ .env déjà présent (conservé)"
 fi
 
-# --- 2. Domaine public ---
+# --- 2. Domaine public (par défaut <ip>.sslip.io) ---
 DOMAIN="${DOMAIN:-}"
-if [[ -z "$DOMAIN" ]]; then
-  read -r -p "Domaine public de l'app (ex. go.mondomaine.com) : " DOMAIN
-fi
+[[ -n "$DOMAIN" ]] || ask DOMAIN "Domaine pointant vers ce serveur (Entrée = aucun, <ip>.sslip.io) : "
 DOMAIN="${DOMAIN// /}"
 DOMAIN="${DOMAIN#http://}"; DOMAIN="${DOMAIN#https://}"; DOMAIN="${DOMAIN%/}"
-[[ -n "$DOMAIN" ]] || { err "Domaine requis."; exit 1; }
-
-# --- 3. Mot de passe du dashboard ---
-DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-}"
-if [[ -z "$DASHBOARD_PASSWORD" ]]; then
-  read -r -s -p "Mot de passe du dashboard (utilisateur « admin ») : " DASHBOARD_PASSWORD; echo
+if [[ -z "$DOMAIN" ]]; then
+  IP="$(curl -fsS4 --max-time 10 https://api.ipify.org || true)"
+  [[ "$IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { err "IP publique introuvable : relance avec DOMAIN=…"; exit 1; }
+  DOMAIN="${IP//./-}.sslip.io"
 fi
-[[ -n "$DASHBOARD_PASSWORD" ]] || { err "Mot de passe requis."; exit 1; }
+
+# --- 3. Mot de passe du dashboard (généré si vide) ---
+DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-}"
+[[ -n "$DASHBOARD_PASSWORD" ]] || ask DASHBOARD_PASSWORD "Mot de passe du dashboard (Entrée = généré) : " -s
+GENERATED=0
+if [[ -z "$DASHBOARD_PASSWORD" ]]; then
+  DASHBOARD_PASSWORD="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20 || true)"
+  GENERATED=1
+fi
 
 # --- 4. Hash bcrypt via l'image Caddy ---
 echo "→ génération du hash bcrypt…"
@@ -58,7 +74,7 @@ CADDY_HASH="$(docker run --rm caddy:2 caddy hash-password --plaintext "$DASHBOAR
 # hash ($, /, .) et le domaine passent tels quels sans échappement.
 sed -e "s|__DOMAIN__|${DOMAIN}|g" -e "s|__CADDY_HASH__|${CADDY_HASH}|g" \
   Caddyfile.template > Caddyfile
-ok "→ Caddyfile généré (domaine ${DOMAIN} + hash)"
+ok "→ Caddyfile généré (${DOMAIN})"
 
 # --- 6. Injecter le domaine public dans .env (BASE_URL / VISIT_BASE_URL) ---
 set_env() { # set_env CLE VALEUR : remplace la ligne si présente, sinon l'ajoute
@@ -71,26 +87,34 @@ set_env() { # set_env CLE VALEUR : remplace la ligne si présente, sinon l'ajout
 }
 set_env BASE_URL "https://${DOMAIN}"
 set_env VISIT_BASE_URL "https://${DOMAIN}"
-ok "→ BASE_URL / VISIT_BASE_URL = https://${DOMAIN}"
 
+# --- 7. Démarrage (image précompilée ; build local seulement si elle est indisponible) ---
+echo "→ démarrage…"
+docker compose pull --ignore-pull-failures --quiet
+docker compose up -d
+
+echo "→ attente du certificat HTTPS (jusqu'à 2 min)…"
+CODE=000
+for _ in $(seq 1 40); do
+  CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "https://${DOMAIN}/" || true)"
+  [[ "$CODE" == 401 || "$CODE" == 200 ]] && break
+  sleep 3
+done
+
+echo
+if [[ "$CODE" == 401 || "$CODE" == 200 ]]; then
+  ok "✅ Sequence Mail est en ligne : https://${DOMAIN}"
+else
+  err "L'instance tourne, mais https://${DOMAIN} ne répond pas encore."
+  err "Vérifie le DNS (A ${DOMAIN} → IP du serveur) et les ports 80/443, puis : docker compose logs caddy"
+fi
 cat <<MSG
 
-$(ok "✅ Configuration prête.")
+  Identifiant : admin
+  Mot de passe : $([[ $GENERATED == 1 ]] && echo "$DASHBOARD_PASSWORD   (généré, à conserver)" || echo "celui que tu as choisi")
 
-Il reste 2 choses, propres à TON instance :
+Dernière étape, dans Paramètres : coller les identifiants OAuth Google
+(la page donne les liens et l'URI de redirection https://${DOMAIN}/auth/google/callback).
 
-  1) DNS — un enregistrement  A  ${DOMAIN} → IP du serveur  (proxy/Cloudflare désactivé).
-
-  2) Google OAuth — dans .env, renseigne :
-        GOOGLE_CLIENT_ID=...
-        GOOGLE_CLIENT_SECRET=...
-     (console.cloud.google.com → client OAuth « Web »)
-     URI de redirection à autoriser : https://${DOMAIN}/auth/google/callback
-
-Puis démarre l'instance :
-
-     docker compose up -d --build
-     docker compose logs -f app      # vérifier le démarrage
-
-Ouvre ensuite https://${DOMAIN} → login « admin » + ton mot de passe.
+Mise à jour :  docker compose pull && docker compose up -d
 MSG

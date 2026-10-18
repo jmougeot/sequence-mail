@@ -3,9 +3,12 @@
 # le reste (dashboard, API, OAuth) par mot de passe.
 services:
   app:
+    # Image publiée par GitHub Actions (pas de build sur le serveur) ;
+    # `docker compose build` reconstruit depuis les sources si besoin.
+    image: ghcr.io/jmougeot/sequence-mail:latest
     build: .
     restart: unless-stopped
-    # Variables lues depuis .env (BASE_URL, VISIT_*, GOOGLE_*, quotas…)
+    # Variables lues depuis .env (BASE_URL, VISIT_*, quotas…)
     env_file: .env
     environment:
       - DATA_DIR=/data
