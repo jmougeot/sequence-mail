@@ -100,8 +100,12 @@ const previewCampaignShape = {
 };
 type PreviewCampaignArgs = z.infer<z.ZodObject<typeof previewCampaignShape>>;
 
+const DESCRIPTION =
+  "Description de la campagne : à qui elle s'adresse, quels contacts y mettre et lesquels écarter (poste, nature et taille d'entreprise…), l'angle du message. Écrite pour qu'un agent sache, sans autre contexte, si un contact y a sa place.";
+
 const createShape = {
   name: z.string().describe("Nom de la campagne."),
+  description: z.string().optional().describe(DESCRIPTION),
   steps: z.array(stepSchema).min(1).describe("Séquence ordonnée d'étapes (au moins une)."),
   account_ids: z
     .array(z.number().int())
@@ -123,6 +127,7 @@ type CreateArgs = z.infer<z.ZodObject<typeof createShape>>;
 const updateShape = {
   campaign_id: z.number().int().describe("Identifiant de la campagne."),
   name: z.string().min(1).optional().describe("Nouveau nom. Omis = inchangé."),
+  description: z.string().optional().describe(`${DESCRIPTION} Remplace l'existante ; chaîne vide = l'effacer ; omis = inchangée.`),
   steps: z
     .array(stepSchema)
     .min(1)
@@ -161,7 +166,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Lister les campagnes",
       description:
-        "Liste les campagnes avec leurs statistiques : statut (active/paused/archived), nombre de contacts par état, emails envoyés, visites du lien {{link}}, taux de réponse (global, et par variante s'il y a un A/B test), progression. Un compteur ou un taux absent vaut 0. Les campagnes archivées sont masquées par défaut (archived_hidden en donne le nombre) : include_archived: true pour les voir. À utiliser pour avoir une vue d'ensemble avant toute action.",
+        "Liste les campagnes avec leur description (à qui chacune s'adresse, quels contacts y mettre) et leurs statistiques : statut (active/paused/archived), nombre de contacts par état, emails envoyés, visites du lien {{link}}, taux de réponse (global, et par variante s'il y a un A/B test), progression. Un compteur ou un taux absent vaut 0. Les campagnes archivées sont masquées par défaut (archived_hidden en donne le nombre) : include_archived: true pour les voir. À utiliser pour avoir une vue d'ensemble avant toute action, et pour choisir la campagne d'un contact.",
       inputSchema: {
         include_archived: z.boolean().optional().describe("true = inclure les campagnes archivées (défaut false)."),
       },
@@ -183,7 +188,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Détail d'une campagne",
       description:
-        "Renvoie le détail d'une campagne et la liste ordonnée de ses étapes (sujet, corps, wait_days, channel, li_action, branch). account_ids / li_account_ids absents = tous les comptes ; une relance sans subject part dans le fil du premier email. À lire avant de modifier le texte d'une étape (update_step) ou la séquence (update_campaign).",
+        "Renvoie le détail d'une campagne (description comprise) et la liste ordonnée de ses étapes (sujet, corps, wait_days, channel, li_action, branch). account_ids / li_account_ids absents = tous les comptes ; une relance sans subject part dans le fil du premier email. À lire avant de modifier le texte d'une étape (update_step) ou la séquence (update_campaign).",
       inputSchema: { campaign_id: z.number().int().describe("Identifiant de la campagne.") },
       annotations: READ,
     },
@@ -287,7 +292,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Créer une campagne",
       description:
-        "Crée une campagne avec sa séquence d'étapes et, si contacts est fourni, y importe ces contacts dans le même appel (mêmes règles qu'import_contacts ; le résultat porte alors le rapport d'import). La campagne démarre EN PAUSE ('paused') et ses contacts en 'held' — rien n'est envoyé avant launch_contacts. La 1re étape email doit avoir un sujet ; chaque étape doit avoir un corps (sauf une invitation LinkedIn dont la note est facultative). Renvoie { id } ; d'autres contacts s'ajoutent ensuite avec import_contacts / import_contacts_csv.",
+        "Crée une campagne avec sa séquence d'étapes et, si contacts est fourni, y importe ces contacts dans le même appel (mêmes règles qu'import_contacts ; le résultat porte alors le rapport d'import). Toujours renseigner description. La campagne démarre EN PAUSE ('paused') et ses contacts en 'held' — rien n'est envoyé avant launch_contacts. La 1re étape email doit avoir un sujet ; chaque étape doit avoir un corps (sauf une invitation LinkedIn dont la note est facultative). Renvoie { id } ; d'autres contacts s'ajoutent ensuite avec import_contacts / import_contacts_csv.",
       inputSchema: createShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -314,7 +319,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Modifier une campagne",
       description:
-        "Modifie une campagne, y compris en cours : seuls les champs fournis changent (nom, comptes d'envoi, comptes LinkedIn, séquence). steps, s'il est fourni, remplace TOUTE la séquence — pour changer le texte, le délai ou le canal d'une seule étape, préfère update_step. Les contacts gardent leur avancement ; les prochains envois utilisent le nouveau contenu.",
+        "Modifie une campagne, y compris en cours : seuls les champs fournis changent (nom, description, comptes d'envoi, comptes LinkedIn, séquence). steps, s'il est fourni, remplace TOUTE la séquence — pour changer le texte, le délai ou le canal d'une seule étape, préfère update_step. Les contacts gardent leur avancement ; les prochains envois utilisent le nouveau contenu.",
       inputSchema: updateShape,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },

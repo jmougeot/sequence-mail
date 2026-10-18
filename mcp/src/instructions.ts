@@ -20,10 +20,10 @@ IDENTIFIANTS
 
 CAMPAGNE
 1. list_accounts, list_linkedin_accounts : comptes d'envoi.
-2. create_campaign, contacts compris : naît en pause, contacts en « held », rien ne part. Ajouts : import_contacts, import_contacts_csv.
+2. create_campaign, description et contacts compris : naît en pause, contacts en « held », rien ne part. Ajouts : import_contacts, import_contacts_csv.
 3. preview_campaign : variables vides sur tous les contacts, rendu des étapes.
 4. launch_contacts (une ou plusieurs campagnes) ; resume_campaign si elle est en pause.
-get_settings : fuseau du serveur, fenêtre d'envoi, prochain envoi. Modifier : update_step (une étape), update_campaign. Suivi : list_campaigns, list_campaign_contacts (paginé), get_activity.
+get_settings : fuseau du serveur, fenêtre d'envoi, prochain envoi. Modifier : update_step (une étape), update_campaign. Un contact va dans la campagne dont la description (list_campaigns) lui correspond. Suivi : list_campaigns, list_campaign_contacts (paginé), get_activity.
 
 RÉPONSES
 list_replies (include_text) → get_conversation → reply_to_contact (dry_run d'abord).

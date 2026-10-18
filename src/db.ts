@@ -397,3 +397,8 @@ CREATE TABLE IF NOT EXISTS owner_opt_outs (
 // li_accepted NULL = pas encore connu, 1 = acceptée, 0 = non acceptée.
 addColumnIfMissing("steps", "branch", "branch TEXT");
 addColumnIfMissing("campaign_contacts", "li_accepted", "li_accepted INTEGER");
+
+// Description de la campagne : à qui elle s'adresse, quels contacts y mettre,
+// l'angle du message. Saisie à la création, lue par les agents (MCP) avant
+// d'ajouter des contacts ou de retoucher la séquence.
+addColumnIfMissing("campaigns", "description", "description TEXT");

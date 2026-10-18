@@ -17,7 +17,7 @@
     <div id="campTabs" hidden class="camp-tabs">
       <button class="tab-btn active" id="tab-seq"      onclick="showTab('seq')">Séquence</button>
       <button class="tab-btn"        id="tab-contacts" onclick="showTab('contacts')">Contacts</button>
-      <button class="tab-btn"        id="tab-stats"    onclick="showTab('stats')">Stats</button>
+      <button class="tab-btn"        id="tab-info"     onclick="showTab('info')">Info</button>
       <button class="tab-btn"        id="tab-import"   onclick="showTab('import')">Import</button>
     </div>
     <span class="spacer"></span>
@@ -27,6 +27,7 @@
   <!-- Séquence -->
   <div id="paneSeq" class="editor">
     <input id="campName" class="camp-name-input" placeholder="Nom de la campagne">
+    <textarea id="campDesc" class="desc" style="resize:none;overflow:hidden;line-height:1.5" placeholder="Description : à qui s'adresse la campagne, quels contacts y mettre, l'angle du message"></textarea>
     <div class="senders">
       <span class="muted">Comptes d'envoi</span>
       <span id="senderList" class="chips"></span>
@@ -44,8 +45,16 @@
     </div>
   </div>
 
-  <!-- Stats -->
-  <div id="paneStats" hidden>
+  <!-- Info : description, puis statistiques -->
+  <div id="paneInfo" hidden>
+    <div class="card">
+      <div class="muted">Description</div>
+      <textarea id="infoDesc" class="desc" style="resize:none;overflow:hidden;line-height:1.5" placeholder="À qui s'adresse la campagne, quels contacts y mettre, l'angle du message"></textarea>
+      <div class="editor-foot">
+        <button onclick="saveDescription()" id="descBtn">Enregistrer</button>
+        <span id="descMsg"></span>
+      </div>
+    </div>
     <div class="card" id="statsContent"></div>
   </div>
 
@@ -260,6 +269,16 @@ new ResizeObserver(([e]) => {
   $$("#steps .body").forEach(autosize);
 }).observe($("#steps"));
 
+// Description : même ajustement à la hauteur du texte, y compris quand son onglet devient visible (largeur 0 → réelle).
+$$("textarea.desc").forEach(el => {
+  let width = 0;
+  new ResizeObserver(([e]) => {
+    if (e.contentRect.width === width) return;
+    width = e.contentRect.width;
+    autosize(el);
+  }).observe(el);
+});
+
 /**
  * Range les étapes : tronc commun jusqu'à la première invitation, puis chemin
  * « acceptée » (étapes sans chemin comprises), puis chemin « non acceptée ».
@@ -445,6 +464,9 @@ function newCampaign() {
   $("#campDot").title = "";
   $("#campName").hidden = false;
   $("#campName").value = "";
+  $("#campDesc").hidden = false;
+  $("#campDesc").value = "";
+  autosize($("#campDesc"));
   $("#campMsg").textContent = "";
   renderSenders(null);
   refreshPreviewAccounts();
@@ -458,19 +480,19 @@ function newCampaign() {
 }
 
 function showTab(name) {
-  ["seq","contacts","stats","import"].forEach(t => {
+  ["seq","contacts","info","import"].forEach(t => {
     $("#tab-" + t).classList.toggle("active", t === name);
     $("#pane" + t.charAt(0).toUpperCase() + t.slice(1)).hidden = t !== name;
   });
   if (selectedId) history.replaceState(null, "", `#${selectedId}/${name}`);
   if (name === "contacts") loadContacts();
-  if (name === "stats") loadStats();
+  if (name === "info") loadStats();
   // Réajuste la hauteur des corps une fois le pane visible (scrollHeight = 0 si caché)
   if (name === "seq") $$("#steps .body").forEach(autosize);
 }
 
 function showPane(id) {
-  ["paneSeq","paneStats","paneContacts","paneImport"].forEach(p => {
+  ["paneSeq","paneInfo","paneContacts","paneImport"].forEach(p => {
     $("#" + p).hidden = p !== id;
   });
 }
@@ -511,6 +533,18 @@ async function loadStats() {
   const campaigns = await api("/api/campaigns");
   const c = campaigns.find(x => x.id === selectedId);
   if (c) renderStats(c);
+}
+
+async function saveDescription() {
+  const msg = $("#descMsg");
+  const btn = $("#descBtn");
+  btn.disabled = true;
+  try {
+    await api(`/api/campaigns/${selectedId}`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ description: $("#infoDesc").value }) });
+    msg.textContent = "Enregistré ✓";
+    msg.className = "ok";
+  } catch (e) { msg.textContent = e.message; msg.className = "err"; }
+  btn.disabled = false;
 }
 
 // Statut et actions de la campagne, dans l'en-tête (visibles sur tous les onglets).
@@ -562,6 +596,10 @@ async function selectCampaign(id, tab = "seq") {
   renderStatusZone(c);
   $("#campName").value = c.name;
   $("#campName").hidden = true; // le nom est dans l'en-tête ; « Renommer » le rend modifiable ici
+  $("#campDesc").hidden = true; // une fois la campagne créée, la description se modifie dans l'onglet Info
+  $("#infoDesc").value = c.description || "";
+  autosize($("#infoDesc"));
+  $("#descMsg").textContent = "";
   $("#campMsg").textContent = "";
   renderSenders(c.account_ids);
   refreshPreviewAccounts();
@@ -613,6 +651,7 @@ async function saveCampaign() {
     return;
   }
   const payload = { name: $("#campName").value, steps: readSteps(), account_ids };
+  if (!selectedId) payload.description = $("#campDesc").value;
   const btn = $("#saveBtn");
   btn.disabled = true;
   try {
@@ -983,7 +1022,7 @@ async function attioSync(btn) {
   refreshPreviewAccounts(); // rempli avec tous les comptes tant qu'aucune campagne n'est sélectionnée
   const campaigns = await loadList();
   const [hid, htab] = location.hash.slice(1).split("/");
-  const tab = ["seq","stats","contacts","import"].includes(htab) ? htab : "seq";
+  const tab = htab === "stats" ? "info" : ["seq","info","contacts","import"].includes(htab) ? htab : "seq"; // #…/stats : anciens liens
   if (hid && hid !== "new" && campaigns.some(c => c.id === +hid)) {
     selectCampaign(+hid, tab);
   } else if (hid !== "new" && campaigns.length) {
@@ -1054,7 +1093,7 @@ function pickAc(i) {
 
 document.addEventListener("input", e => {
   if (e.target.matches?.("#steps .subject, #steps .subjectB, #steps .body")) openAc(e.target);
-  if (e.target.matches?.("#steps .body")) autosize(e.target);
+  if (e.target.matches?.("#steps .body, textarea.desc")) autosize(e.target);
 });
 document.addEventListener("keydown", e => {
   if (!acBox || !acField) return;

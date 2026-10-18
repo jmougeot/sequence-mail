@@ -202,6 +202,13 @@ export function createServer(): express.Express {
     return { value: JSON.stringify([...new Set(ids as number[])]) };
   }
 
+  /** Description d'une campagne : texte libre, vide = aucune (null). */
+  function normalizeDescription(value: unknown): { value: string | null } | { error: string } {
+    if (value == null) return { value: null };
+    if (typeof value !== "string") return { error: "description doit être un texte" };
+    return { value: value.trim() || null };
+  }
+
   /** Insère les étapes d'une campagne (canal + action LinkedIn pris en charge). */
   function insertSteps(campaignId: number | bigint, steps: StepInput[]): void {
     const insert = db.prepare(
@@ -225,8 +232,9 @@ export function createServer(): express.Express {
   }
 
   app.post("/api/campaigns", (req, res) => {
-    const { name, steps, account_ids, li_account_ids } = req.body as {
+    const { name, description, steps, account_ids, li_account_ids } = req.body as {
       name: string;
+      description?: string | null;
       steps: StepInput[];
       account_ids?: number[] | null;
       li_account_ids?: number[] | null;
@@ -237,10 +245,12 @@ export function createServer(): express.Express {
     if ("error" in senders) return res.status(400).json({ error: senders.error });
     const liSenders = normalizeAccountIds(li_account_ids, "li_account_ids");
     if ("error" in liSenders) return res.status(400).json({ error: liSenders.error });
+    const desc = normalizeDescription(description);
+    if ("error" in desc) return res.status(400).json({ error: desc.error });
     const result = db.transaction(() => {
       const { lastInsertRowid } = db
-        .prepare("INSERT INTO campaigns (name, status, account_ids, li_account_ids) VALUES (?, 'paused', ?, ?)")
-        .run(name, senders.value, liSenders.value);
+        .prepare("INSERT INTO campaigns (name, description, status, account_ids, li_account_ids) VALUES (?, ?, 'paused', ?, ?)")
+        .run(name, desc.value, senders.value, liSenders.value);
       insertSteps(lastInsertRowid, steps);
       return lastInsertRowid;
     })();
@@ -250,7 +260,7 @@ export function createServer(): express.Express {
   app.get("/api/campaigns", (_req, res) => {
     const campaigns = db
       .prepare(
-        `SELECT cp.id, cp.name, cp.status, cp.created_at,
+        `SELECT cp.id, cp.name, cp.description, cp.status, cp.created_at,
            (SELECT COUNT(*) FROM steps s WHERE s.campaign_id = cp.id) AS steps,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id) AS contacts,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'held') AS held,
@@ -309,7 +319,7 @@ export function createServer(): express.Express {
   // Détail d'une campagne avec ses étapes (pour l'édition)
   app.get("/api/campaigns/:id", (req, res) => {
     const campaign = db
-      .prepare("SELECT id, name, status, account_ids, li_account_ids FROM campaigns WHERE id = ?")
+      .prepare("SELECT id, name, description, status, account_ids, li_account_ids FROM campaigns WHERE id = ?")
       .get(req.params.id) as { account_ids: string | null; li_account_ids: string | null } | undefined;
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
     const steps = db
@@ -346,8 +356,12 @@ export function createServer(): express.Express {
     if (senders && "error" in senders) return res.status(400).json({ error: senders.error });
     const liSenders = "li_account_ids" in req.body ? normalizeAccountIds(li_account_ids, "li_account_ids") : null;
     if (liSenders && "error" in liSenders) return res.status(400).json({ error: liSenders.error });
+    // description absente du body = inchangée
+    const desc = "description" in req.body ? normalizeDescription(req.body.description) : null;
+    if (desc && "error" in desc) return res.status(400).json({ error: desc.error });
     db.transaction(() => {
       db.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run(name, req.params.id);
+      if (desc) db.prepare("UPDATE campaigns SET description = ? WHERE id = ?").run(desc.value, req.params.id);
       if (senders) {
         db.prepare("UPDATE campaigns SET account_ids = ? WHERE id = ?").run(senders.value, req.params.id);
       }
@@ -370,6 +384,7 @@ export function createServer(): express.Express {
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
     const body = (req.body ?? {}) as {
       name?: unknown;
+      description?: unknown;
       steps?: StepInput[];
       account_ids?: number[] | null;
       li_account_ids?: number[] | null;
@@ -386,11 +401,14 @@ export function createServer(): express.Express {
     if (senders && "error" in senders) return res.status(400).json({ error: senders.error });
     const liSenders = "li_account_ids" in body ? normalizeAccountIds(body.li_account_ids, "li_account_ids") : null;
     if (liSenders && "error" in liSenders) return res.status(400).json({ error: liSenders.error });
-    if (body.name === undefined && body.steps === undefined && !senders && !liSenders) {
+    const desc = "description" in body ? normalizeDescription(body.description) : null;
+    if (desc && "error" in desc) return res.status(400).json({ error: desc.error });
+    if (body.name === undefined && body.steps === undefined && !senders && !liSenders && !desc) {
       return res.status(400).json({ error: "Aucun champ à modifier" });
     }
     db.transaction(() => {
       db.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run(name, campaign.id);
+      if (desc) db.prepare("UPDATE campaigns SET description = ? WHERE id = ?").run(desc.value, campaign.id);
       if (senders) db.prepare("UPDATE campaigns SET account_ids = ? WHERE id = ?").run(senders.value, campaign.id);
       if (liSenders) db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(liSenders.value, campaign.id);
       if (body.steps !== undefined) {
