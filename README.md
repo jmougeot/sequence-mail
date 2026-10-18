@@ -1,4 +1,4 @@
-# Sequence Mail
+# Sequence Mail driven from Claude
 
 *[Français](README.fr.md)*
 
