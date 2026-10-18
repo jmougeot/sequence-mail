@@ -26,7 +26,7 @@ export interface AccountRow {
   signature: string | null;
 }
 
-// Identifiants OAuth saisis dans Paramètres : servent seulement quand le .env n'en fournit pas.
+// OAuth credentials entered in Settings: used only when .env provides none.
 const googleFromEnv = Boolean(config.google.clientId);
 const storedGoogle = db.prepare("SELECT value FROM app_settings WHERE key = 'google'").get() as
   | { value: string }
@@ -57,14 +57,14 @@ function newOAuthClient(): OAuth2Client {
 export function authUrl(): string {
   return newOAuthClient().generateAuthUrl({
     access_type: "offline",
-    prompt: "consent", // force un refresh_token à chaque connexion
+    prompt: "consent", // forces a refresh_token on every connection
     scope: SCOPES,
   });
 }
 
-// Échange du code OAuth via fetch direct plutôt que client.getToken() : le transport
-// interne de googleapis (gaxios) échoue de façon systématique sur ce VPS avec
-// « Premature close ». fetch natif vers le même endpoint est fiable.
+// Exchange the OAuth code with a direct fetch rather than client.getToken(): googleapis' internal
+// transport (gaxios) always fails on this VPS with "Premature close"; native fetch to the same
+// endpoint is reliable.
 async function exchangeCodeForTokens(code: string): Promise<Credentials> {
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -118,7 +118,7 @@ export async function handleOAuthCallback(code: string): Promise<string> {
     | { id: number; oauth_tokens: string }
     | undefined;
   if (existing) {
-    // Conserve l'ancien refresh_token si Google n'en renvoie pas de nouveau
+    // Keep the old refresh_token if Google doesn't return a new one
     const old = JSON.parse(existing.oauth_tokens) as Credentials;
     const merged = { ...old, ...tokens, refresh_token: tokens.refresh_token ?? old.refresh_token };
     db.prepare("UPDATE accounts SET oauth_tokens = ?, active = 1 WHERE id = ?").run(
@@ -138,13 +138,12 @@ export async function handleOAuthCallback(code: string): Promise<string> {
 export function clientForAccount(account: AccountRow): OAuth2Client {
   const client = newOAuthClient();
   client.setCredentials(JSON.parse(account.oauth_tokens) as Credentials);
-  // Le transport HTTP par défaut de googleapis (gaxios) échoue systématiquement
-  // sur ce VPS avec « Premature close » ; le fetch natif de Node est fiable. Le
-  // client OAuth fait passer par ce transporter aussi bien le rafraîchissement de
-  // token que les appels API Gmail : on le force donc à utiliser fetch.
+  // googleapis' default HTTP transport (gaxios) always fails on this VPS with "Premature close";
+  // Node's native fetch is reliable. The OAuth client sends both token refreshes and Gmail API
+  // calls through this transporter, so force it to use fetch.
   (client.transporter as unknown as { defaults: Record<string, unknown> }).defaults.fetchImplementation =
     globalThis.fetch;
-  // Persiste les tokens rafraîchis automatiquement par googleapis
+  // Persist tokens auto-refreshed by googleapis
   client.on("tokens", (tokens) => {
     const current = JSON.parse(
       (db.prepare("SELECT oauth_tokens FROM accounts WHERE id = ?").get(account.id) as AccountRow)
@@ -160,7 +159,7 @@ export function clientForAccount(account: AccountRow): OAuth2Client {
 }
 
 function encodeHeader(value: string): string {
-  // RFC 2047 pour les sujets accentués
+  // RFC 2047 for accented subjects
   return /^[\x20-\x7e]*$/.test(value)
     ? value
     : `=?UTF-8?B?${Buffer.from(value, "utf8").toString("base64")}?=`;
@@ -173,16 +172,15 @@ export interface SendResult {
 }
 
 /**
- * Convertit le corps texte en HTML minimal : **texte** gras, *texte* italique,
- * sauts de ligne préservés. Les URLs restent en clair (Gmail les rend cliquables
- * à l'affichage).
+ * Converts the text body to minimal HTML: **bold**, *italic*, line breaks kept. URLs stay plain
+ * text (Gmail makes them clickable).
  */
 export function bodyToHtml(text: string): string {
   const escaped = text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>") // gras avant italique
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>") // bold before italic
     .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
     .replace(/\r?\n/g, "<br>\n");
   return `<div dir="ltr">${escaped}</div>`;
@@ -195,8 +193,8 @@ export async function sendEmail(
     subject: string;
     body: string;
     threadId?: string | null;
-    inReplyTo?: string | null; // Message-ID RFC822 du message précédent
-    listUnsubscribeUrl?: string | null; // lien de désinscription un-clic (List-Unsubscribe)
+    inReplyTo?: string | null; // RFC822 Message-ID of the previous message
+    listUnsubscribeUrl?: string | null; // one-click unsubscribe link (List-Unsubscribe)
   }
 ): Promise<SendResult> {
   const gmail = google.gmail({ version: "v1", auth: clientForAccount(account) });
@@ -206,8 +204,8 @@ export async function sendEmail(
     ? `${encodeHeader(account.from_name)} <${account.email}>`
     : account.email;
   const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
-  // multipart/alternative : texte brut (les *étoiles* restent visibles) + HTML (italique rendu),
-  // comme le ferait Gmail — le client du destinataire choisit la version.
+  // multipart/alternative: plain text (*asterisks* stay visible) + HTML (italic rendered), as Gmail
+  // does; the recipient's client picks the version.
   const boundary = `b${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
   const headers = [
     `From: ${from}`,
@@ -220,7 +218,7 @@ export async function sendEmail(
   if (opts.inReplyTo) {
     headers.push(`In-Reply-To: ${opts.inReplyTo}`, `References: ${opts.inReplyTo}`);
   }
-  // Désinscription un-clic (RFC 8058) : exigée par Gmail/Yahoo et bon signal de réputation.
+  // One-click unsubscribe (RFC 8058): required by Gmail/Yahoo and a good reputation signal.
   if (opts.listUnsubscribeUrl) {
     headers.push(
       `List-Unsubscribe: <${opts.listUnsubscribeUrl}>`,
@@ -260,7 +258,7 @@ interface GmailPart {
   parts?: GmailPart[] | null;
 }
 
-/** Décode la première partie MIME du type demandé (recherche en profondeur). */
+/** Decodes the first MIME part of the given type (depth-first search). */
 function extractPart(part: GmailPart | undefined | null, mimeType: string): string {
   if (!part) return "";
   if (part.mimeType === mimeType && part.body?.data) {
@@ -278,30 +276,32 @@ export interface ForeignMessage {
   from: string;
   subject: string;
   text: string;
-  /** En-tête Content-Type : "multipart/report; report-type=delivery-status" = NDR/bounce (RFC 3462) */
+  /**
+   * Content-Type header: "multipart/report; report-type=delivery-status" = NDR/bounce (RFC 3462)
+   */
   contentType: string;
-  /** Partie message/delivery-status d'un NDR (RFC 3464) : champs Action / Status / Diagnostic-Code */
+  /** message/delivery-status part of an NDR (RFC 3464): Action / Status / Diagnostic-Code fields */
   deliveryStatus: string;
-  /** En-tête Auto-Submitted (RFC 3834) : "auto-replied"/"auto-generated" = réponse machine */
+  /** Auto-Submitted header (RFC 3834): "auto-replied"/"auto-generated" = machine reply */
   autoSubmitted: string;
-  /** En-tête Precedence : "auto_reply"/"bulk" sur certaines réponses automatiques */
+  /** Precedence header: "auto_reply"/"bulk" on some auto-replies */
   precedence: string;
-  /** X-Autoreply / X-Autorespond présents (répondeurs d'absence non standards) */
+  /** X-Autoreply / X-Autorespond present (non-standard out-of-office responders) */
   hasAutoReplyHeader: boolean;
 }
 
-/** Un message d'un fil Gmail, entrant ou sortant (lecture complète du fil). */
+/** A Gmail thread message, incoming or outgoing (full thread read). */
 export interface ThreadMessage extends ForeignMessage {
   to: string;
-  /** En-tête Message-ID RFC822 (In-Reply-To / References d'une réponse) */
+  /** RFC822 Message-ID header (In-Reply-To / References of a reply) */
   messageId: string;
-  /** internalDate Gmail, epoch ms */
+  /** Gmail internalDate, epoch ms */
   date: number;
-  /** Envoyé par le compte (From = adresse du compte) */
+  /** Sent by the account (From = account address) */
   outgoing: boolean;
 }
 
-/** Tous les messages du fil (envois du compte compris), dans l'ordre chronologique. */
+/** All thread messages (the account's own included), in chronological order. */
 export async function getThreadMessages(account: AccountRow, threadId: string): Promise<ThreadMessage[]> {
   const gmail = google.gmail({ version: "v1", auth: clientForAccount(account) });
   const { data } = await gmail.users.threads.get({
@@ -332,8 +332,8 @@ export async function getThreadMessages(account: AccountRow, threadId: string): 
 }
 
 /**
- * Retourne tous les messages du fil ne venant pas du compte (réponses, bounces,
- * réponses automatiques…), dans l'ordre chronologique.
+ * All thread messages not from the account (replies, bounces, auto-replies…), in chronological
+ * order.
  */
 export async function getForeignMessages(
   account: AccountRow,
@@ -354,14 +354,14 @@ export async function getForeignMessages(
     }));
 }
 
-/** Accès Google révoqué ou expiré (jeton de rafraîchissement refusé). */
+/** Google access revoked or expired (refresh token rejected). */
 export function isGoogleAuthError(msg: string): boolean {
   return msg.includes("invalid_grant") || msg.includes("invalid_rapt");
 }
 
 /**
- * Message d'erreur lisible pour un appel Gmail : un accès expiré devient une
- * consigne de reconnexion plutôt qu'une trace de la librairie.
+ * Readable error for a Gmail call: expired access becomes a reconnect instruction rather than a
+ * library trace.
  */
 export function googleErrorMessage(err: unknown, accountEmail: string): string {
   const msg = err instanceof Error ? err.message : String(err);

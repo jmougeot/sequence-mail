@@ -1,25 +1,25 @@
 /**
- * Client HTTP minimal vers l'API de Sequence Mail.
+ * Minimal HTTP client for the Sequence Mail API.
  *
- * Le serveur MCP ne touche PAS la base SQLite directement : il appelle l'API
- * Express, ce qui réutilise toute la validation, le scheduler et la logique
- * métier — et permet de viser une instance locale OU la prod déployée.
+ * The MCP server never touches the SQLite database: it calls the Express API,
+ * reusing all validation, the scheduler and business logic, so it can target a
+ * local instance OR a deployed one.
  *
- * Configuration par variables d'environnement :
- *   SEQUENCE_MAIL_BASE_URL   URL de l'app (défaut http://localhost:3000)
- *   SEQUENCE_MAIL_BASIC_AUTH "user:pass" si l'app est protégée par basic auth
- *                            (cas de la prod derrière Caddy, ex. admin:motdepasse)
- *   SEQUENCE_MAIL_PUBLIC_URL URL de l'app vue d'un navigateur, pour les liens
- *                            donnés à l'utilisateur (OAuth Google, extension).
- *                            Défaut : SEQUENCE_MAIL_BASE_URL. À renseigner quand le
- *                            MCP parle à l'app par un réseau interne (docker :
+ * Environment:
+ *   SEQUENCE_MAIL_BASE_URL   app URL (default http://localhost:3000)
+ *   SEQUENCE_MAIL_BASIC_AUTH "user:pass" if the app is behind basic auth
+ *                            (e.g. production behind Caddy)
+ *   SEQUENCE_MAIL_PUBLIC_URL app URL as seen from a browser, for links given to
+ *                            the user (Google OAuth, extension). Default:
+ *                            SEQUENCE_MAIL_BASE_URL. Set it when the MCP reaches
+ *                            the app over an internal network (docker:
  *                            http://sequence-app:3000).
  */
 
 export const BASE_URL = (process.env.SEQUENCE_MAIL_BASE_URL ?? "http://localhost:3000").replace(/\/+$/, "");
 export const PUBLIC_URL = (process.env.SEQUENCE_MAIL_PUBLIC_URL || BASE_URL).replace(/\/+$/, "");
 
-/** Réponse non 2xx de l'API : statut et corps décodé conservés (ex. rendered_body d'un 400). */
+/** Non-2xx API response: keeps status and decoded body (e.g. rendered_body of a 400). */
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -40,16 +40,15 @@ function authHeaders(): Record<string, string> {
 }
 
 type ApiOptions = {
-  /** Corps JSON (sérialisé automatiquement, Content-Type application/json). */
+  /** JSON body (serialized, Content-Type application/json). */
   json?: unknown;
-  /** Corps CSV brut (Content-Type text/csv) — pour l'import de contacts. */
+  /** Raw CSV body (Content-Type text/csv), for contact imports. */
   csv?: string;
 };
 
 /**
- * Appelle l'API et renvoie le JSON décodé. Lève une ApiError explicite (statut +
- * message d'erreur de l'API) si la réponse n'est pas 2xx, pour que le tool MCP
- * la remonte telle quelle au client.
+ * Calls the API and returns the decoded JSON. Throws an ApiError (status + API
+ * error message) on non-2xx, so the tool passes it through to the client.
  */
 export async function api(method: string, path: string, opts: ApiOptions = {}): Promise<unknown> {
   const headers: Record<string, string> = { ...authHeaders() };
@@ -66,10 +65,10 @@ export async function api(method: string, path: string, opts: ApiOptions = {}): 
   try {
     res = await fetch(`${BASE_URL}${path}`, { method, headers, body });
   } catch (err) {
-    // Cause la plus fréquente : l'app n'est pas démarrée / mauvaise URL.
+    // Most common cause: app not running / wrong URL.
     throw new Error(
-      `Impossible de joindre Sequence Mail à ${BASE_URL} (${err instanceof Error ? err.message : err}). ` +
-        `L'app est-elle démarrée ? Vérifie SEQUENCE_MAIL_BASE_URL.`
+      `Cannot reach Sequence Mail at ${BASE_URL} (${err instanceof Error ? err.message : err}). ` +
+        `Is the app running? Check SEQUENCE_MAIL_BASE_URL.`
     );
   }
 
@@ -78,7 +77,7 @@ export async function api(method: string, path: string, opts: ApiOptions = {}): 
   try {
     data = text ? JSON.parse(text) : null;
   } catch {
-    data = text; // réponse non-JSON (ex. page HTML d'erreur d'auth)
+    data = text; // non-JSON response (e.g. auth error HTML page)
   }
 
   if (!res.ok) {
@@ -88,7 +87,7 @@ export async function api(method: string, path: string, opts: ApiOptions = {}): 
         : typeof data === "string" && data
           ? data.slice(0, 300)
           : res.statusText;
-    throw new ApiError(`HTTP ${res.status} sur ${method} ${path} — ${detail}`, res.status, data);
+    throw new ApiError(`HTTP ${res.status} on ${method} ${path} — ${detail}`, res.status, data);
   }
   return data;
 }

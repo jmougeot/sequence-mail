@@ -31,12 +31,12 @@ const OPT_OUT_PATTERNS = [
   "opt out",
 ];
 
-/** Détecte un refus / une demande de désinscription dans le texte d'une réponse. */
+/** Detects a refusal / unsubscribe request in a reply. */
 export function isOptOut(text: string): boolean {
   const normalized = text
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "") // retire les accents (decomposes par NFD)
+    .replace(/[\u0300-\u036f]/g, "") // strip accents (decomposed by NFD)
     .replace(/['’-]/g, " ")
     .replace(/\s+/g, " ");
   return OPT_OUT_PATTERNS.some((p) => normalized.includes(p));
@@ -46,13 +46,12 @@ function normalize(text: string): string {
   return text
     .toLowerCase()
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "") // retire les accents (décomposés par NFD)
+    .replace(/[̀-ͯ]/g, "") // strip accents (decomposed by NFD)
     .replace(/['’-]/g, " ")
     .replace(/\s+/g, " ");
 }
 
-// Expéditeurs de notifications d'échec : convention universelle (mailer-daemon,
-// postmaster — RFC 5321 §4.5.1) + l'adresse fixe des NDR Microsoft Exchange.
+// Bounce notification senders: mailer-daemon, postmaster (RFC 5321 §4.5.1) + Microsoft Exchange's fixed NDR address.
 const BOUNCE_FROM = [
   "mailer-daemon",
   "postmaster",
@@ -61,10 +60,7 @@ const BOUNCE_FROM = [
   "microsoftexchange329e71ec88ae4615bbc36ab6ce41109e",
 ];
 
-// Sujets posés par les serveurs sur un rapport de non-remise (NDR). Filet de
-// sécurité quand le From du NDR ne matche aucun BOUNCE_FROM : Outlook envoie
-// « Undeliverable » / « Message non distribué », les MTA « Delivery Status
-// Notification (Failure) » / « Échec de la remise »…
+// Non-delivery report (NDR) subjects: fallback when the NDR's From matches no BOUNCE_FROM.
 const BOUNCE_SUBJECT = [
   "undeliverable",
   "message non distribue",
@@ -77,32 +73,28 @@ const BOUNCE_SUBJECT = [
 ];
 
 /**
- * Détecte un message de bounce (rapport de non-remise). On s'appuie d'abord sur
- * le signal machine le plus fiable — Content-Type: multipart/report;
- * report-type=delivery-status (RFC 3462) — puis, en filet, sur le From et le
- * sujet des notifications serveur. Un bounce non détecté est traité comme une
- * réponse => la séquence s'arrête quand même (échec côté sûr).
+ * Detects a bounce (non-delivery report): first the most reliable machine signal,
+ * Content-Type: multipart/report; report-type=delivery-status (RFC 3462), then the
+ * From and subject of server notifications. An undetected bounce counts as a reply,
+ * so the sequence still stops (fails safe).
  */
 export function isBounce(
   m: Pick<ForeignMessage, "from" | "subject" | "contentType" | "deliveryStatus">
 ): boolean {
-  // Un DSN de simple retard (Action: delayed, RFC 3464) n'est pas un échec
-  // définitif : le message peut encore être remis, on ne coupe pas la séquence.
+  // A delay-only DSN (Action: delayed, RFC 3464) is not final: the message may still be delivered.
   const ds = m.deliveryStatus.toLowerCase();
   if (/action:\s*delayed/.test(ds) && !/action:\s*failed/.test(ds)) return false;
 
   const ct = m.contentType.toLowerCase();
   if (ct.includes("multipart/report") && ct.includes("delivery-status")) return true;
   const f = normalize(m.from);
-  // normalize() retire les tirets ("mailer-daemon" -> "mailer daemon") : on
-  // normalise aussi les motifs, sinon "mailer-daemon" ne matcherait jamais.
+  // normalize() turns "mailer-daemon" into "mailer daemon": normalize the patterns too.
   if (BOUNCE_FROM.some((p) => f.includes(normalize(p)))) return true;
   const s = normalize(m.subject);
   return BOUNCE_SUBJECT.some((p) => s.includes(normalize(p)));
 }
 
-// Codes d'erreur permanents (classe 5.X.X, RFC 3463) ou mentions explicites
-// d'adresse inexistante : seuls ces cas justifient une blackliste définitive.
+// Permanent error codes (5.X.X, RFC 3463) or explicit unknown-address wording: only these justify a permanent blacklist.
 const HARD_BOUNCE_HINTS = [
   "user unknown",
   "address not found",
@@ -114,16 +106,15 @@ const HARD_BOUNCE_HINTS = [
   "utilisateur inconnu",
 ];
 
-/** Bounce permanent (adresse morte) vs temporaire (boîte pleine, greylisting…). */
+/** Permanent bounce (dead address) vs temporary (full mailbox, greylisting…). */
 export function isHardBounce(text: string): boolean {
-  if (/\b5\.\d{1,3}\.\d{1,3}\b/.test(text)) return true; // status DSN 5.X.X
-  if (/\b55[0-4]\b/.test(text)) return true; // codes SMTP 550-554
+  if (/\b5\.\d{1,3}\.\d{1,3}\b/.test(text)) return true; // DSN status 5.X.X
+  if (/\b55[0-4]\b/.test(text)) return true; // SMTP codes 550-554
   const t = normalize(text);
   return HARD_BOUNCE_HINTS.some((p) => t.includes(p));
 }
 
-// Préfixes de sujet posés automatiquement par Gmail ("Réponse automatique :")
-// et Outlook/Exchange ("Automatic reply:") — jamais écrits par un humain.
+// Subject prefixes added automatically by mail clients (Gmail, Outlook/Exchange…), never by a human.
 const AUTO_REPLY_SUBJECT_PREFIXES = [
   "automatic reply",
   "reponse automatique",
@@ -135,17 +126,16 @@ const AUTO_REPLY_SUBJECT_PREFIXES = [
 ];
 
 /**
- * Détecte une réponse automatique d'absence via les signaux machine uniquement :
- * en-tête Auto-Submitted (RFC 3834, posé par Gmail/Outlook/etc.), X-Autoreply,
- * Precedence: auto_reply, ou préfixe de sujet généré par le client mail.
- * AUCUNE analyse du texte écrit par l'humain : « je suis en déplacement,
- * appelez-moi » est une vraie réponse et doit arrêter la séquence.
+ * Detects an out-of-office auto-reply from machine signals only: Auto-Submitted
+ * (RFC 3834), X-Autoreply, Precedence: auto_reply, or a client-generated subject prefix.
+ * The human-written text is NOT analyzed: "I'm travelling, call me" is a real reply
+ * and must stop the sequence.
  */
 export function isAutoReply(
   m: Pick<ForeignMessage, "subject" | "autoSubmitted" | "precedence" | "hasAutoReplyHeader">
 ): boolean {
   const auto = m.autoSubmitted.trim().toLowerCase();
-  if (auto && auto !== "no") return true; // RFC 3834 : auto-replied / auto-generated
+  if (auto && auto !== "no") return true; // RFC 3834: auto-replied / auto-generated
   if (m.hasAutoReplyHeader) return true;
   if (m.precedence.trim().toLowerCase() === "auto_reply") return true;
   const s = normalize(m.subject);
@@ -153,9 +143,8 @@ export function isAutoReply(
 }
 
 /**
- * Retire les lignes citées (">") et tout ce qui suit un marqueur de citation
- * ("Le ... a écrit :", "On ... wrote:") : la classification (opt-out) ne doit
- * porter que sur ce que le contact a écrit, pas sur notre email cité dessous.
+ * Removes quoted lines (">") and everything after a quote marker ("Le ... a écrit :",
+ * "On ... wrote:"), so opt-out classification only sees what the contact wrote.
  */
 export function stripQuoted(text: string): string {
   const out: string[] = [];
@@ -168,15 +157,11 @@ export function stripQuoted(text: string): string {
   return out.join("\n");
 }
 
-/**
- * Warm-up automatique : un compte démarre à 10 emails/jour puis gagne
- * +5/semaine depuis sa connexion, jusqu'à atteindre son quota configuré.
- */
+/** Automatic warm-up: WARMUP_START emails/day, +WARMUP_RAMP per week, up to the configured quota. */
 export function effectiveDailyLimit(
   a: Pick<AccountRow, "daily_limit" | "warmup" | "created_at" | "warmup_started_at">
 ): number {
   if (!a.warmup) return a.daily_limit;
-  // Le palier monte depuis le démarrage du warm-up (ou, à défaut, la création).
   const base = a.warmup_started_at ?? a.created_at;
   const weeks = Math.max(0, Math.floor((Date.now() - base) / (7 * 24 * 3600 * 1000)));
   return Math.min(
@@ -186,24 +171,23 @@ export function effectiveDailyLimit(
 }
 
 /**
- * Jeton Google révoqué ou expiré : désactive le compte pour arrêter les erreurs
- * en boucle. Reconnecter l'adresse depuis le dashboard le réactive (les jetons
- * sont fusionnés et le compte repasse actif).
+ * Revoked or expired Google token: disable the account to stop looping errors.
+ * Reconnecting the address from the dashboard reactivates it.
  */
 function handleAuthError(account: AccountRow, msg: string): boolean {
   if (!msg.includes("invalid_grant") && !msg.includes("invalid_rapt")) return false;
   db.prepare("UPDATE accounts SET active = 0 WHERE id = ?").run(account.id);
   console.error(
-    `[auth] accès Google expiré/révoqué pour ${account.email} — compte désactivé, reconnectez-le via « + Connecter un compte Google »`
+    `[auth] Google access expired/revoked for ${account.email}: account disabled, reconnect it via "+ Connect a Google account"`
   );
   return true;
 }
 
-/** Pousse l'avancement vers Attio sans bloquer le workflow en cas d'erreur. */
+/** Pushes progress to Attio without blocking the workflow on error. */
 function syncAttio(attioRecordId: string | null, value: string): void {
   if (!attioRecordId) return;
   pushSequenceStatus(attioRecordId, value).catch((err) =>
-    console.error("[attio] mise à jour impossible :", err instanceof Error ? err.message : err)
+    console.error("[attio] update failed:", err instanceof Error ? err.message : err)
   );
 }
 
@@ -217,25 +201,25 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-// La fenêtre d'envoi des emails a son propre fuseau (SEND_WINDOW_TZ) : l'heure du serveur reste celle du flux LinkedIn.
+// The email send window has its own time zone (SEND_WINDOW_TZ); server time stays the LinkedIn flow's.
 const windowZone = new Intl.DateTimeFormat("en-US", {
   timeZone: d.sendWindowTimezone, hourCycle: "h23",
   year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric",
 });
 
-/** L'instant `ts` dans le fuseau de la fenêtre d'envoi : une Date dont les champs UTC portent l'heure locale. */
+/** Instant `ts` in the send window's time zone: a Date whose UTC fields hold the local time. */
 function zoned(ts: number): Date {
   const p: Record<string, number> = {};
   for (const part of windowZone.formatToParts(ts)) p[part.type] = Number(part.value);
   return new Date(Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second));
 }
 
-/** Instant où il est `hour` h 00 dans le fuseau de la fenêtre, `days` jours après le jour de `ts`. */
+/** Instant when it is `hour`:00 in the window's time zone, `days` days after the day of `ts`. */
 function zonedHour(ts: number, days: number, hour: number): number {
   const z = zoned(ts);
   const wall = Date.UTC(z.getUTCFullYear(), z.getUTCMonth(), z.getUTCDate() + days, hour);
   const offset = (at: number): number => zoned(at).getTime() - Math.floor(at / 1000) * 1000;
-  // le décalage du fuseau peut avoir changé entre `ts` et l'instant cherché (heure d'été) : second passage
+  // the offset may differ between `ts` and the target (DST): second pass
   return wall - offset(wall - offset(ts));
 }
 
@@ -249,7 +233,7 @@ function inSendWindow(now = new Date()): boolean {
   return h >= d.sendWindowStart && h < d.sendWindowEnd;
 }
 
-/** Début de la prochaine fenêtre d'envoi après `ts` (fuseau de la fenêtre). */
+/** Start of the next send window after `ts`. */
 function nextSendWindowOpen(ts: number): number {
   for (let i = 0; i < 8; i++) {
     const open = zonedHour(ts, i, d.sendWindowStart);
@@ -258,7 +242,7 @@ function nextSendWindowOpen(ts: number): number {
   return ts + 24 * 3600 * 1000;
 }
 
-/** Fenêtre d'envoi des emails : ouverte jusqu'à closes_at, ou fermée jusqu'à opens_at (epoch ms). */
+/** Email send window: open until closes_at, or closed until opens_at (epoch ms). */
 export function sendWindowState(ts = Date.now()): { open: boolean; opens_at?: number; closes_at?: number } {
   if (!inSendWindow(new Date(ts))) return { open: false, opens_at: nextSendWindowOpen(ts) };
   return { open: true, closes_at: zonedHour(ts, 0, d.sendWindowEnd) };
@@ -296,14 +280,14 @@ interface StepRow {
   branch: string | null;
 }
 
-/** Remet à zéro les compteurs quotidiens si la date a changé. */
+/** Resets the daily counters when the date has changed. */
 function resetDailyCounters(): void {
   db.prepare(
     "UPDATE accounts SET sent_today = 0, sent_today_date = ? WHERE sent_today_date IS NOT ? "
   ).run(today(), today());
 }
 
-/** Sélection de comptes de la campagne (campaigns.account_ids) ; null = tous. */
+/** Campaign's account selection (campaigns.account_ids); null = all. */
 export function parseAccountIds(json: string | null): number[] | null {
   if (!json) return null;
   try {
@@ -314,7 +298,7 @@ export function parseAccountIds(json: string | null): number[] | null {
   }
 }
 
-/** Choisit le compte le moins chargé, sous quota effectif (warm-up) et hors repos. */
+/** Least loaded account, under its effective quota (warm-up) and not resting. */
 function pickAccount(now: number, allowedIds: number[] | null): AccountRow | undefined {
   const candidates = db
     .prepare(
@@ -334,14 +318,13 @@ function accountById(id: number): AccountRow | undefined {
 }
 
 /**
- * Planifie l'étape suivante avec un jitter aléatoire (délivrabilité). Les
- * étapes d'une autre branche sont considérées franchies (current_step juste
- * avant la suivante) : l'étape due reste toujours current_step + 1. Une étape
- * que le contact ne peut pas recevoir est due tout de suite : elle sera sautée
- * sans faire attendre son délai.
+ * Schedules the next step with random jitter (deliverability). Steps of another
+ * branch count as passed (current_step set just before the next one), so the due
+ * step is always current_step + 1. A step the contact cannot receive is due now:
+ * it will be skipped without waiting for its delay.
  */
 function scheduleNext(row: DueRow, next: StepRow): void {
-  const jitterMs = randBetween(0, 4 * 3600 * 1000); // 0 à 4 h de variabilité
+  const jitterMs = randBetween(0, 4 * 3600 * 1000); // 0 to 4 h
   const at = unreachable(next, row) ? Date.now() : Date.now() + next.wait_days * 24 * 3600 * 1000 + jitterMs;
   db.prepare(
     "UPDATE campaign_contacts SET status = 'in_progress', current_step = ?, next_send_at = ? WHERE id = ?"
@@ -349,14 +332,13 @@ function scheduleNext(row: DueRow, next: StepRow): void {
 }
 
 /**
- * Étape LinkedIn (invitation / message) : met l'action en file pour l'extension
- * Chrome. Le contact passe en 'awaiting_li' (le scheduler email le laisse) ; au
- * succès, outreach.ts le fait avancer à l'étape suivante. Sans URL de profil, on
- * ne peut rien faire : le contact est marqué en échec.
+ * LinkedIn step (invite / message): queues the action for the executor. The contact
+ * goes to 'awaiting_li' (ignored by the email scheduler); on success outreach.ts
+ * moves it to the next step.
  */
 function dispatchLinkedIn(row: DueRow, step: StepRow, steps: StepRow[]): void {
   if (!row.linkedin) {
-    // Pas de profil : aucune invitation ne sera acceptée (branche « si non acceptée »).
+    // No profile: no invite will ever be accepted ("not accepted" branch).
     db.prepare("UPDATE campaign_contacts SET li_accepted = 0 WHERE id = ?").run(row.cc_id);
     skipStep({ ...row, li_accepted: 0 }, step, steps, "pas de profil LinkedIn");
     return;
@@ -370,25 +352,24 @@ function dispatchLinkedIn(row: DueRow, step: StepRow, steps: StepRow[]): void {
     company: row.company,
     extra: row.extra,
   };
-  // Une note d'invitation vide est légitime (invitation sans message) ; un message
-  // vide ne devrait pas arriver (validé à la création), on tombe sur null par sûreté.
+  // An empty invite note is legitimate (invite without a message); an empty message
+  // should not happen (validated at creation), null just in case.
   const body = step.body?.trim() ? renderTemplate(step.body, contact, { sender_name: "", signature: "" }) : null;
   enqueueStep(row.cc_id, step.step_number, row.linkedin, type, body);
   syncAttio(row.attio_record_id, `Étape ${step.step_number}/${totalSteps} — ${type === "invite" ? "invitation" : "message"} LinkedIn en file`);
-  console.log(`[linkedin] étape ${step.step_number} (${type}) -> ${who(row)} mise en file`);
+  console.log(`[linkedin] step ${step.step_number} (${type}) -> ${who(row)} queued`);
 }
 
-/** Libellé d'un contact pour les journaux (email, sinon profil LinkedIn). */
+/** Contact label for logs (email, else LinkedIn profile). */
 function who(row: { email: string | null; linkedin?: string | null }): string {
   return row.email ?? row.linkedin ?? "(contact sans coordonnées)";
 }
 
 /**
- * Étape impossible pour ce contact (email sans adresse, LinkedIn sans profil) :
- * on la saute — une campagne peut mêler candidats joignables par email, par
- * LinkedIn, ou les deux. Elle a été planifiée sans délai (scheduleNext), son
- * délai ne compte donc pas : la suivante garde le sien, compté depuis le
- * dernier envoi réel, et part tout de suite si le contact n'a encore rien reçu.
+ * Step this contact cannot receive (email without address, LinkedIn without profile):
+ * skip it, since a campaign may mix email-only, LinkedIn-only and both. It was scheduled
+ * without delay (scheduleNext), so its delay does not count: the next step keeps its own,
+ * counted from the last real send, and goes now if the contact has received nothing yet.
  */
 function skipStep(row: DueRow, step: StepRow, steps: StepRow[], reason: string): void {
   const next = nextStep(steps, step.step_number, row.li_accepted);
@@ -405,7 +386,7 @@ function skipStep(row: DueRow, step: StepRow, steps: StepRow[], reason: string):
     `UPDATE campaign_contacts SET current_step = ?, status = ?, next_send_at = ?, error = ? WHERE id = ?`
   ).run(next ? next.step_number - 1 : step.step_number, next ? "in_progress" : "completed", at, `étape ${step.step_number} sautée : ${reason}`, row.cc_id);
   if (!next) syncAttio(row.attio_record_id, `Séquence terminée (${steps.length} étapes, sans réponse)`);
-  console.log(`[séquence] ${who(row)} : étape ${step.step_number} sautée (${reason})`);
+  console.log(`[sequence] ${who(row)}: step ${step.step_number} skipped (${reason})`);
 }
 
 async function processOne(row: DueRow): Promise<void> {
@@ -418,8 +399,6 @@ async function processOne(row: DueRow): Promise<void> {
     return;
   }
 
-  // Étape LinkedIn : pas d'email. On dépose une action en file ; l'extension la
-  // jouera à un rythme « humain » (outreach.ts) et fera avancer le contact au succès.
   if (step.channel === "linkedin") {
     dispatchLinkedIn(row, step, steps);
     return;
@@ -431,12 +410,12 @@ async function processOne(row: DueRow): Promise<void> {
   const to = row.email;
 
   const now = Date.now();
-  // Continuité du fil : les relances partent toujours du compte du 1er envoi
-  // (même s'il a été décoché depuis) ; le 1er envoi respecte la sélection de la campagne.
+  // Thread continuity: follow-ups always use the 1st send's account (even if deselected
+  // since); the 1st send follows the campaign's selection.
   const account = row.account_id
     ? accountById(row.account_id)
     : pickAccount(now, parseAccountIds(row.campaign_account_ids));
-  if (!account || account.active !== 1) return; // aucun compte disponible, on retentera au prochain tick
+  if (!account || account.active !== 1) return; // no account available, retry next tick
   if (account.sent_today >= effectiveDailyLimit(account)) return;
   if (account.next_allowed_at && account.next_allowed_at > now) return;
 
@@ -448,25 +427,25 @@ async function processOne(row: DueRow): Promise<void> {
     extra: row.extra,
   };
   const senderName = account.from_name ?? account.email;
-  // {{link}} : lien personnalisé et stable du prospect (suivi de visite côté serveur)
+  // {{link}}: the prospect's stable personal link (server-side visit tracking)
   const link = config.visit.enabled ? visitLink(row.cc_id) : "";
   const senderVars = {
     sender_name: senderName,
     link,
-    // {{signature}} : signature du compte, placée librement dans le template
+    // {{signature}}: account signature, placed anywhere in the template
     signature: account.signature ? renderTemplate(account.signature, contact, { sender_name: senderName, link }) : "",
   };
   const isFollowUp = row.current_step > 0 && !!row.thread_id;
 
-  // A/B test : si l'étape 1 a un sujet B, chaque contact reçoit une variante (50/50),
-  // figée au 1er envoi (les relances "Re:" reprennent le sujet réellement reçu).
+  // A/B test: if step 1 has a subject B, each contact gets a variant (50/50), fixed at
+  // the 1st send ("Re:" follow-ups reuse the subject actually received).
   const firstStep = steps.find((s) => s.step_number === 1);
   const variant = row.variant ?? (firstStep?.subject_b && Math.random() < 0.5 ? "B" : "A");
   const subjectFor = (s: StepRow | undefined) =>
     s ? (variant === "B" && s.subject_b ? s.subject_b : s.subject) : "";
 
-  // Une relance sans objet reste dans le fil ouvert par le premier email de la séquence
-  // (qui n'est pas forcément l'étape 1 si la séquence commence sur LinkedIn).
+  // A follow-up without a subject stays in the thread opened by the sequence's first
+  // email (not necessarily step 1 if the sequence starts on LinkedIn).
   const firstEmail = steps.find((s) => s.channel !== "linkedin") ?? firstStep;
   const subject = isFollowUp && !step.subject
     ? `Re: ${renderTemplate(subjectFor(firstEmail), contact, senderVars)}`
@@ -508,19 +487,19 @@ async function processOne(row: DueRow): Promise<void> {
       db.prepare("UPDATE campaign_contacts SET status = 'completed', next_send_at = NULL WHERE id = ?").run(row.cc_id);
       syncAttio(row.attio_record_id, `Séquence terminée (${steps.length} emails, sans réponse)`);
     }
-    console.log(`[envoi] étape ${step.step_number} -> ${to} via ${account.email}`);
+    console.log(`[send] step ${step.step_number} -> ${to} via ${account.email}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[envoi] échec pour ${to} :`, msg);
+    console.error(`[send] failed for ${to}:`, msg);
     if (handleAuthError(account, msg)) {
-      // Problème de compte, pas de contact : on retentera (autre compte ou après reconnexion)
+      // Account problem, not a contact problem: retry (other account or after reconnection)
       db.prepare("UPDATE campaign_contacts SET next_send_at = ? WHERE id = ?").run(
         Math.round(Date.now() + 15 * 60_000),
         row.cc_id
       );
       return;
     }
-    // Retentera dans 1 à 2 h ; après 3 échecs consécutifs le contact passe en 'failed'
+    // Retry in 1 to 2 h; after 3 consecutive failures the contact goes to 'failed'
     const failures = (db
       .prepare("SELECT error FROM campaign_contacts WHERE id = ?")
       .get(row.cc_id) as { error: string | null }).error;
@@ -540,14 +519,13 @@ async function processOne(row: DueRow): Promise<void> {
   }
 }
 
-// Contacts dont l'étape suivante est due (campagne active, contact pas désinscrit
-// auprès du propriétaire de la campagne).
+// Contacts whose next step is due (active campaign, not opted out with the campaign's owner).
 const DUE_SELECT = `
   SELECT cc.id AS cc_id, cc.campaign_id, cc.contact_id, cc.status, cc.current_step,
          cc.account_id, cc.thread_id, cc.last_gmail_message_id, cc.variant, cc.li_accepted,
          cp.account_ids AS campaign_account_ids,
          c.email, c.first_name, c.last_name, c.company, c.linkedin, c.attio_record_id,
-         -- variables de l'inscription (message écrit pour ce candidat sur ce poste) prioritaires
+         -- enrollment variables (message written for this candidate on this job) take precedence
          CASE WHEN cc.vars IS NULL THEN c.extra WHEN c.extra IS NULL THEN cc.vars
               ELSE json_patch(c.extra, cc.vars) END AS extra
   FROM campaign_contacts cc
@@ -561,14 +539,14 @@ const DUE_SELECT = `
 const NEXT_IS_LINKEDIN = `EXISTS (SELECT 1 FROM steps s
   WHERE s.campaign_id = cc.campaign_id AND s.step_number = cc.current_step + 1 AND s.channel = 'linkedin')`;
 
-// Hors file email : étape LinkedIn, ou contact sans email (l'étape email sera sautée,
-// sans attendre la fenêtre d'envoi ni les quotas).
+// Outside the email queue: LinkedIn step, or contact without email (the email step is
+// skipped without waiting for the send window or quotas).
 const NOT_EMAIL_WORK = `(${NEXT_IS_LINKEDIN} OR c.email IS NULL)`;
 
 /**
- * Estimation du prochain envoi d'email, au plus tôt : contacts dus ou planifiés
- * des campagnes actives, fenêtre d'envoi, quota et repos des comptes. Ne tient
- * pas compte de la sélection de comptes de chaque campagne ni du tick (1 à 2 min).
+ * Earliest estimate of the next email: due or scheduled contacts of active campaigns,
+ * send window, account quotas and rest. Ignores each campaign's account selection
+ * and the tick (1 to 2 min).
  */
 export function nextEmailEstimate(ts = Date.now()): { earliest_at: number | null; due_now: number; reason?: string } {
   const dueNow = (
@@ -596,7 +574,7 @@ export function nextEmailEstimate(ts = Date.now()): { earliest_at: number | null
   if (!accounts.length) return { earliest_at: null, due_now: dueNow, reason: "aucun compte Google actif" };
 
   let at = dueNow ? ts : scheduled!;
-  // sent_today n'est remis à zéro qu'au premier tick du jour (date UTC)
+  // sent_today is only reset at the first tick of the day (UTC date)
   const underQuota = accounts.filter((a) => (a.sent_today_date === today() ? a.sent_today : 0) < effectiveDailyLimit(a));
   if (underQuota.length) {
     at = Math.max(at, Math.min(...underQuota.map((a) => a.next_allowed_at ?? 0)));
@@ -608,13 +586,11 @@ export function nextEmailEstimate(ts = Date.now()): { earliest_at: number | null
 }
 
 /**
- * Un tick d'envoi. Deux files séparées, pour qu'aucune ne bloque l'autre :
- * - étapes LinkedIn : simple mise en file, à toute heure — plage horaire,
- *   quotas et rythme LinkedIn s'appliquent quand l'action est servie
- *   (outreach.ts) ;
- * - emails : quelques contacts dus, dans la fenêtre d'envoi. Un email en
- *   attente de quota ou de délai reste en tête de cette file sans retenir
- *   les candidats LinkedIn.
+ * One send tick, two separate queues so neither blocks the other:
+ * - LinkedIn steps: just queued, at any hour; LinkedIn hours, caps and pace apply
+ *   when the action is served (outreach.ts);
+ * - emails: a few due contacts, within the send window. An email waiting for quota
+ *   or delay stays at the head of this queue without holding back LinkedIn.
  */
 export async function sendTick(): Promise<void> {
   resetDailyCounters();
@@ -632,17 +608,16 @@ export async function sendTick(): Promise<void> {
 
   for (const row of due) {
     await processOne(row);
-    // Pause aléatoire entre deux traitements du même tick (variabilité temporelle)
+    // Random pause between two sends of the same tick
     await new Promise((r) => setTimeout(r, randBetween(2000, 8000)));
   }
 }
 
 /**
- * Retire le contact du workflow (statut terminal) et, si demandé, le désinscrit
- * auprès du propriétaire de la campagne — ses autres campagnes chez ce même
- * propriétaire s'arrêtent, celles des autres clients continuent (opt-out.ts).
- * Les actions LinkedIn encore en file pour lui sont annulées : une réponse
- * (email ou LinkedIn) arrête tous les canaux.
+ * Removes the contact from the workflow (terminal status) and, if asked, opts them out
+ * with the campaign's owner: their other campaigns with that owner stop, other clients'
+ * continue (opt-out.ts). Queued LinkedIn actions are cancelled: a reply on any channel
+ * stops all channels.
  */
 export function terminate(
   row: { cc_id: number; contact_id: number; attio_record_id: string | null },
@@ -661,11 +636,11 @@ export function terminate(
 }
 
 /**
- * Vérifie les fils en cours et classifie chaque message entrant :
- * - bounce  -> statut 'bounced' + adresse blacklistée (protège la délivrabilité)
- * - réponse automatique (OOO) -> la relance est reportée de ~7 jours, la séquence continue
- * - refus / désinscription    -> 'opted_out' + désinscrit chez le propriétaire de la campagne
- * - vraie réponse             -> 'replied', retiré du workflow
+ * Checks active threads and classifies each incoming message:
+ * - bounce               -> 'bounced', address blacklisted if permanent (protects deliverability)
+ * - auto-reply (OOO)     -> follow-up postponed by ~7 days, sequence continues
+ * - refusal / opt-out    -> 'opted_out' + opted out with the campaign's owner
+ * - real reply           -> 'replied', removed from the workflow
  */
 export async function checkRepliesTick(): Promise<void> {
   const rows = db
@@ -706,13 +681,12 @@ export async function checkRepliesTick(): Promise<void> {
         if (handled.includes(m.id)) continue;
 
         if (isBounce(m)) {
-          // Blackliste définitive uniquement sur bounce permanent (adresse morte) ;
-          // un échec temporaire (boîte pleine…) arrête la séquence sans blacklister.
-          // La partie delivery-status porte le code faisant foi (Status: 5.x.x) ;
-          // le texte lisible ne le contient pas toujours.
+          // Blacklist only on a permanent bounce; a temporary one (full mailbox…) just stops
+          // the sequence. The delivery-status part carries the authoritative code (Status: 5.x.x);
+          // the readable text does not always.
           const hard = isHardBounce(`${m.deliveryStatus}\n${m.text}`);
           terminate(row, "bounced", hard, hard ? "Email invalide (bounce) ⚠️" : "Email en erreur (bounce temporaire)");
-          console.log(`[bounce] ${row.email} : ${hard ? "adresse morte — blacklistée" : "échec temporaire"} — séquence arrêtée`);
+          console.log(`[bounce] ${row.email}: ${hard ? "dead address, blacklisted" : "temporary failure"}, sequence stopped`);
           terminal = true;
           break;
         }
@@ -724,7 +698,7 @@ export async function checkRepliesTick(): Promise<void> {
               Math.round(Date.now() + 7 * 24 * 3600 * 1000 + randBetween(0, 8 * 3600 * 1000)),
               row.cc_id
             );
-            console.log(`[ooo] ${row.email} : réponse automatique — relance reportée de ~7 jours`);
+            console.log(`[ooo] ${row.email}: auto-reply, follow-up postponed by ~7 days`);
           }
           continue;
         }
@@ -736,7 +710,7 @@ export async function checkRepliesTick(): Promise<void> {
           optedOut ? "Pas intéressé / désinscrit 🚫" : "A répondu ✅"
         );
         console.log(
-          `[réponse] ${row.email} ${optedOut ? "s'est désinscrit" : "a répondu"} — retiré du workflow`
+          `[reply] ${row.email} ${optedOut ? "opted out" : "replied"}, removed from the workflow`
         );
         terminal = true;
         break;
@@ -750,8 +724,8 @@ export async function checkRepliesTick(): Promise<void> {
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[réponse] vérification impossible pour ${row.email} :`, msg);
-      if (handleAuthError(account, msg)) badAccounts.add(account.id); // on continue avec les autres comptes
+      console.error(`[reply] check failed for ${row.email}:`, msg);
+      if (handleAuthError(account, msg)) badAccounts.add(account.id); // keep going with the other accounts
     }
     await new Promise((r) => setTimeout(r, randBetween(300, 1200)));
   }
@@ -759,7 +733,7 @@ export async function checkRepliesTick(): Promise<void> {
 
 let started = false;
 
-/** Démarre les boucles avec des intervalles légèrement aléatoires. */
+/** Starts the loops with slightly random intervals. */
 export function startScheduler(): void {
   if (started) return;
   started = true;
@@ -776,7 +750,7 @@ export function startScheduler(): void {
     setTimeout(run, randBetween(2000, 10000));
   };
 
-  loop(sendTick, 45_000, 120_000); // envois : toutes les ~1-2 min
-  loop(checkRepliesTick, 4 * 60_000, 7 * 60_000); // réponses : toutes les ~4-7 min
-  console.log("[scheduler] démarré (envois + détection de réponses)");
+  loop(sendTick, 45_000, 120_000); // sends: every ~1-2 min
+  loop(checkRepliesTick, 4 * 60_000, 7 * 60_000); // replies: every ~4-7 min
+  console.log("[scheduler] started (sending + reply detection)");
 }

@@ -1,24 +1,22 @@
 /**
- * Désinscriptions, rangées par propriétaire. La base de contacts est partagée
- * entre le tableau de bord (owner_ref NULL) et les clients d'Azerit
- * (« azerit:u:12 »…) : un candidat qui répond « pas intéressé » au poste d'un
- * client ne doit pas disparaître des campagnes des autres, qui n'en sauraient
- * rien. Un refus vaut donc pour le propriétaire de la campagne où il a été
- * exprimé, et pour lui seul :
- *   - tableau de bord : contacts.do_not_contact (la liste historique) ;
- *   - client          : une ligne de owner_opt_outs.
+ * Opt-outs, scoped by owner. The contact base is shared between the dashboard (owner_ref NULL) and
+ * Azerit clients ("azerit:u:12"…): a candidate who answers "not interested" to one client's job
+ * must not vanish from other clients' campaigns, who would know nothing of it. So a refusal applies
+ * to the owner of the campaign where it was expressed, and to them only:
+ * - dashboard: contacts.do_not_contact (the legacy list);
+ * - client:    a row in owner_opt_outs.
  */
 import { db } from "../db.js";
 import { cancelLinkedInActions } from "./outreach.js";
 
 /**
- * Condition SQL « ce contact accepte encore les envois de cette campagne »
- * (alias attendus : c = contacts, cp = campaigns).
+ * SQL condition "this contact still accepts sends from this campaign" (expected aliases: c =
+ * contacts, cp = campaigns).
  */
 export const NOT_OPTED_OUT = `(CASE WHEN cp.owner_ref IS NULL THEN c.do_not_contact = 0
   ELSE NOT EXISTS (SELECT 1 FROM owner_opt_outs oo WHERE oo.owner_ref = cp.owner_ref AND oo.contact_id = c.id) END)`;
 
-/** Le contact s'est-il désinscrit auprès de ce propriétaire ? */
+/** Has the contact opted out with this owner? */
 export function isOptedOut(contactId: number, ownerRef: string | null): boolean {
   if (ownerRef == null) {
     const row = db.prepare("SELECT do_not_contact FROM contacts WHERE id = ?").get(contactId) as
@@ -30,10 +28,9 @@ export function isOptedOut(contactId: number, ownerRef: string | null): boolean 
 }
 
 /**
- * Désinscrit le contact d'une inscription auprès du propriétaire de sa
- * campagne, et arrête ses autres séquences en cours chez ce même propriétaire
- * (actions LinkedIn en file annulées). L'inscription elle-même garde le statut
- * que l'appelant lui a donné (opted_out, bounced…).
+ * Opts an enrollment's contact out with its campaign's owner and stops their other running
+ * sequences with that owner (queued LinkedIn actions cancelled). The enrollment itself keeps the
+ * status the caller set (opted_out, bounced…).
  */
 export function optOutFromCampaignOf(ccId: number, reason: string): void {
   const cc = db

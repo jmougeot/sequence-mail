@@ -18,33 +18,33 @@ import { normalizeLinkedin } from "./services/linkedin-url.js";
 
 export function createServer(): express.Express {
   const app = express();
-  // Derrière un reverse proxy / tunnel (ngrok, Cloudflare…) : req.ip = vraie IP du destinataire
+  // Behind a reverse proxy / tunnel (ngrok, Cloudflare…): req.ip = the recipient's real IP
   app.set("trust proxy", true);
   app.use(express.json({ limit: "10mb" }));
   app.use(express.text({ type: ["text/csv", "text/plain"], limit: "20mb" }));
-  // Relatif au projet, pas au répertoire de lancement
-  // no-cache : le navigateur revalide à chaque chargement (ETag), pas de CSS/JS périmé après un déploiement
+  // Relative to the project, not the launch directory.
+  // no-cache: the browser revalidates (ETag) on every load, so no stale CSS/JS after a deploy
   app.use(express.static(fileURLToPath(new URL("../public", import.meta.url)), { cacheControl: true, maxAge: 0, setHeaders: (res) => res.setHeader("Cache-Control", "no-cache") }));
 
-  // --- Étapes LinkedIn (consommées par l'extension Chrome) ---
+  // --- LinkedIn steps (used by the Chrome extension) ---
   registerOutreachRoutes(app);
 
-  // --- API de service (Azerit, réseau interne) ---
+  // --- Service API (Azerit, internal network) ---
   registerServiceRoutes(app);
 
-  // --- Lien personnalisé {{link}} + suivi des visites ---
+  // --- Personalized {{link}} + visit tracking ---
   registerVisitRoutes(app);
 
-  // --- Désinscription un-clic (List-Unsubscribe) ---
+  // --- One-click unsubscribe (List-Unsubscribe) ---
   registerUnsubscribeRoutes(app);
 
-  // --- Boîte de réception, conversations, recherche, journal, email de test (MCP) ---
+  // --- Inbox, conversations, search, activity log, test email (MCP) ---
   registerInboxRoutes(app);
 
-  // --- Comptes Google ---
+  // --- Google accounts ---
   app.get("/auth/google", (_req, res) => res.redirect(config.google.clientId ? authUrl() : "/settings.html"));
 
-  // Identifiants OAuth saisis dans Paramètres (quand le .env n'en fournit pas)
+  // OAuth credentials entered in Settings (when .env provides none)
   app.put("/api/settings/google", (req, res) => {
     const { client_id, client_secret } = req.body as { client_id?: string; client_secret?: string };
     const id = String(client_id ?? "").trim();
@@ -102,11 +102,10 @@ export function createServer(): express.Express {
     res.json({ ok: true });
   });
 
-  // Suppression d'un compte Google, désactivé au préalable (garde-fou contre la
-  // suppression d'un compte qui envoie). Son historique d'envois (messages) part
-  // avec lui ; ses contacts encore en séquence sont arrêtés — leurs relances ne
-  // peuvent partir que de lui (continuité du fil) ; son fil Gmail, devenu
-  // illisible, est détaché (plus de détection de réponse dessus).
+  // Deletes a Google account, which must be disabled first (so a sending account is never deleted).
+  // Its sent messages go with it; its contacts still in sequence are stopped, since follow-ups can
+  // only come from it (thread continuity); its Gmail threads, now unreadable, are detached (no more
+  // reply detection).
   app.delete("/api/accounts/:id", (req, res) => {
     const id = Number(req.params.id);
     const account = db.prepare("SELECT id, email, active FROM accounts WHERE id = ?").get(id) as
@@ -129,7 +128,7 @@ export function createServer(): express.Express {
         .prepare("UPDATE campaign_contacts SET account_id = NULL, thread_id = NULL WHERE account_id = ?")
         .run(id).changes;
       const messages = db.prepare("DELETE FROM messages WHERE account_id = ?").run(id).changes;
-      // Retire le compte des sélections de campagnes ; une sélection vidée repasse à « tous les comptes »
+      // Remove the account from campaign selections; an emptied selection reverts to "all accounts"
       const campaigns: Array<{ id: number; name: string; account_ids: number[] | null }> = [];
       for (const c of db.prepare("SELECT id, name, account_ids FROM campaigns WHERE account_ids IS NOT NULL").all() as Array<{
         id: number;
@@ -145,15 +144,14 @@ export function createServer(): express.Express {
       db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
       return { contacts_stopped: running.length, contacts_detached: detached, messages_deleted: messages, campaigns_updated: campaigns };
     })();
-    console.log(`[comptes] ${account.email} supprimé (${report.messages_deleted} envois effacés, ${report.contacts_stopped} contacts arrêtés)`);
+    console.log(`[accounts] ${account.email} deleted (${report.messages_deleted} sends erased, ${report.contacts_stopped} contacts stopped)`);
     res.json({ ok: true, email: account.email, ...report });
   });
 
-  // --- Campagnes ---
-  // Une étape est soit un email (sujet + corps), soit une action LinkedIn
-  // (channel='linkedin', li_action='invite'|'message', le corps = note/message).
-  // branch : réservée aux contacts dont l'invitation est acceptée ('accepted')
-  // ou ne l'est pas ('not_accepted') ; absente = tous (cf. services/branches.ts).
+  // --- Campaigns ---
+  // A step is either an email (subject + body) or a LinkedIn action (channel='linkedin',
+  // li_action='invite'|'message', body = note/message). branch: only for contacts whose invitation
+  // was accepted ('accepted') or not ('not_accepted'); absent = all (see services/branches.ts).
   type StepInput = {
     subject?: string;
     subject_b?: string;
@@ -164,13 +162,13 @@ export function createServer(): express.Express {
     branch?: string;
   };
 
-  /** Valide une séquence ; renvoie un message d'erreur ou null si tout est bon. */
+  /** Validates a sequence; returns an error message, or null if valid. */
   function validateSteps(name: string, steps: StepInput[]): string | null {
     if (!name || !steps?.length) return "name et steps[] sont requis";
     const isEmail = (s: StepInput) => (s.channel ?? "email") !== "linkedin";
     const isMessage = (s: StepInput) => s.channel === "linkedin" && s.li_action === "message";
-    // Le premier email ouvre le fil : son objet est obligatoire (les relances sans
-    // objet suivent en « Re: »). Avec des branches, le premier email de chacune.
+    // The first email opens the thread, so its subject is required (subjectless follow-ups go out
+    // as "Re:"). With branches, the first email of each branch.
     const hasBranches = steps.some((s) => s.branch);
     for (const branch of hasBranches ? BRANCHES : [undefined]) {
       const firstEmail = steps.find((s) => isEmail(s) && (!s.branch || s.branch === branch));
@@ -189,8 +187,8 @@ export function createServer(): express.Express {
       const invite = steps.findIndex((s) => s.channel === "linkedin" && (s.li_action ?? "invite") === "invite");
       const firstBranch = steps.findIndex((s) => s.branch);
       if (invite < 0 || firstBranch < invite) return "Les étapes « si invitation acceptée / non acceptée » viennent après une invitation LinkedIn";
-      // Le message LinkedIn révèle l'acceptation : il ouvre la branche « acceptée »,
-      // avant toute étape « non acceptée » (qui ne contient pas de message LinkedIn).
+      // The LinkedIn message reveals acceptance: it opens the "accepted" branch, before any "not
+      // accepted" step (which has no LinkedIn message).
       const probe = steps.findIndex((s) => s.branch === "accepted");
       const fallback = steps.findIndex((s) => s.branch === "not_accepted");
       if (fallback >= 0 && (probe < 0 || !isMessage(steps[probe]) || probe > fallback)) {
@@ -204,8 +202,8 @@ export function createServer(): express.Express {
   }
 
   /**
-   * Normalise la sélection de comptes d'envoi d'une campagne.
-   * null / undefined = tous les comptes (défaut) ; sinon liste d'ids non vide.
+   * Normalizes a campaign's sender selection: null / undefined = all accounts (default), else a
+   * non-empty id list.
    */
   function normalizeAccountIds(ids: unknown, field = "account_ids"): { value: string | null } | { error: string } {
     if (ids == null) return { value: null };
@@ -216,14 +214,14 @@ export function createServer(): express.Express {
     return { value: JSON.stringify([...new Set(ids as number[])]) };
   }
 
-  /** Description d'une campagne : texte libre, vide = aucune (null). */
+  /** Campaign description: free text, empty = none (null). */
   function normalizeDescription(value: unknown): { value: string | null } | { error: string } {
     if (value == null) return { value: null };
     if (typeof value !== "string") return { error: "description must be a string" };
     return { value: value.trim() || null };
   }
 
-  /** Insère les étapes d'une campagne (canal + action LinkedIn pris en charge). */
+  /** Inserts a campaign's steps (email or LinkedIn). */
   function insertSteps(campaignId: number | bigint, steps: StepInput[]): void {
     const insert = db.prepare(
       "INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days, channel, li_action, branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -235,7 +233,7 @@ export function createServer(): express.Express {
         campaignId,
         i + 1,
         channel === "linkedin" ? "" : (s.subject ?? ""),
-        i === 0 && channel === "email" ? s.subject_b?.trim() || null : null, // A/B test : étape 1 email uniquement
+        i === 0 && channel === "email" ? s.subject_b?.trim() || null : null, // A/B test: email step 1 only
         s.body ?? "",
         i === 0 ? 0 : (s.wait_days ?? 3),
         channel,
@@ -271,13 +269,13 @@ export function createServer(): express.Express {
     res.json({ id: result });
   });
 
-  // --- Consigne des variables de personnalisation : une par nom de variable, pour toutes les campagnes ---
+  // --- Personalization variable instructions: one per variable name, shared by all campaigns ---
   app.get("/api/variable-instructions", (_req, res) => {
     const rows = db.prepare("SELECT name, instruction FROM variable_instructions ORDER BY name").all() as Array<{ name: string; instruction: string }>;
     res.json(Object.fromEntries(rows.map((r) => [r.name, r.instruction])));
   });
 
-  // Texte vide = plus de consigne
+  // Empty text = instruction removed
   app.put("/api/variable-instructions/:name", (req, res) => {
     const { name } = req.params;
     if (!/^[\p{L}\p{N}_]+$/u.test(name)) return res.status(400).json({ error: `"${name}" is not a valid variable name` });
@@ -336,11 +334,11 @@ export function createServer(): express.Express {
       contacted > 0 ? Math.round((replied / contacted) * 1000) / 10 : 0;
 
     for (const c of campaigns) {
-      // Dénominateur : les contacts à qui au moins une étape est partie (ni held, ni pending, ni arrêtés avant
-      // tout envoi, ni bounces)
+      // Denominator: contacts who received at least one step (not held, pending, stopped before any
+      // send, or bounced)
       c.reply_rate = rate(Number(c.replied), Number(c.contacted));
       const launched = Number(c.launched);
-      // awaiting_li : action LinkedIn en file, séquence non terminée — encore « en cours »
+      // awaiting_li: LinkedIn action queued, sequence not finished, so still "running"
       const stillRunning = Number(c.pending) + Number(c.in_progress) + Number(c.awaiting_li);
       c.progress = launched > 0 ? Math.round(((launched - stillRunning) / launched) * 100) : 0;
       c.ab_test = c.subject_b ? 1 : 0;
@@ -350,7 +348,7 @@ export function createServer(): express.Express {
     res.json(campaigns);
   });
 
-  // Détail d'une campagne avec ses étapes (pour l'édition)
+  // Campaign detail with its steps (for editing)
   app.get("/api/campaigns/:id", (req, res) => {
     const campaign = db
       .prepare("SELECT id, name, description, status, account_ids, li_account_ids FROM campaigns WHERE id = ?")
@@ -361,7 +359,8 @@ export function createServer(): express.Express {
         "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch FROM steps WHERE campaign_id = ? ORDER BY step_number"
       )
       .all(req.params.id);
-    // Variables de personnalisation de la séquence (hors celles de l'app), avec leur consigne : à lire avant de les remplir
+    // The sequence's personalization variables (excluding built-ins), with their instruction: to
+    // read before filling them
     const instructions = new Map(
       (db.prepare("SELECT name, instruction FROM variable_instructions").all() as Array<{ name: string; instruction: string }>).map((r) => [r.name, r.instruction])
     );
@@ -371,7 +370,7 @@ export function createServer(): express.Express {
         if (text) for (const key of templateVariables(text).keys()) if (!BUILT_IN_VARIABLES.has(key)) names.add(key);
       }
     }
-    // account_ids / li_account_ids : null = tous les comptes, sinon liste d'ids (JSON en base)
+    // account_ids / li_account_ids: null = all accounts, else an id list (JSON in the DB)
     res.json({
       ...campaign,
       variables: [...names].map((name) => ({ name, instruction: instructions.get(name) })),
@@ -381,10 +380,9 @@ export function createServer(): express.Express {
     });
   });
 
-  // Modification d'une campagne, y compris en cours : les étapes sont remplacées.
-  // Les contacts gardent leur avancement (current_step) ; les prochains envois
-  // utilisent le nouveau contenu. Un contact dont l'étape courante dépasse la
-  // nouvelle séquence sera marqué 'completed' au prochain passage.
+  // Updates a campaign, even while running: steps are replaced. Contacts keep their progress
+  // (current_step) and the next sends use the new content; a contact whose current step is past the
+  // new sequence is marked 'completed' on the next tick.
   app.put("/api/campaigns/:id", (req, res) => {
     const exists = db.prepare("SELECT id FROM campaigns WHERE id = ?").get(req.params.id);
     if (!exists) return res.status(404).json({ error: "Campaign not found" });
@@ -396,12 +394,12 @@ export function createServer(): express.Express {
     };
     const err = validateSteps(name, steps);
     if (err) return res.status(400).json({ error: err });
-    // account_ids absent du body = sélection inchangée ; null = tous les comptes
+    // account_ids absent from the body = selection unchanged; null = all accounts
     const senders = "account_ids" in req.body ? normalizeAccountIds(account_ids) : null;
     if (senders && "error" in senders) return res.status(400).json({ error: senders.error });
     const liSenders = "li_account_ids" in req.body ? normalizeAccountIds(li_account_ids, "li_account_ids") : null;
     if (liSenders && "error" in liSenders) return res.status(400).json({ error: liSenders.error });
-    // description absente du body = inchangée
+    // description absent from the body = unchanged
     const desc = "description" in req.body ? normalizeDescription(req.body.description) : null;
     if (desc && "error" in desc) return res.status(400).json({ error: desc.error });
     db.transaction(() => {
@@ -410,7 +408,7 @@ export function createServer(): express.Express {
       if (senders) {
         db.prepare("UPDATE campaigns SET account_ids = ? WHERE id = ?").run(senders.value, req.params.id);
       }
-      // Ne touche que les contacts pas encore attachés : un contact engagé reste à son compte.
+      // Only touches contacts not attached yet: an engaged contact stays with its account.
       if (liSenders) {
         db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(liSenders.value, req.params.id);
       }
@@ -420,8 +418,8 @@ export function createServer(): express.Express {
     res.json({ ok: true });
   });
 
-  // Modification partielle (serveur MCP) : seuls les champs fournis changent.
-  // `steps`, s'il est fourni, remplace toute la séquence comme le PUT.
+  // Partial update (MCP server): only provided fields change. `steps`, if given, replaces the whole
+  // sequence like PUT.
   app.patch("/api/campaigns/:id", (req, res) => {
     const campaign = db.prepare("SELECT id, name FROM campaigns WHERE id = ?").get(req.params.id) as
       | { id: number; name: string }
@@ -464,9 +462,9 @@ export function createServer(): express.Express {
     res.json({ ok: true });
   });
 
-  // Modification d'une seule étape : seuls les champs fournis changent, puis la
-  // séquence obtenue est validée et réécrite comme le PUT (mêmes règles : sujet
-  // du premier email, variante B à l'étape 1, délai nul à l'étape 1).
+  // Updates a single step: only provided fields change, then the resulting sequence is validated
+  // and rewritten like PUT (same rules: first email's subject, B variant on step 1, zero delay on
+  // step 1).
   app.patch("/api/campaigns/:id/steps/:n", (req, res) => {
     const campaign = db.prepare("SELECT id, name FROM campaigns WHERE id = ?").get(req.params.id) as
       | { id: number; name: string }
@@ -495,7 +493,7 @@ export function createServer(): express.Express {
     }
     if (!Object.keys(patch).length) return res.status(400).json({ error: "No field to update" });
 
-    // null en base (subject_b, li_action, branch) = champ absent pour insertSteps
+    // NULL in the DB (subject_b, li_action, branch) = field absent for insertSteps
     const next = steps.map((s, i) =>
       Object.fromEntries(Object.entries(i === index ? { ...s, ...patch } : s).filter(([, v]) => v !== null))
     ) as StepInput[];
@@ -508,8 +506,8 @@ export function createServer(): express.Express {
     res.json({ ok: true, step: (selectSteps.all(campaign.id) as Array<{ step_number: number }>)[index] });
   });
 
-  // Aperçu d'un email : rendu des variables avec un vrai contact de la campagne
-  // (le premier) ou un contact d'exemple, signature du compte incluse.
+  // Email preview: variables rendered with a real contact of the campaign (the first) or a sample
+  // contact, account signature included.
   app.post("/api/preview", (req, res) => {
     const { subject, body, account_id, campaign_id, contact_id } = req.body as {
       subject?: string;
@@ -518,7 +516,7 @@ export function createServer(): express.Express {
       campaign_id?: number;
       contact_id?: number;
     };
-    // Variables de l'inscription à la campagne (cc.vars) prioritaires, comme à l'envoi
+    // Enrollment variables (cc.vars) take precedence, as when sending
     const contact = (contact_id
       ? db
           .prepare(
@@ -567,11 +565,12 @@ export function createServer(): express.Express {
     });
   });
 
-  // Paramètres effectifs (issus du .env, et des identifiants Google saisis dans Paramètres)
+  // Effective settings (from .env, plus Google credentials entered in Settings)
   app.get("/api/settings", (_req, res) => {
-    // La fenêtre d'envoi se lit dans deliverability.sendWindowTimezone, qui peut différer du fuseau du serveur
+    // The send window is read in deliverability.sendWindowTimezone, which may differ from the
+    // server's timezone
     const now = new Date();
-    const offset = -now.getTimezoneOffset(); // minutes à ajouter à UTC
+    const offset = -now.getTimezoneOffset(); // minutes to add to UTC
     const pad = (n: number) => String(Math.abs(n)).padStart(2, "0");
     res.json({
       server: {
@@ -597,8 +596,8 @@ export function createServer(): express.Express {
     res.json({ ok: true });
   });
 
-  // Une campagne archivée reste consultable mais n'envoie plus rien : elle ne se relance
-  // qu'après désarchivage (retour en pause).
+  // An archived campaign stays viewable but sends nothing: it can only be resumed after unarchiving
+  // (back to paused).
   const isArchived = (id: string) =>
     (db.prepare("SELECT status FROM campaigns WHERE id = ?").get(id) as { status: string } | undefined)?.status === "archived";
   const ARCHIVED = "Campagne archivée : désarchivez-la avant de relancer des envois";
@@ -619,7 +618,7 @@ export function createServer(): express.Express {
     res.json({ ok: true });
   });
 
-  // --- Lancer les envois pour une sélection de contacts ---
+  // --- Launch sends for selected contacts ---
   app.post("/api/campaigns/:id/launch-contacts", (req, res) => {
     const { ids } = req.body as { ids?: number[] };
     if (!Array.isArray(ids) || !ids.length) {
@@ -639,7 +638,7 @@ export function createServer(): express.Express {
     res.json({ ok: true, launched });
   });
 
-  // --- Arrêter manuellement la séquence d'une sélection de contacts ---
+  // --- Manually stop the sequence of selected contacts ---
   app.post("/api/campaigns/:id/stop-contacts", (req, res) => {
     const { ids } = req.body as { ids?: number[] };
     if (!Array.isArray(ids) || !ids.length) {
@@ -659,7 +658,7 @@ export function createServer(): express.Express {
     res.json({ ok: true, stopped: changes });
   });
 
-  // --- Changer manuellement le statut d'une sélection de contacts ---
+  // --- Manually set the status of selected contacts ---
   app.post("/api/campaigns/:id/set-status", (req, res) => {
     const { ids, status } = req.body as { ids?: number[]; status?: string };
     const allowed = ["held", "pending", "in_progress", "replied", "opted_out", "bounced", "completed", "stopped", "failed"];
@@ -668,10 +667,9 @@ export function createServer(): express.Express {
     }
     const placeholders = ids.map(() => "?").join(",");
     const changed = db.transaction(() => {
-      // next_send_at NULL : un contact remis en pending/in_progress est éligible
-      // dès le prochain tick ; les statuts terminaux n'ont pas d'envoi planifié.
-      // replied_at posé pour replied/opted_out (stats), effacé sinon pour que la
-      // détection de réponses reprenne sur un contact réactivé.
+      // next_send_at NULL: a contact reset to pending/in_progress is eligible on the next tick;
+      // terminal statuses have no scheduled send. replied_at is set for replied/opted_out (stats)
+      // and cleared otherwise, so reply detection resumes on a reactivated contact.
       const { changes } = db
         .prepare(
           `UPDATE campaign_contacts SET status = ?, next_send_at = NULL, error = NULL,
@@ -680,8 +678,8 @@ export function createServer(): express.Express {
         )
         .run(status, status, Date.now(), ...ids, Number(req.params.id));
       if (status === "opted_out") {
-        // Cohérence avec la détection automatique : désinscrit auprès du
-        // propriétaire de la campagne, ses autres séquences chez lui arrêtées
+        // Same as automatic detection: opted out with the campaign's owner, their other sequences
+        // with that owner stopped
         const own = db
           .prepare(`SELECT id FROM campaign_contacts WHERE id IN (${placeholders}) AND campaign_id = ?`)
           .all(...ids, Number(req.params.id)) as Array<{ id: number }>;
@@ -692,7 +690,7 @@ export function createServer(): express.Express {
     res.json({ ok: true, changed });
   });
 
-  // --- Retirer une sélection de contacts de la campagne (le contact global est conservé) ---
+  // --- Remove selected contacts from the campaign (the global contact is kept) ---
   app.post("/api/campaigns/:id/remove-contacts", (req, res) => {
     const { ids } = req.body as { ids?: number[] };
     if (!Array.isArray(ids) || !ids.length) {
@@ -705,7 +703,7 @@ export function createServer(): express.Express {
     res.json({ ok: true, removed: changes });
   });
 
-  // --- Mise à jour des champs d'un contact (standards + colonnes personnalisées) ---
+  // --- Update a contact's fields (standard + custom columns) ---
   app.patch("/api/contacts/:id", (req, res) => {
     const contact = db.prepare("SELECT id, extra FROM contacts WHERE id = ?").get(req.params.id) as
       | { id: number; extra: string | null }
@@ -718,7 +716,7 @@ export function createServer(): express.Express {
       linkedin?: string;
       extra?: Record<string, string>;
     };
-    // Les champs personnalisés sont fusionnés ; une valeur vide supprime le champ
+    // Custom fields are merged; an empty value deletes the field
     let merged: Record<string, string> | null = null;
     if (extra && typeof extra === "object") {
       merged = { ...(contact.extra ? (JSON.parse(contact.extra) as Record<string, string>) : {}) };
@@ -750,14 +748,14 @@ export function createServer(): express.Express {
     res.json({ ok: true });
   });
 
-  // --- Suppression d'une campagne (étapes, inscriptions et historique en cascade) ---
+  // --- Delete a campaign (steps, enrollments and history cascade) ---
   app.delete("/api/campaigns/:id", (req, res) => {
     const { changes } = db.prepare("DELETE FROM campaigns WHERE id = ?").run(req.params.id);
     if (!changes) return res.status(404).json({ error: "Campaign not found" });
     res.json({ ok: true });
   });
 
-  // --- Import CSV (body = contenu CSV brut) ---
+  // --- CSV import (body = raw CSV content) ---
   app.post("/api/campaigns/:id/import", async (req, res) => {
     const campaign = db.prepare("SELECT id FROM campaigns WHERE id = ?").get(req.params.id);
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
@@ -767,8 +765,8 @@ export function createServer(): express.Express {
       if (!("email" in rows[0]) && !("linkedin" in rows[0])) {
         return res.status(400).json({ error: "The CSV must have an 'email' or 'linkedin' column" });
       }
-      // ?campaign_vars=a,b : ces colonnes deviennent des variables propres à cette
-      // campagne (campaign_contacts.vars) au lieu de champs du contact, partagés.
+      // ?campaign_vars=a,b: these columns become variables of this campaign
+      // (campaign_contacts.vars) instead of shared contact fields.
       const campaignVars = [...new Set(String(req.query.campaign_vars ?? "").split(",").map(normalizeColumn).filter(Boolean))];
       const reserved = campaignVars.filter((k) => KNOWN_COLUMNS.has(k));
       if (reserved.length) {
@@ -784,7 +782,7 @@ export function createServer(): express.Express {
     }
   });
 
-  // --- Synchronisation Attio (bonus) ---
+  // --- Attio sync ---
   app.post("/api/campaigns/:id/attio-sync", async (req, res) => {
     const { status_attribute, statuses } = req.body as {
       status_attribute?: string;
@@ -801,7 +799,7 @@ export function createServer(): express.Express {
     }
   });
 
-  // --- Détail contacts d'une campagne ---
+  // --- Campaign contacts detail ---
   app.get("/api/campaigns/:id/contacts", (req, res) => {
     const rows = db
       .prepare(

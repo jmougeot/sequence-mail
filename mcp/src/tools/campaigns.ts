@@ -1,7 +1,6 @@
 /**
- * Campagnes : lecture, activité, aperçus et email de test, création (contacts
- * compris), édition (campagne ou une seule étape), pause/reprise, archivage,
- * suppression.
+ * Campaigns: read, activity, previews and test email, creation (contacts
+ * included), editing (campaign or a single step), pause/resume, archive, delete.
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -9,85 +8,85 @@ import { api, ApiError } from "../api.js";
 import { buildImportCsv, campaignSummary, checkCampaignVars, isoDates } from "../lib.js";
 import { campaignVars, contactsList, handler, importCsv, READ, statusFilter } from "./common.js";
 
-// Une étape de séquence : email (sujet + corps) ou action LinkedIn.
+// A sequence step: email (subject + body) or LinkedIn action.
 const stepSchema = z.object({
-  subject: z.string().optional().describe("Sujet de l'email. Obligatoire pour l'étape 1 quand channel=email."),
+  subject: z.string().optional().describe("Email subject. Required for step 1 when channel=email."),
   subject_b: z
     .string()
     .optional()
-    .describe("Variante B du sujet (A/B test 50/50), étape 1 email uniquement."),
+    .describe("Subject variant B (50/50 A/B test), email step 1 only."),
   body: z
     .string()
     .optional()
     .describe(
-      "Corps du message. Variables : {{first_name}}, {{last_name}}, {{company}}, {{email}}, {{sender_name}}, {{link}}, {{signature}} + toute colonne CSV. Bloc conditionnel : {{si variable}}texte si elle est remplie{{sinon}}texte sinon{{fin}} ({{sinon}} facultatif, pas d'imbrication), aussi valable dans le sujet. Une relance email sans sujet part dans le même fil (Re:). Pour une invitation LinkedIn, la note est facultative."
+      "Message body. Variables: {{first_name}}, {{last_name}}, {{company}}, {{email}}, {{sender_name}}, {{link}}, {{signature}} + any CSV column. Conditional block: {{if variable}}text if set{{else}}text otherwise{{end}} ({{else}} optional, no nesting; French {{si}}/{{sinon}}/{{fin}} still accepted), also in the subject. An email follow-up without subject goes in the same thread (Re:). For a LinkedIn invite, the note is optional."
     ),
   wait_days: z
     .number()
     .int()
     .optional()
-    .describe("Jours d'attente avant cette étape. Ignoré pour l'étape 1 (toujours 0). Défaut 3."),
-  channel: z.enum(["email", "linkedin"]).optional().describe("Canal de l'étape. Défaut « email »."),
+    .describe("Days to wait before this step. Ignored for step 1 (always 0). Default 3."),
+  channel: z.enum(["email", "linkedin"]).optional().describe("Step channel. Default \"email\"."),
   li_action: z
     .enum(["invite", "message"])
     .optional()
-    .describe("Action LinkedIn quand channel=linkedin : « invite » (avec note) ou « message »."),
+    .describe("LinkedIn action when channel=linkedin: \"invite\" (with note) or \"message\"."),
   branch: z
     .enum(["accepted", "not_accepted", ""])
     .optional()
     .describe(
-      "Après une invitation LinkedIn : étape réservée aux contacts dont l'invitation est acceptée (« accepted ») ou ne l'est pas (« not_accepted ») ; absente ou vide = tous. La première étape « accepted » doit être un message LinkedIn placé avant les étapes « not_accepted » : c'est lui qui teste l'acceptation (retenté jusqu'à ce qu'elle arrive). Le wait_days de la première étape « not_accepted » est l'échéance, comptée depuis l'envoi de l'invitation : passé ce délai sans acceptation, le contact bascule sur les étapes « not_accepted » (pas de message LinkedIn dedans). Un contact sans profil LinkedIn y va directement."
+      "After a LinkedIn invite: step only for contacts whose invite was accepted (\"accepted\") or not (\"not_accepted\"); missing or empty = everyone. The first \"accepted\" step must be a LinkedIn message placed before the \"not_accepted\" steps: it tests acceptance (retried until it happens). The first \"not_accepted\" step's wait_days is the deadline, counted from the invite: past it without acceptance, the contact switches to the \"not_accepted\" steps (no LinkedIn message in them). A contact without a LinkedIn profile goes there directly."
     ),
 });
 
 const EVENT_TYPES = ["email_sent", "replied", "opted_out", "bounced", "li_invite", "li_message", "visit"] as const;
 
 const activityShape = {
-  days: z.number().int().min(1).max(90).optional().describe("Période en jours jusqu'à maintenant (défaut 7, max 90)."),
-  campaign_id: z.number().int().optional().describe("Limiter à une campagne (défaut : toutes)."),
+  days: z.number().int().min(1).max(90).optional().describe("Period in days up to now (default 7, max 90)."),
+  campaign_id: z.number().int().optional().describe("Limit to one campaign (default: all)."),
   event_types: z
     .array(z.enum(EVENT_TYPES))
     .min(1)
     .optional()
-    .describe("Ne garder que ces types d'événements dans la liste (les totaux restent complets)."),
+    .describe("Keep only these event types in the list (totals stay complete)."),
   events_limit: z
     .number()
     .int()
     .min(0)
     .max(300)
     .optional()
-    .describe("Nombre max d'événements rendus, du plus récent au plus ancien (défaut 100 ; 0 = totaux seuls)."),
+    .describe("Max events returned, newest first (default 100; 0 = totals only)."),
 };
 type ActivityArgs = z.infer<z.ZodObject<typeof activityShape>>;
 
 const testEmailShape = {
-  to: z.string().email().describe("Destinataire du test (en général l'adresse de l'utilisateur)."),
-  campaign_id: z.number().int().describe("Campagne dont on teste une étape."),
-  step_number: z.number().int().min(1).optional().describe("Étape à tester (défaut 1). Doit être une étape email."),
+  to: z.string().email().describe("Test recipient (usually the user's address)."),
+  campaign_id: z.number().int().describe("Campaign whose step is tested."),
+  step_number: z.number().int().min(1).optional().describe("Step to test (default 1). Must be an email step."),
   account_id: z
     .number()
     .int()
     .optional()
-    .describe("Compte d'envoi (list_accounts). Défaut : 1er compte actif autorisé par la campagne."),
+    .describe("Sending account (list_accounts). Default: first active account allowed by the campaign."),
   contact_id: z
     .number()
     .int()
     .optional()
     .describe(
-      "Contact GLOBAL (contact_id, pas cc_id) dont les variables remplissent le template. Défaut : 1er contact de la campagne, sinon un contact d'exemple."
+      "GLOBAL contact (contact_id, not cc_id) whose variables fill the template. Default: the campaign's first contact, else a sample contact."
     ),
-  variant: z.enum(["A", "B"]).optional().describe("Variante du sujet pour une campagne en A/B test."),
+  variant: z.enum(["A", "B"]).optional().describe("Subject variant for an A/B-tested campaign."),
   dry_run: z
     .boolean()
     .optional()
-    .describe("true par défaut : rien n'est envoyé, le rendu est renvoyé. false = envoi réel, après accord explicite de l'utilisateur."),
+    .describe("true by default: nothing is sent, the rendering is returned. false = real send, after explicit user approval."),
 };
 type TestEmailArgs = z.infer<z.ZodObject<typeof testEmailShape>>;
 
 const previewCampaignShape = {
-  campaign_id: z.number().int().describe("Campagne à vérifier."),
+  campaign_id: z.number().int().describe("Campaign to check."),
   status: statusFilter.describe(
-    "Contacts vérifiés : un statut ou une liste. Défaut : ceux à qui il reste des envois (held, pending, in_progress, awaiting_li)."
+    "Contacts checked: one status or a list. Default: those with sends left (held, pending, in_progress, awaiting_li)."
   ),
   samples: z
     .number()
@@ -95,80 +94,80 @@ const previewCampaignShape = {
     .min(0)
     .max(5)
     .optional()
-    .describe("Nombre de contacts dont les étapes restantes sont rendues en entier, dans l'ordre des cc_id (défaut 1 ; 0 = aucun rendu)."),
-  limit: z.number().int().min(1).max(500).optional().describe("Nombre max de contacts incomplets détaillés (défaut 50)."),
+    .describe("Number of contacts whose remaining steps are fully rendered, in cc_id order (default 1; 0 = none)."),
+  limit: z.number().int().min(1).max(500).optional().describe("Max incomplete contacts detailed (default 50)."),
 };
 type PreviewCampaignArgs = z.infer<z.ZodObject<typeof previewCampaignShape>>;
 
 const DESCRIPTION =
-  "Description de la campagne : à qui elle s'adresse, quels contacts y mettre et lesquels écarter (poste, nature et taille d'entreprise…), l'angle du message. Écrite pour qu'un agent sache, sans autre contexte, si un contact y a sa place.";
+  "Campaign description: who it targets, which contacts to include and exclude (role, company type and size…), the message angle. Written so an agent can tell, with no other context, whether a contact belongs.";
 
 const createShape = {
-  name: z.string().describe("Nom de la campagne."),
+  name: z.string().describe("Campaign name."),
   description: z.string().optional().describe(DESCRIPTION),
-  steps: z.array(stepSchema).min(1).describe("Séquence ordonnée d'étapes (au moins une)."),
+  steps: z.array(stepSchema).min(1).describe("Ordered sequence of steps (at least one)."),
   account_ids: z
     .array(z.number().int())
     .min(1)
     .optional()
-    .describe("Comptes d'envoi autorisés (ids de list_accounts). Omis = tous les comptes, y compris les futurs."),
+    .describe("Allowed sending accounts (ids from list_accounts). Omitted = all accounts, including future ones."),
   li_account_ids: z
     .array(z.number().int())
     .min(1)
     .optional()
-    .describe("Comptes LinkedIn autorisés (ids de list_linkedin_accounts). Omis = tous les comptes LinkedIn."),
+    .describe("Allowed LinkedIn accounts (ids from list_linkedin_accounts). Omitted = all LinkedIn accounts."),
   contacts: contactsList
     .optional()
-    .describe("Contacts à importer dans la foulée, au même format qu'import_contacts : ils arrivent en 'held', rien n'est envoyé."),
+    .describe("Contacts to import right away, same format as import_contacts: they arrive 'held', nothing is sent."),
   campaign_vars: campaignVars,
 };
 type CreateArgs = z.infer<z.ZodObject<typeof createShape>>;
 
 const updateShape = {
-  campaign_id: z.number().int().describe("Identifiant de la campagne."),
-  name: z.string().min(1).optional().describe("Nouveau nom. Omis = inchangé."),
-  description: z.string().optional().describe(`${DESCRIPTION} Remplace l'existante ; chaîne vide = l'effacer ; omis = inchangée.`),
+  campaign_id: z.number().int().describe("Campaign id."),
+  name: z.string().min(1).optional().describe("New name. Omitted = unchanged."),
+  description: z.string().optional().describe(`${DESCRIPTION} Replaces the current one; empty string = clear it; omitted = unchanged.`),
   steps: z
     .array(stepSchema)
     .min(1)
     .optional()
-    .describe("Séquence COMPLÈTE qui remplace l'existante. Omis = séquence inchangée ; pour une seule étape, update_step."),
+    .describe("FULL sequence replacing the current one. Omitted = unchanged; for a single step, use update_step."),
   account_ids: z
     .union([z.array(z.number().int()).min(1), z.null()])
     .optional()
-    .describe("Comptes d'envoi autorisés (ids de list_accounts). null = tous les comptes ; omis = sélection inchangée."),
+    .describe("Allowed sending accounts (ids from list_accounts). null = all accounts; omitted = unchanged."),
   li_account_ids: z
     .union([z.array(z.number().int()).min(1), z.null()])
     .optional()
     .describe(
-      "Comptes LinkedIn autorisés (ids de list_linkedin_accounts). null = tous ; omis = inchangé. Un contact déjà abordé reste à son compte."
+      "Allowed LinkedIn accounts (ids from list_linkedin_accounts). null = all; omitted = unchanged. A contact already approached stays with its account."
     ),
 };
 type UpdateArgs = z.infer<z.ZodObject<typeof updateShape>>;
 
 const updateStepShape = {
-  campaign_id: z.number().int().describe("Identifiant de la campagne."),
-  step_number: z.number().int().min(1).describe("Numéro de l'étape à modifier (1 = première)."),
+  campaign_id: z.number().int().describe("Campaign id."),
+  step_number: z.number().int().min(1).describe("Number of the step to edit (1 = first)."),
   ...stepSchema.shape,
 };
 type UpdateStepArgs = z.infer<z.ZodObject<typeof updateStepShape>>;
 
-/** Garde les champs fournis (undefined = non fourni ; null est une valeur). */
+/** Keeps provided fields (undefined = not provided; null is a value). */
 function provided(fields: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
 }
 
 export function registerCampaignTools(server: McpServer): void {
-  // ---------------------------------------------------------------- lecture
+  // ---------------------------------------------------------------- read
 
   server.registerTool(
     "list_campaigns",
     {
-      title: "Lister les campagnes",
+      title: "List campaigns",
       description:
-        "Liste les campagnes avec leur description (à qui chacune s'adresse, quels contacts y mettre) et leurs statistiques : statut (active/paused/archived), nombre de contacts par état, emails envoyés, visites du lien {{link}}, taux de réponse (global, et par variante s'il y a un A/B test), progression. Un compteur ou un taux absent vaut 0. Les campagnes archivées sont masquées par défaut (archived_hidden en donne le nombre) : include_archived: true pour les voir. À utiliser pour avoir une vue d'ensemble avant toute action, et pour choisir la campagne d'un contact.",
+        "Lists campaigns with their description (who each targets, which contacts belong) and stats: status (active/paused/archived), contacts per state, emails sent, {{link}} visits, reply rate (overall, and per variant with an A/B test), progress. A missing counter or rate means 0. Archived campaigns are hidden by default (archived_hidden gives their count): include_archived: true to see them. Use for an overview before any action, and to pick a contact's campaign.",
       inputSchema: {
-        include_archived: z.boolean().optional().describe("true = inclure les campagnes archivées (défaut false)."),
+        include_archived: z.boolean().optional().describe("true = include archived campaigns (default false)."),
       },
       annotations: READ,
     },
@@ -186,10 +185,10 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "get_campaign",
     {
-      title: "Détail d'une campagne",
+      title: "Campaign detail",
       description:
-        "Renvoie le détail d'une campagne (description comprise) et la liste ordonnée de ses étapes (sujet, corps, wait_days, channel, li_action, branch). variables : les variables de personnalisation de la séquence (hors first_name, company… que l'app remplit) avec leur consigne (instruction : ce que la variable contient, sa longueur, son ton) — à lire avant de remplir une variable pour des contacts ; sans instruction, demande à l'utilisateur. account_ids / li_account_ids absents = tous les comptes ; une relance sans subject part dans le fil du premier email. À lire avant de modifier le texte d'une étape (update_step) ou la séquence (update_campaign).",
-      inputSchema: { campaign_id: z.number().int().describe("Identifiant de la campagne.") },
+        "Returns a campaign's detail (description included) and its ordered steps (subject, body, wait_days, channel, li_action, branch). variables: the sequence's personalization variables (excluding first_name, company… which the app fills) with their instruction (what the variable holds, its length, its tone); read before filling a variable for contacts; without an instruction, ask the user. Missing account_ids / li_account_ids = all accounts; a follow-up without subject goes in the first email's thread. Read before editing a step's text (update_step) or the sequence (update_campaign).",
+      inputSchema: { campaign_id: z.number().int().describe("Campaign id.") },
       annotations: READ,
     },
     handler(({ campaign_id }: { campaign_id: number }) => api("GET", `/api/campaigns/${campaign_id}`))
@@ -198,9 +197,9 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "list_variable_instructions",
     {
-      title: "Consignes des variables",
+      title: "Variable instructions",
       description:
-        "Renvoie la consigne de chaque variable de personnalisation ({{personnalisation}}…) qui en a une : {variable: consigne}. Une consigne vaut pour toutes les campagnes. Pour celles d'une séquence précise, get_campaign suffit.",
+        "Returns the instruction of each personalization variable ({{personalization}}…) that has one: {variable: instruction}. An instruction applies to all campaigns. For one sequence's variables, get_campaign is enough.",
       inputSchema: {},
       annotations: READ,
     },
@@ -210,12 +209,12 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "set_variable_instruction",
     {
-      title: "Écrire la consigne d'une variable",
+      title: "Set a variable instruction",
       description:
-        "Écrit la consigne d'une variable de personnalisation : ce qu'elle contient, sa longueur, son ton, où chercher l'information. Remplace l'existante, pour toutes les campagnes qui utilisent la variable ; chaîne vide = la retirer. Écrite pour qu'un agent qui remplit la variable des contacts n'ait rien d'autre à demander.",
+        "Writes a personalization variable's instruction: what it holds, its length, its tone, where to find the information. Replaces the current one, for every campaign using the variable; empty string = remove it. Written so an agent filling the variable for contacts has nothing else to ask.",
       inputSchema: {
-        name: z.string().describe("Nom de la variable, sans accolades (ex. personnalisation)."),
-        instruction: z.string().describe("Consigne ; chaîne vide = la retirer."),
+        name: z.string().describe("Variable name, without braces (e.g. personalization)."),
+        instruction: z.string().describe("Instruction; empty string = remove it."),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
@@ -227,9 +226,9 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "get_activity",
     {
-      title: "Journal d'activité",
+      title: "Activity log",
       description:
-        "Ce qui s'est passé sur une période (défaut 7 jours), toutes campagnes ou une seule : totaux (emails envoyés, réponses, désinscriptions, bounces, invitations et messages LinkedIn, visites du lien hors robots) et liste d'événements du plus récent au plus ancien (type, campagne, contact avec cc_id et contact_id, étape, compte). Le serveur rend au plus 300 événements ; events_limit réduit encore la liste. Dates en ISO 8601 (UTC).",
+        "What happened over a period (default 7 days), all campaigns or one: totals (emails sent, replies, opt-outs, bounces, LinkedIn invites and messages, link visits excluding bots) and events newest first (type, campaign, contact with cc_id and contact_id, step, account). The server returns at most 300 events; events_limit trims further. Dates in ISO 8601 (UTC).",
       inputSchema: activityShape,
       annotations: READ,
     },
@@ -260,15 +259,15 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "preview_email",
     {
-      title: "Aperçu d'un email",
+      title: "Email preview",
       description:
-        "Rend un sujet et un corps avec les variables résolues, sur un vrai contact de la campagne (ou un contact d'exemple), signature du compte incluse. Sans effet de bord. Utile pour vérifier le rendu d'un template avant de créer/modifier une campagne ; pour tester une étape existante telle qu'elle partira, voir send_test_email.",
+        "Renders a subject and body with variables resolved, on a real campaign contact (or a sample contact), account signature included. No side effects. Useful to check a template before creating/editing a campaign; to test an existing step exactly as it will be sent, see send_test_email.",
       inputSchema: {
-        subject: z.string().optional().describe("Sujet à prévisualiser."),
-        body: z.string().optional().describe("Corps à prévisualiser."),
-        account_id: z.number().int().optional().describe("Compte d'envoi pour la signature (défaut : premier actif)."),
-        campaign_id: z.number().int().optional().describe("Campagne dont on prend le 1er contact comme exemple."),
-        contact_id: z.number().int().optional().describe("Contact global (contact_id) précis à utiliser comme exemple."),
+        subject: z.string().optional().describe("Subject to preview."),
+        body: z.string().optional().describe("Body to preview."),
+        account_id: z.number().int().optional().describe("Sending account for the signature (default: first active)."),
+        campaign_id: z.number().int().optional().describe("Campaign whose first contact is used as the sample."),
+        contact_id: z.number().int().optional().describe("Specific global contact (contact_id) to use as the sample."),
       },
       annotations: READ,
     },
@@ -278,9 +277,9 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "preview_campaign",
     {
-      title: "Aperçu d'une campagne sur tous ses contacts",
+      title: "Campaign preview across all contacts",
       description:
-        "Vérifie, sans rien envoyer, ce que chaque contact d'une campagne recevra : les variables des étapes restant à lui envoyer sont résolues comme à l'envoi (champs du contact, variables de campagne). Renvoie checked (contacts vérifiés) et ready (aucune variable vide) ; steps (variables de chaque étape, skipped = contacts qui sauteront l'étape faute d'email ou de profil LinkedIn) ; missing (par variable : nombre de contacts où elle est vide, all: true = vide chez tous, donc nom à vérifier ; gender_form: true = seulement un accord {{genre:…|…}}, rendu au masculin) ; incomplete (contacts concernés avec cc_id, contact_id et variables vides — corriger avec update_contact ou un réimport) ; warnings (signature absente d'un compte, variables d'expéditeur vides sur LinkedIn…) ; samples (rendu complet des étapes pour les premiers contacts). À appeler avant launch_contacts : remplace les essais contact par contact.",
+        "Checks, without sending anything, what each campaign contact will receive: variables of the steps left to send are resolved as at send time (contact fields, campaign variables). Returns checked (contacts checked) and ready (no empty variable); steps (each step's variables, skipped = contacts that will skip the step for lack of email or LinkedIn profile); missing (per variable: number of contacts where it's empty; all: true = empty for everyone, so check the name; gender_form: true = only a {{genre:…|…}} agreement, rendered masculine); incomplete (affected contacts with cc_id, contact_id and empty variables; fix with update_contact or a re-import); warnings (account without signature, empty sender variables on LinkedIn…); samples (full step rendering for the first contacts). Call before launch_contacts: replaces contact-by-contact trials.",
       inputSchema: previewCampaignShape,
       annotations: READ,
     },
@@ -297,9 +296,9 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "send_test_email",
     {
-      title: "Email de test d'une étape",
+      title: "Step test email",
       description:
-        "Rend une étape email d'une campagne exactement comme le scheduler (variables du contact, {{sender_name}}, {{link}} d'exemple, {{signature}} ; une relance sans sujet devient « Re: » + sujet de l'étape 1) et l'envoie à l'adresse « to », sujet préfixé [TEST]. Ne touche ni quotas, ni statuts, ni historique. dry_run vaut true par défaut : rien n'est envoyé et le rendu (from, to, subject, body) est renvoyé. Pour envoyer réellement : montre d'abord ce rendu, puis rappelle avec dry_run: false après accord explicite de l'utilisateur. Refusé pour une étape LinkedIn (le corps rendu figure dans l'erreur).",
+        "Renders a campaign email step exactly like the scheduler (contact variables, {{sender_name}}, sample {{link}}, {{signature}}; a follow-up without subject becomes \"Re: \" + step 1 subject) and sends it to \"to\", subject prefixed [TEST]. Touches no quotas, statuses or history. dry_run defaults to true: nothing is sent and the rendering (from, to, subject, body) is returned. To really send: show this rendering first, then call again with dry_run: false after explicit user approval. Refused for a LinkedIn step (the rendered body is in the error).",
       inputSchema: testEmailShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
@@ -308,26 +307,26 @@ export function registerCampaignTools(server: McpServer): void {
         return await api("POST", "/api/test-email", { json: { ...rest, dry_run: dry_run ?? true } });
       } catch (err) {
         const rendered = err instanceof ApiError ? (err.data as { rendered_body?: unknown } | null)?.rendered_body : undefined;
-        if (typeof rendered === "string") throw new Error(`${err instanceof Error ? err.message : err}\n\nCorps rendu :\n${rendered}`);
+        if (typeof rendered === "string") throw new Error(`${err instanceof Error ? err.message : err}\n\nRendered body:\n${rendered}`);
         throw err;
       }
     })
   );
 
-  // ---------------------------------------------------------------- écriture
+  // ---------------------------------------------------------------- write
 
   server.registerTool(
     "create_campaign",
     {
-      title: "Créer une campagne",
+      title: "Create a campaign",
       description:
-        "Crée une campagne avec sa séquence d'étapes et, si contacts est fourni, y importe ces contacts dans le même appel (mêmes règles qu'import_contacts ; le résultat porte alors le rapport d'import). Toujours renseigner description. La campagne démarre EN PAUSE ('paused') et ses contacts en 'held' — rien n'est envoyé avant launch_contacts. La 1re étape email doit avoir un sujet ; chaque étape doit avoir un corps (sauf une invitation LinkedIn dont la note est facultative). Renvoie { id } ; d'autres contacts s'ajoutent ensuite avec import_contacts / import_contacts_csv.",
+        "Creates a campaign with its step sequence and, if contacts is given, imports them in the same call (same rules as import_contacts; the result then includes the import report). Always fill description. The campaign starts PAUSED ('paused') and its contacts 'held': nothing is sent before launch_contacts. The first email step needs a subject; every step needs a body (except a LinkedIn invite, whose note is optional). Returns { id }; add more contacts later with import_contacts / import_contacts_csv.",
       inputSchema: createShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     handler(async ({ contacts, campaign_vars, ...campaign }: CreateArgs) => {
-      if (campaign_vars && !contacts) throw new Error("campaign_vars ne s'utilise qu'avec contacts.");
-      // Contacts validés avant la création : un champ invalide ne laisse pas de campagne vide derrière lui
+      if (campaign_vars && !contacts) throw new Error("campaign_vars only works with contacts.");
+      // Validate contacts before creating: an invalid field doesn't leave an empty campaign behind
       const table = contacts ? buildImportCsv(contacts as Array<Record<string, unknown>>) : null;
       const vars = table ? checkCampaignVars(campaign_vars, table.columns) : [];
       const created = (await api("POST", "/api/campaigns", { json: campaign })) as { id: number };
@@ -337,7 +336,7 @@ export function registerCampaignTools(server: McpServer): void {
       } catch (err) {
         return {
           ...created,
-          import_error: `${err instanceof Error ? err.message : err} — la campagne est créée, sans contact : corrige puis import_contacts.`,
+          import_error: `${err instanceof Error ? err.message : err} — the campaign was created without contacts: fix, then import_contacts.`,
         };
       }
     })
@@ -346,15 +345,15 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "update_campaign",
     {
-      title: "Modifier une campagne",
+      title: "Update a campaign",
       description:
-        "Modifie une campagne, y compris en cours : seuls les champs fournis changent (nom, description, comptes d'envoi, comptes LinkedIn, séquence). steps, s'il est fourni, remplace TOUTE la séquence — pour changer le texte, le délai ou le canal d'une seule étape, préfère update_step. Les contacts gardent leur avancement ; les prochains envois utilisent le nouveau contenu.",
+        "Updates a campaign, even while running: only provided fields change (name, description, sending accounts, LinkedIn accounts, sequence). steps, if given, replaces the WHOLE sequence; to change one step's text, delay or channel, prefer update_step. Contacts keep their progress; upcoming sends use the new content.",
       inputSchema: updateShape,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     handler(({ campaign_id, ...fields }: UpdateArgs) => {
       const body = provided(fields);
-      if (!Object.keys(body).length) throw new Error("Aucun champ à modifier.");
+      if (!Object.keys(body).length) throw new Error("No field to update.");
       return api("PATCH", `/api/campaigns/${campaign_id}`, { json: body });
     })
   );
@@ -362,15 +361,15 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "update_step",
     {
-      title: "Modifier une étape",
+      title: "Update a step",
       description:
-        "Modifie UNE étape d'une campagne sans renvoyer le reste de la séquence : seuls les champs fournis changent (subject, subject_b, body, wait_days, channel, li_action, branch). Une chaîne vide efface le champ : subject vide sur une relance = même fil que le premier email, subject_b vide = fin de l'A/B test. Le corps est remplacé en entier (pas de modification partielle du texte) : lis-le d'abord avec get_campaign. La séquence obtenue doit rester valide (sujet sur le premier email, corps sur chaque étape hors invitation). Les contacts gardent leur avancement ; les prochains envois de cette étape utilisent le nouveau contenu. Renvoie l'étape telle qu'enregistrée.",
+        "Updates ONE campaign step without resending the rest of the sequence: only provided fields change (subject, subject_b, body, wait_days, channel, li_action, branch). An empty string clears the field: empty subject on a follow-up = same thread as the first email, empty subject_b = ends the A/B test. The body is replaced whole (no partial text edits): read it first with get_campaign. The resulting sequence must stay valid (subject on the first email, body on every step except invites). Contacts keep their progress; upcoming sends of this step use the new content. Returns the step as saved.",
       inputSchema: updateStepShape,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     handler(({ campaign_id, step_number, ...fields }: UpdateStepArgs) => {
       const body = provided(fields);
-      if (!Object.keys(body).length) throw new Error("Aucun champ à modifier.");
+      if (!Object.keys(body).length) throw new Error("No field to update.");
       return api("PATCH", `/api/campaigns/${campaign_id}/steps/${step_number}`, { json: body });
     })
   );
@@ -378,10 +377,10 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "delete_campaign",
     {
-      title: "Supprimer une campagne",
+      title: "Delete a campaign",
       description:
-        "Supprime DÉFINITIVEMENT une campagne, ses étapes, les inscriptions de contacts et l'historique d'envois associé (cascade). Les contacts globaux sont conservés. Irréversible — à confirmer avec l'utilisateur avant d'appeler.",
-      inputSchema: { campaign_id: z.number().int().describe("Identifiant de la campagne à supprimer.") },
+        "PERMANENTLY deletes a campaign, its steps, contact enrollments and related send history (cascade). Global contacts are kept. Irreversible: confirm with the user before calling.",
+      inputSchema: { campaign_id: z.number().int().describe("Id of the campaign to delete.") },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     handler(({ campaign_id }: { campaign_id: number }) => api("DELETE", `/api/campaigns/${campaign_id}`))
@@ -390,9 +389,9 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "pause_campaign",
     {
-      title: "Mettre en pause une campagne",
-      description: "Passe la campagne en statut 'paused' : aucun nouvel envoi tant qu'elle n'est pas reprise.",
-      inputSchema: { campaign_id: z.number().int().describe("Identifiant de la campagne.") },
+      title: "Pause a campaign",
+      description: "Sets the campaign to 'paused': no new sends until resumed.",
+      inputSchema: { campaign_id: z.number().int().describe("Campaign id.") },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     handler(({ campaign_id }: { campaign_id: number }) => api("POST", `/api/campaigns/${campaign_id}/pause`))
@@ -401,10 +400,10 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "resume_campaign",
     {
-      title: "Reprendre une campagne",
+      title: "Resume a campaign",
       description:
-        "Passe la campagne en statut 'active' : les envois (emails et actions LinkedIn) reprennent pour les contacts en 'pending'/'in_progress', dans la fenêtre d'envoi et selon les quotas. Déclenche de vrais envois : à confirmer avec l'utilisateur.",
-      inputSchema: { campaign_id: z.number().int().describe("Identifiant de la campagne.") },
+        "Sets the campaign to 'active': sends (emails and LinkedIn actions) resume for 'pending'/'in_progress' contacts, within the send window and quotas. Triggers real sends: confirm with the user.",
+      inputSchema: { campaign_id: z.number().int().describe("Campaign id.") },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     handler(({ campaign_id }: { campaign_id: number }) => api("POST", `/api/campaigns/${campaign_id}/resume`))
@@ -413,10 +412,10 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "archive_campaign",
     {
-      title: "Archiver une campagne",
+      title: "Archive a campaign",
       description:
-        "Passe la campagne en statut 'archived' : elle reste consultable (séquence, contacts, statistiques) et rangée à part dans l'app, mais n'envoie plus rien et ne peut être ni reprise ni relancée tant qu'elle est archivée. Rien n'est supprimé. À préférer à delete_campaign pour ranger une campagne terminée.",
-      inputSchema: { campaign_id: z.number().int().describe("Identifiant de la campagne.") },
+        "Sets the campaign to 'archived': it stays viewable (sequence, contacts, stats) and filed separately in the app, but sends nothing and can't be resumed or launched while archived. Nothing is deleted. Prefer it over delete_campaign to put away a finished campaign.",
+      inputSchema: { campaign_id: z.number().int().describe("Campaign id.") },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     handler(({ campaign_id }: { campaign_id: number }) => api("POST", `/api/campaigns/${campaign_id}/archive`))
@@ -425,9 +424,9 @@ export function registerCampaignTools(server: McpServer): void {
   server.registerTool(
     "unarchive_campaign",
     {
-      title: "Désarchiver une campagne",
-      description: "Sort la campagne des archives : elle revient en statut 'paused', sans aucun envoi (resume_campaign pour la reprendre).",
-      inputSchema: { campaign_id: z.number().int().describe("Identifiant de la campagne.") },
+      title: "Unarchive a campaign",
+      description: "Takes the campaign out of the archive: it returns to 'paused', with no sends (resume_campaign to resume it).",
+      inputSchema: { campaign_id: z.number().int().describe("Campaign id.") },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     handler(({ campaign_id }: { campaign_id: number }) => api("POST", `/api/campaigns/${campaign_id}/unarchive`))

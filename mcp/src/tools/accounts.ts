@@ -1,5 +1,5 @@
 /**
- * Comptes d'envoi Google : liste, connexion (lien OAuth), réglages ; paramètres de l'app.
+ * Google sending accounts: list, connect (OAuth link), settings; app settings.
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -7,7 +7,7 @@ import { api, PUBLIC_URL } from "../api.js";
 import { isoDates } from "../lib.js";
 import { handler, READ } from "./common.js";
 
-/** Hôte joignable seulement depuis un réseau interne (ex. http://sequence-app:3000) ? */
+/** Host only reachable from an internal network (e.g. http://sequence-app:3000)? */
 export function looksInternal(url: string): boolean {
   try {
     const host = new URL(url).hostname;
@@ -21,9 +21,9 @@ export function registerAccountTools(server: McpServer): void {
   server.registerTool(
     "list_accounts",
     {
-      title: "Lister les comptes d'envoi",
+      title: "List sending accounts",
       description:
-        "Liste les comptes Google connectés : id, email, nom d'expéditeur, signature, quota quotidien, quota effectif du jour (warm-up appliqué), envois déjà faits aujourd'hui, actif/inactif, warm-up on/off. Pour en ajouter un : connect_google_account.",
+        "Lists connected Google accounts: id, email, sender name, signature, daily quota, today's effective quota (with warm-up), sends so far today, active/inactive, warm-up on/off. To add one: connect_google_account.",
       inputSchema: {},
       annotations: READ,
     },
@@ -33,9 +33,9 @@ export function registerAccountTools(server: McpServer): void {
   server.registerTool(
     "connect_google_account",
     {
-      title: "Connecter un compte Google",
+      title: "Connect a Google account",
       description:
-        "Donne le lien OAuth à ouvrir dans un navigateur pour connecter (ou reconnecter, s'il a expiré) un compte d'envoi Google Workspace, avec la marche à suivre. Le clic d'autorisation Google se fait forcément hors de Claude, par l'utilisateur. N'a aucun effet tant que le lien n'est pas ouvert ; ensuite list_accounts montre le compte.",
+        "Gives the OAuth link to open in a browser to connect (or reconnect, if expired) a Google Workspace sending account, with instructions. The Google consent click is necessarily done by the user, outside Claude. No effect until the link is opened; then list_accounts shows the account.",
       inputSchema: {},
       annotations: READ,
     },
@@ -45,32 +45,32 @@ export function registerAccountTools(server: McpServer): void {
       try {
         googleConfigured = ((await api("GET", "/api/settings")) as { google_configured?: boolean })?.google_configured;
       } catch {
-        // app injoignable : on donne quand même le lien
+        // app unreachable: still give the link
       }
       const lines = [
-        `Lien de connexion Google : ${url}`,
+        `Google connection link: ${url}`,
         "",
-        "Marche à suivre (dans le navigateur de l'utilisateur) :",
-        "1. Ouvrir le lien ci-dessus.",
-        "2. Si une fenêtre d'identification apparaît, saisir l'utilisateur et le mot de passe du dashboard Sequence Mail.",
-        "3. Choisir le compte Google Workspace qui enverra les emails.",
-        "4. Accepter les autorisations demandées (envoyer des emails, lire Gmail pour détecter les réponses, adresse email). Le navigateur revient sur la page Réglages de l'app, compte connecté.",
-        "5. Revenir ici : list_accounts affiche le nouveau compte (id, quota, warm-up).",
+        "Steps (in the user's browser):",
+        "1. Open the link above.",
+        "2. If a login prompt appears, enter the Sequence Mail dashboard username and password.",
+        "3. Pick the Google Workspace account that will send the emails.",
+        "4. Accept the requested permissions (send emails, read Gmail to detect replies, email address). The browser returns to the app's Settings page, account connected.",
+        "5. Come back here: list_accounts shows the new account (id, quota, warm-up).",
         "",
-        "- Un compte par passage : recommencer pour chaque adresse d'envoi.",
-        "- Le même lien reconnecte un compte expiré ou révoqué (choisir la même adresse) : ses réglages sont conservés et il est réactivé.",
-        "- Un nouveau compte démarre avec le warm-up (quota quotidien qui monte progressivement) ; quota, nom d'expéditeur et signature se règlent avec update_account.",
+        "- One account per pass: repeat for each sending address.",
+        "- The same link reconnects an expired or revoked account (pick the same address): its settings are kept and it is reactivated.",
+        "- A new account starts with warm-up (daily quota ramping up); quota, sender name and signature are set with update_account.",
       ];
       if (googleConfigured === false) {
         lines.push(
           "",
-          "ATTENTION : l'app n'a pas d'identifiants OAuth Google configurés (GOOGLE_CLIENT_ID…) : le lien échouera tant que ce n'est pas réglé côté serveur."
+          "WARNING: the app has no Google OAuth credentials configured (GOOGLE_CLIENT_ID…): the link will fail until this is set on the server."
         );
       }
       if (looksInternal(PUBLIC_URL)) {
         lines.push(
           "",
-          `ATTENTION : ${PUBLIC_URL} ressemble à une adresse interne, injoignable depuis un navigateur. Utiliser l'URL publique de l'app (variable SEQUENCE_MAIL_PUBLIC_URL du MCP).`
+          `WARNING: ${PUBLIC_URL} looks like an internal address, unreachable from a browser. Use the app's public URL (the MCP's SEQUENCE_MAIL_PUBLIC_URL variable).`
         );
       }
       return lines.join("\n");
@@ -80,24 +80,24 @@ export function registerAccountTools(server: McpServer): void {
   server.registerTool(
     "update_account",
     {
-      title: "Modifier un compte d'envoi",
+      title: "Update a sending account",
       description:
-        "Met à jour un compte Google connecté : quota quotidien, actif/inactif, nom d'expéditeur, signature, warm-up on/off. Seuls les champs fournis sont modifiés. account_id accepte une liste pour appliquer les mêmes réglages à plusieurs comptes en un appel.",
+        "Updates a connected Google account: daily quota, active/inactive, sender name, signature, warm-up on/off. Only provided fields change. account_id accepts a list to apply the same settings to several accounts in one call.",
       inputSchema: {
         account_id: z
           .union([z.number().int(), z.array(z.number().int()).min(1)])
-          .describe("Identifiant du compte (list_accounts), ou liste d'identifiants à régler de la même façon."),
-        daily_limit: z.number().int().optional().describe("Quota d'envoi quotidien."),
-        active: z.boolean().optional().describe("Activer/désactiver le compte pour les envois."),
-        from_name: z.string().optional().describe("Nom affiché dans le champ « De »."),
-        signature: z.string().optional().describe("Signature (insérée via {{signature}})."),
-        warmup: z.boolean().optional().describe("Activer la montée en charge progressive."),
+          .describe("Account id (list_accounts), or a list of ids to set the same way."),
+        daily_limit: z.number().int().optional().describe("Daily sending quota."),
+        active: z.boolean().optional().describe("Enable/disable the account for sending."),
+        from_name: z.string().optional().describe("Name shown in the \"From\" field."),
+        signature: z.string().optional().describe("Signature (inserted via {{signature}})."),
+        warmup: z.boolean().optional().describe("Enable progressive warm-up."),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     handler(async ({ account_id, ...fields }: { account_id: number | number[] } & Record<string, unknown>) => {
       const body = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
-      if (!Object.keys(body).length) throw new Error("Aucun champ à modifier.");
+      if (!Object.keys(body).length) throw new Error("No field to update.");
       if (!Array.isArray(account_id)) return api("PATCH", `/api/accounts/${account_id}`, { json: body });
       const ids = [...new Set(account_id)];
       for (const id of ids) await api("PATCH", `/api/accounts/${id}`, { json: body });
@@ -108,10 +108,10 @@ export function registerAccountTools(server: McpServer): void {
   server.registerTool(
     "delete_google_account",
     {
-      title: "Supprimer un compte d'envoi",
+      title: "Delete a sending account",
       description:
-        "Supprime DÉFINITIVEMENT un compte Google, qui doit être désactivé au préalable (update_account active: false). Efface aussi son historique d'envois (le compteur « emails envoyés » des campagnes baisse ; statuts et taux de réponse inchangés), arrête ses contacts encore en séquence (leurs relances ne peuvent partir que de lui), détache son fil Gmail et le retire des sélections de comptes des campagnes (une sélection vidée repasse à « tous les comptes »). Irréversible : annoncer ces effets (nombre d'envois et de contacts, via list_campaign_contacts) et obtenir l'accord explicite de l'utilisateur avant d'appeler.",
-      inputSchema: { account_id: z.number().int().describe("Identifiant du compte (list_accounts).") },
+        "PERMANENTLY deletes a Google account, which must be deactivated first (update_account active: false). Also erases its send history (campaigns' \"emails sent\" counter drops; statuses and reply rates unchanged), stops its contacts still in sequence (their follow-ups can only come from it), detaches its Gmail thread and removes it from campaigns' account selections (an emptied selection reverts to \"all accounts\"). Irreversible: state these effects (number of sends and contacts, via list_campaign_contacts) and get the user's explicit approval before calling.",
+      inputSchema: { account_id: z.number().int().describe("Account id (list_accounts).") },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     handler(({ account_id }: { account_id: number }) => api("DELETE", `/api/accounts/${account_id}`))
@@ -120,9 +120,9 @@ export function registerAccountTools(server: McpServer): void {
   server.registerTool(
     "get_settings",
     {
-      title: "Paramètres de l'app",
+      title: "App settings",
       description:
-        "Paramètres effectifs (lecture seule, issus du .env) et horloge des envois. server : heure du serveur, son fuseau (timezone, utc_offset) et local_time. Les heures de la fenêtre d'envoi (deliverability.sendWindowStart / sendWindowEnd) se lisent dans le fuseau deliverability.sendWindowTimezone, pas dans celui du serveur ni de l'utilisateur. send_window : open, avec closes_at si elle est ouverte ou opens_at sinon. next_email : earliest_at = prochain envoi d'email au plus tôt (estimation : contacts dus, fenêtre, quotas et repos des comptes), due_now = emails dus dès maintenant, reason s'il n'y a rien à envoyer ou si un quota bloque. Puis deliverability (quotas, délais, warm-up) et si Google et Attio sont configurés. Dates en ISO 8601 (UTC).",
+        "Effective settings (read-only, from .env) and send clock. server: server time, its timezone (timezone, utc_offset) and local_time. Send window hours (deliverability.sendWindowStart / sendWindowEnd) are in the deliverability.sendWindowTimezone timezone, not the server's or the user's. send_window: open, with closes_at if open or opens_at otherwise. next_email: earliest_at = earliest next email send (estimate: due contacts, window, quotas and account rest), due_now = emails due right now, reason if nothing to send or a quota blocks. Then deliverability (quotas, delays, warm-up) and whether Google and Attio are configured. Dates in ISO 8601 (UTC).",
       inputSchema: {},
       annotations: READ,
     },

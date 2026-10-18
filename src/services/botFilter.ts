@@ -1,37 +1,32 @@
 /**
- * Détection minimale des bots / scanners sur les visites du lien {{link}}.
- *
- * Les passerelles de sécurité email (Microsoft Defender « Safe Links », Proofpoint,
- * Mimecast, Barracuda…) ouvrent automatiquement les liens dès la livraison, ce qui
- * gonfle artificiellement le nombre de « visites ». On les écarte sur trois signaux
- * robustes et sans dépendance externe : le user-agent, la plage d'IP (datacenter) et
- * le délai envoi→clic (un clic en quelques secondes ne peut pas être humain).
+ * Minimal bot / scanner detection for {{link}} visits.
+ * Email security gateways (Microsoft Defender "Safe Links", Proofpoint, Mimecast, Barracuda…) open
+ * links on delivery, inflating "visits". They are filtered on three robust signals with no external
+ * dependency: user-agent, IP range (datacenter) and send→click delay (a click within seconds can't
+ * be human).
  */
 
 import { config } from "../config.js";
 
 export interface VisitVerdict {
-  /** true = visite d'un bot/scanner (à exclure des stats). */
+  /** true = bot/scanner visit (excluded from stats). */
   bot: boolean;
-  /** Motif court du classement ("" si humain). */
+  /** Short reason for the verdict ("" if human). */
   reason: string;
 }
 
-// User-agents d'outils ou de scanners explicites.
+// Explicit tool or scanner user-agents.
 const UA_BOT =
   /(bot|spider|crawl|slurp|preview|proofpoint|urldefense|barracuda|mimecast|messagelabs|symantec|forcepoint|cloudmark|googleimageproxy|appengine|curl|wget|python-|go-http-client|java\/|libwww|okhttp|axios|node-fetch|headless|phantom|puppeteer|selenium|playwright|monitor|uptime|pingdom)/i;
 
-// Un vrai navigateur grand public porte toujours un jeton produit final
-// (Chrome/Firefox/Safari+Version/Edg…). Beaucoup de scanners s'arrêtent à
-// "(KHTML, like Gecko)" sans jeton : on les considère alors comme non humains.
+// A real consumer browser always carries a product token (Chrome/Firefox/Safari+Version/Edg…). Many
+// scanners stop at "(KHTML, like Gecko)" with none: treated as non-human.
 const REAL_BROWSER =
   /(Chrome|Chromium|CriOS)\/\d|(Firefox|FxiOS)\/\d|Version\/\d[\d.]* (Mobile\/\w+ )?Safari|Edg(A|iOS)?\/\d|OPR\/\d|SamsungBrowser\/\d|YaBrowser\/\d/i;
 
-// Plages d'IP de datacenters / hébergeurs / VPS d'où sortent les scanners et bacs à
-// sable de détonation de lien. Groupées par fournisseur pour la lisibilité ; format
-// [octet1, octet2Min, octet2Max]. Liste non exhaustive (les signaux user-agent et
-// délai couvrent le reste) — un prospect navigue depuis du résidentiel/NAT bureau,
-// pas depuis ces plages.
+// IP ranges of datacenters / hosts / VPS where scanners and link-detonation sandboxes run, grouped
+// by provider; format [octet1, octet2Min, octet2Max]. Not exhaustive (user-agent and delay signals
+// cover the rest): prospects browse from residential/office NAT, not these ranges.
 const DATACENTER_RANGES: Record<string, Array<[number, number, number]>> = {
   Azure: [[20, 0, 255], [40, 64, 127], [51, 0, 255], [52, 0, 255], [135, 0, 255], [4, 144, 255], [13, 64, 107], [48, 208, 223], [65, 52, 55], [72, 144, 159], [74, 234, 249], [104, 40, 47], [137, 116, 135], [157, 54, 60], [172, 160, 207], [191, 232, 239]],
   AWS: [[3, 0, 255], [16, 0, 255], [18, 0, 255], [54, 0, 255], [34, 192, 255], [44, 192, 255], [50, 16, 19], [98, 80, 95], [100, 20, 27]],
@@ -46,8 +41,8 @@ const DATACENTER_RANGES: Record<string, Array<[number, number, number]>> = {
   Oracle: [[129, 146, 146], [129, 213, 213], [130, 61, 61], [132, 145, 145], [132, 226, 226], [138, 1, 1], [140, 238, 238], [141, 144, 145], [143, 47, 47], [144, 21, 21], [144, 24, 24], [146, 56, 56], [147, 154, 154], [150, 136, 136], [150, 230, 230], [152, 67, 67], [152, 69, 70], [155, 248, 248], [158, 101, 101], [158, 178, 180], [168, 138, 138], [192, 18, 18], [193, 122, 123]],
 };
 
-// Index par premier octet (l'ordre d'insertion départage les plages qui se
-// chevauchent : ex. 34.192+ → AWS avant le 34.x générique → GCP).
+// Indexed by first octet (insertion order settles overlapping ranges: e.g. 34.192+ → AWS before the
+// generic 34.x → GCP).
 const DC_BY_OCTET = new Map<number, Array<[number, number, string]>>();
 for (const [provider, ranges] of Object.entries(DATACENTER_RANGES))
   for (const [a, lo, hi] of ranges) {
@@ -56,9 +51,8 @@ for (const [provider, ranges] of Object.entries(DATACENTER_RANGES))
   }
 
 /**
- * Renvoie le fournisseur datacenter si l'IP appartient à une plage connue (cloud,
- * VPS, VPN) — typique des scanners — sinon null. IPv4 uniquement ; les IPv6
- * retombent sur la seule analyse du user-agent.
+ * Datacenter provider if the IP is in a known range (cloud, VPS, VPN) — typical of scanners — else
+ * null. IPv4 only; IPv6 falls back to user-agent analysis alone.
  */
 function cloudProvider(ip: string | null): string | null {
   if (!ip || !/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return null;
@@ -69,9 +63,9 @@ function cloudProvider(ip: string | null): string | null {
 }
 
 /**
- * Classe une visite : bot/scanner probable ou humain.
- * @param delaySeconds délai (s) entre l'envoi de l'email et la visite, ou null si
- *   l'heure d'envoi est inconnue (le critère temporel est alors ignoré).
+ * Classifies a visit: likely bot/scanner or human.
+ * @param delaySeconds seconds between sending the email and the visit, or null if the send time is
+ *   unknown (timing check skipped).
  */
 export function classifyVisit(
   userAgent: string | null,

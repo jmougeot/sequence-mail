@@ -1,6 +1,5 @@
 /**
- * Réponses des prospects : boîte de réception unifiée, fil d'un contact,
- * réponse dans le fil email.
+ * Prospect replies: unified inbox, a contact's thread, reply in the email thread.
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -11,55 +10,55 @@ import { handler, READ } from "./common.js";
 const REPLY_STATUSES = ["replied", "opted_out", "bounced"] as const;
 
 const repliesShape = {
-  campaign_id: z.number().int().optional().describe("Limiter à une campagne (défaut : toutes)."),
+  campaign_id: z.number().int().optional().describe("Limit to one campaign (default: all)."),
   status: z
     .union([z.enum(REPLY_STATUSES), z.array(z.enum(REPLY_STATUSES)).min(1)])
     .optional()
-    .describe("Statut(s) : replied, opted_out, bounced. Défaut replied + opted_out."),
+    .describe("Status(es): replied, opted_out, bounced. Default replied + opted_out."),
   since: z
     .union([z.number(), z.string()])
     .optional()
-    .describe("Seulement les réponses depuis cette date : ISO (« 2026-09-25 », « 2026-09-25T08:00:00Z ») ou epoch ms."),
-  limit: z.number().int().min(1).max(200).optional().describe("Nombre max de réponses (défaut 50, max 200)."),
+    .describe("Only replies since this date: ISO (\"2026-09-25\", \"2026-09-25T08:00:00Z\") or epoch ms."),
+  limit: z.number().int().min(1).max(200).optional().describe("Max replies (default 50, max 200)."),
   include_text: z
     .boolean()
     .optional()
     .describe(
-      "true = joint le texte de la dernière réponse email (lu dans Gmail, citations retirées, 2000 car. max) — plus lent : garde un limit raisonnable."
+      "true = include the last email reply's text (read from Gmail, quotes stripped, 2000 chars max). Slower: keep limit reasonable."
     ),
 };
 type RepliesArgs = z.infer<z.ZodObject<typeof repliesShape>>;
 
 const conversationShape = {
-  cc_id: z.number().int().describe("Inscription du contact à la campagne (cc_id de list_replies / list_campaign_contacts), PAS contact_id."),
+  cc_id: z.number().int().describe("Contact's campaign enrollment (cc_id from list_replies / list_campaign_contacts), NOT contact_id."),
   full_text: z
     .boolean()
     .optional()
-    .describe("true = texte brut des messages reçus, citations comprises (défaut : texte nettoyé des citations)."),
+    .describe("true = raw text of received messages, quotes included (default: quotes stripped)."),
 };
 type ConversationArgs = z.infer<z.ZodObject<typeof conversationShape>>;
 
 const replyShape = {
-  cc_id: z.number().int().describe("Inscription du contact à la campagne (cc_id), PAS contact_id."),
+  cc_id: z.number().int().describe("Contact's campaign enrollment (cc_id), NOT contact_id."),
   body: z
     .string()
     .min(1)
     .describe(
-      "Corps de la réponse. C'est un template : {{first_name}}, {{company}}, champs personnalisés, {{sender_name}}, {{link}}, {{signature}} (signature du compte du fil, à inclure si souhaitée)."
+      "Reply body, as a template: {{first_name}}, {{company}}, custom fields, {{sender_name}}, {{link}}, {{signature}} (the thread account's signature, include if wanted)."
     ),
-  subject: z.string().optional().describe("Sujet. Défaut : « Re: » + sujet du dernier message du fil (garder le défaut pour rester dans le fil)."),
+  subject: z.string().optional().describe("Subject. Default: \"Re: \" + last message's subject (keep the default to stay in the thread)."),
   dry_run: z
     .boolean()
     .optional()
-    .describe("true par défaut : rien n'est envoyé, le rendu est renvoyé. false = envoi réel, seulement après accord explicite de l'utilisateur."),
+    .describe("true by default: nothing is sent, the rendering is returned. false = real send, only after explicit user approval."),
 };
 type ReplyArgs = z.infer<z.ZodObject<typeof replyShape>>;
 
-/** Date ISO ou epoch ms → epoch ms. */
+/** ISO date or epoch ms → epoch ms. */
 function toEpochMs(value: number | string): number {
   if (typeof value === "number") return value;
   const ms = /^\d+$/.test(value.trim()) ? Number(value.trim()) : Date.parse(value);
-  if (!Number.isFinite(ms)) throw new Error(`Date illisible pour since : « ${value} » (attendu ISO, ex. 2026-09-25, ou epoch ms).`);
+  if (!Number.isFinite(ms)) throw new Error(`Unreadable date for since: "${value}" (expected ISO, e.g. 2026-09-25, or epoch ms).`);
   return ms;
 }
 
@@ -69,9 +68,9 @@ export function registerInboxTools(server: McpServer): void {
   server.registerTool(
     "list_replies",
     {
-      title: "Réponses reçues",
+      title: "Replies received",
       description:
-        "Boîte de réception unifiée : contacts qui ont répondu (email ou LinkedIn), toutes campagnes ou une seule, du plus récent au plus ancien. Par défaut statuts replied + opted_out (bounced sur demande). Chaque ligne : cc_id (pour get_conversation et reply_to_contact), contact_id, campagne (owner_ref non nul = campagne d'un client Azerit), contact, statut, channel (email|linkedin), compte du fil (sender = Google, li_sender = LinkedIn), li_thread_url, replied_at. include_text: true joint le texte de la dernière réponse email. Dates en ISO 8601 (UTC).",
+        "Unified inbox: contacts who replied (email or LinkedIn), all campaigns or one, newest first. Default statuses replied + opted_out (bounced on request). Each row: cc_id (for get_conversation and reply_to_contact), contact_id, campaign (non-null owner_ref = an Azerit client's campaign), contact, status, channel (email|linkedin), thread account (sender = Google, li_sender = LinkedIn), li_thread_url, replied_at. include_text: true adds the last email reply's text. Dates in ISO 8601 (UTC).",
       inputSchema: repliesShape,
       annotations: READ,
     },
@@ -92,9 +91,9 @@ export function registerInboxTools(server: McpServer): void {
   server.registerTool(
     "get_conversation",
     {
-      title: "Conversation d'un contact",
+      title: "Contact conversation",
       description:
-        "Fil complet d'UN contact dans UNE campagne (clé cc_id, PAS contact_id) : campagne, contact, statut, étape, erreur ; email_thread = messages du fil Gmail dans l'ordre (direction out/in, kind sent/reply/auto_reply/bounce, from, to, date, subject, text), absent sans fil email ; steps_sent (étapes email envoyées) ; linkedin (invitations/messages LinkedIn de la séquence) et li_thread_url. Par défaut, le texte des messages reçus est nettoyé des citations (full_text: true pour le brut). À lire avant de rédiger une réponse avec reply_to_contact. Dates en ISO 8601 (UTC).",
+        "Full thread of ONE contact in ONE campaign (key cc_id, NOT contact_id): campaign, contact, status, step, error; email_thread = Gmail thread messages in order (direction out/in, kind sent/reply/auto_reply/bounce, from, to, date, subject, text), absent without an email thread; steps_sent (email steps sent); linkedin (the sequence's LinkedIn invites/messages) and li_thread_url. By default received messages have quotes stripped (full_text: true for raw). Read before drafting a reply with reply_to_contact. Dates in ISO 8601 (UTC).",
       inputSchema: conversationShape,
       annotations: READ,
     },
@@ -114,9 +113,9 @@ export function registerInboxTools(server: McpServer): void {
   server.registerTool(
     "reply_to_contact",
     {
-      title: "Répondre à un contact",
+      title: "Reply to a contact",
       description:
-        "Répond au contact dans son fil email existant : même thread Gmail, depuis le compte qui a envoyé la séquence, en réponse au dernier message (sans lien de désinscription). Ne change pas le statut du contact. dry_run vaut true par défaut : rien n'est envoyé et le rendu (from, to, subject, body) est renvoyé — montre-le à l'utilisateur, puis rappelle avec dry_run: false seulement après son accord explicite. Échoue si le contact n'a pas de fil email (contact joint uniquement sur LinkedIn : répondre depuis LinkedIn, li_thread_url).",
+        "Replies to the contact in their existing email thread: same Gmail thread, from the account that sent the sequence, replying to the last message (no unsubscribe link). Does not change the contact's status. dry_run defaults to true: nothing is sent and the rendering (from, to, subject, body) is returned. Show it to the user, then call again with dry_run: false only after their explicit approval. Fails if the contact has no email thread (LinkedIn-only contact: reply on LinkedIn, li_thread_url).",
       inputSchema: replyShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },

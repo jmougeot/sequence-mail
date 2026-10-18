@@ -1,12 +1,12 @@
 node_modules
 data
-# sauvegardes de la base faites sur le serveur avant un déploiement
+# database backups taken on the server before a deploy
 backups
 _tmpdata
 .git
 .env
 *.log
 extension
-# le runner embarque le code d'interface LinkedIn partagé avec l'extension
+# the runner bundles the LinkedIn UI code shared with the extension
 !extension/content.js
 scripts/macos-create-launcher.sh

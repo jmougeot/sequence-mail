@@ -1,16 +1,13 @@
 /**
- * Réponses LinkedIn : l'exécutant d'un compte (extension ou runner) lit la
- * liste des conversations récentes de la messagerie (action 'sync_inbox') et
- * nous la remet ici. On la rapproche des contacts que CE compte a abordés :
- * une conversation dont le dernier message vient du contact, postérieure à
- * notre première action, vaut réponse — la séquence s'arrête sur tous les
- * canaux (plus d'email ni de message LinkedIn), comme pour une réponse email.
- *
- * Rapprochement : par URL de profil quand la liste la donne, sinon par nom
- * complet (sans accents ni ponctuation), et seulement s'il désigne un contact
- * unique parmi ceux du compte. Dans le doute, on ne conclut pas : mieux vaut
- * une relance de trop qu'une séquence arrêtée à tort… sauf pour une
- * conversation non lue, signal fort qu'on accepte même sans date lisible.
+ * LinkedIn replies: an account's executor (extension or runner) reads the recent conversation list
+ * (action 'sync_inbox') and hands it over here. It is matched against the contacts THIS account
+ * reached: a conversation whose last message is from the contact, after our first action, counts as
+ * a reply — the sequence stops on all channels (no more emails or LinkedIn messages), as for an
+ * email reply.
+ * Matching: by profile URL when the list provides it, else by full name (no accents or
+ * punctuation), and only if it identifies a single contact of the account. When in doubt, no
+ * conclusion: one follow-up too many beats a sequence stopped by mistake… except for an unread
+ * conversation, a strong signal accepted even without a readable date.
  */
 import { db } from "../db.js";
 import { linkedinSlug } from "./linkedin-url.js";
@@ -39,7 +36,7 @@ interface Watched {
   first_sent_at: number;
 }
 
-/** Minuscules, sans accents ni ponctuation, espaces simples ; coupe « , PhD » & co. */
+/** Lowercase, no accents or punctuation, single spaces; strips ", PhD" & co. */
 export function normName(s: string | null | undefined): string {
   return (s ?? "")
     .split(/[,|(]/)[0]
@@ -51,7 +48,7 @@ export function normName(s: string | null | undefined): string {
     .trim();
 }
 
-/** Dernier message écrit par nous ? (« Vous : … » / « You: … » en tête de l'aperçu) */
+/** Last message written by us? (« Vous : … » / « You: … » at the start of the snippet) */
 export function lastFromUs(snippet: string | null | undefined): boolean {
   return /^\s*(vous|you)\s*:/i.test(snippet ?? "");
 }
@@ -65,10 +62,9 @@ const WEEKDAYS: Record<string, number> = {
 };
 
 /**
- * Date (début de journée) d'un horodatage de la liste des conversations :
- * « 14:32 » / « 2:32 PM » (aujourd'hui), « hier » / « Yesterday », « lun. »
- * (7 derniers jours), « 12 sept. » / « Sep 12 » (cette année, sinon l'an
- * dernier), « 12 sept. 2025 ». Null si illisible.
+ * Date (start of day) of a conversation-list timestamp: « 14:32 » / « 2:32 PM » (today), « hier » /
+ * « Yesterday », « lun. » (last 7 days), « 12 sept. » / « Sep 12 » (this year, else last year), «
+ * 12 sept. 2025 ». Null if unreadable.
  */
 export function parseLiTime(raw: string | null | undefined, now = Date.now()): number | null {
   const s = normName(raw);
@@ -95,7 +91,7 @@ export function parseLiTime(raw: string | null | undefined, now = Date.now()): n
   return null;
 }
 
-/** Contacts du compte dont on attend une réponse, avec la date de notre première action. */
+/** The account's contacts awaiting a reply, with the date of our first action. */
 function watched(accountId: number): Watched[] {
   return db
     .prepare(
@@ -116,7 +112,7 @@ export interface InboxReport {
   ambiguous: string[];
 }
 
-/** Traite la liste des conversations lue par l'exécutant du compte. */
+/** Processes the conversation list read by the account's executor. */
 export function processInbox(account: LiAccount, conversations: LiConversation[]): InboxReport {
   const report: InboxReport = { conversations: conversations.length, replied: [], ambiguous: [] };
   const pool = watched(account.id);
@@ -128,12 +124,12 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
     const slug = linkedinSlug(w.linkedin);
     if (slug) bySlug.set(slug, w);
     const n = normName(`${w.first_name ?? ""} ${w.last_name ?? ""}`);
-    if (n.includes(" ")) byName.set(n, [...(byName.get(n) ?? []), w]); // prénom ET nom, sinon trop ambigu
+    if (n.includes(" ")) byName.set(n, [...(byName.get(n) ?? []), w]); // first AND last name, else too ambiguous
   }
 
   const done = new Set<number>();
   for (const conv of conversations) {
-    if (!conv || lastFromUs(conv.snippet)) continue; // c'est nous qui avons parlé en dernier
+    if (!conv || lastFromUs(conv.snippet)) continue; // we spoke last
     let match: Watched | undefined;
     const slug = linkedinSlug(conv.profile_url);
     if (slug) match = bySlug.get(slug);
@@ -144,8 +140,8 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
     }
     if (!match || done.has(match.cc_id)) continue;
 
-    // Le message du contact doit être postérieur à notre première action
-    // (sinon c'est une vieille conversation) ; non lu = on accepte.
+    // The contact's message must postdate our first action (else it's an old conversation); unread
+    // = accepted.
     const at = parseLiTime(conv.time);
     const firstDay = new Date(match.first_sent_at);
     firstDay.setHours(0, 0, 0, 0);
@@ -166,16 +162,15 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
       match.cc_id
     );
     report.replied.push({ cc_id: match.cc_id, name: conv.name ?? "?", opted_out: optedOut });
-    console.log(`[linkedin] ${conv.name} a répondu sur LinkedIn (${account.name})${optedOut ? " — désinscrit" : ""} — séquence arrêtée`);
+    console.log(`[linkedin] ${conv.name} replied on LinkedIn (${account.name})${optedOut ? " — opted out" : ""} — sequence stopped`);
   }
   return report;
 }
 
 /**
- * Réponse vue par l'exécutant dans la conversation, au moment d'envoyer un
- * message (content.js, threadGuard) : rien n'est parti. La séquence s'arrête
- * comme pour une réponse lue dans la messagerie (refus reconnu → désinscrit
- * chez le propriétaire). Rend false si l'action n'est pas à ce compte.
+ * Reply seen by the executor in the conversation when about to send a message (content.js,
+ * threadGuard): nothing went out. The sequence stops as for a reply read from the inbox (recognized
+ * refusal → opted out with the owner). Returns false if the action isn't this account's.
  */
 export function processThreadReply(account: LiAccount, actionId: number, text: string): boolean {
   const row = db
@@ -198,9 +193,9 @@ export function processThreadReply(account: LiAccount, actionId: number, text: s
     optedOut ? "Pas intéressé / désinscrit 🚫 (LinkedIn)" : "A répondu ✅ (LinkedIn)"
   );
   if (text.trim()) db.prepare("UPDATE campaign_contacts SET li_reply_text = ? WHERE id = ?").run(text.trim().slice(0, 2000), row.cc_id);
-  // terminate a annulé l'action en cours : on note pourquoi elle n'est pas partie
+  // terminate cancelled the pending action: record why it didn't go out
   db.prepare("UPDATE li_actions SET error = ? WHERE id = ?").run("le contact a écrit dans la conversation — message non envoyé", actionId);
   const name = [row.first_name, row.last_name].filter(Boolean).join(" ") || `contact #${row.contact_id}`;
-  console.log(`[linkedin] ${name} a écrit dans la conversation (${account.name})${optedOut ? " — désinscrit" : ""} — message retenu, séquence arrêtée`);
+  console.log(`[linkedin] ${name} wrote in the conversation (${account.name})${optedOut ? " — opted out" : ""} — message held back, sequence stopped`);
   return true;
 }

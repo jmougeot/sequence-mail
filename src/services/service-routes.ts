@@ -1,16 +1,13 @@
 /**
- * API de service : Azerit (l'app de recrutement) pilote ici, pour ses
- * utilisateurs, le compte LinkedIn et les campagnes de chacun. Appelée sur le
- * réseau interne du VPS (http://sequence-app:3000), authentifiée par la clé
- * partagée SERVICE_API_KEY (en-tête X-Service-Key).
- *
- * Tout est rangé par propriétaire (`owner`, ex. « azerit:u:12 ») :
- *   - un propriétaire a un compte LinkedIn courant (le dernier actif) ;
- *   - ses campagnes (clé `external_ref`, ex. le poste) ne sont servies qu'à ses
- *     comptes — la règle vit dans outreach.ts (ELIGIBLE), pas ici ;
- *   - une campagne d'un autre propriétaire répond 404, comme si elle n'existait pas.
- *
- * Les utilisateurs d'Azerit ne voient jamais Sequence Mail : Azerit relaie.
+ * Service API: Azerit (the recruiting app) drives here, for its users, each one's LinkedIn account
+ * and campaigns. Called on the VPS internal network (http://sequence-app:3000), authenticated by
+ * the shared key SERVICE_API_KEY (X-Service-Key header).
+ * Everything is scoped by owner (`owner`, e.g. "azerit:u:12"):
+ * - an owner has one current LinkedIn account (the latest active one);
+ * - its campaigns (key `external_ref`, e.g. the job) are served only to its accounts — the rule
+ *   lives in outreach.ts (ELIGIBLE), not here;
+ * - another owner's campaign returns 404, as if it didn't exist.
+ * Azerit users never see Sequence Mail: Azerit relays.
  */
 import { timingSafeEqual } from "node:crypto";
 import type express from "express";
@@ -31,7 +28,7 @@ import {
 } from "./outreach.js";
 
 const OWNER = /^[a-z0-9][a-z0-9:_.-]{0,99}$/i;
-const INVITE_NOTE_MAX = 200; // limite LinkedIn d'une note d'invitation (compte gratuit ; au-delà, elle part sans note)
+const INVITE_NOTE_MAX = 200; // LinkedIn limit for an invite note (free account; over it, the invite goes without a note)
 const MESSAGE_MAX = 8000;
 
 function authorized(req: express.Request): boolean {
@@ -49,10 +46,10 @@ function ownerOf(req: express.Request): string | null {
   return OWNER.test(owner) ? owner : null;
 }
 
-/** « Léa Martin (in/lea-martin-42) » : le nom seul ne distingue pas deux homonymes. */
+/** "Léa Martin (in/lea-martin-42)": the name alone can't tell namesakes apart. */
 const label = (name: string | null, slug: string) => (name ? `${name} (in/${slug})` : `in/${slug}`);
 
-/** Compte courant d'un propriétaire : le plus récent actif, sinon le plus récent. */
+/** An owner's current account: the latest active one, else the latest. */
 function ownerAccount(owner: string): LiAccount | undefined {
   const row = db
     .prepare("SELECT id FROM li_accounts WHERE owner_ref = ? ORDER BY active DESC, id DESC LIMIT 1")
@@ -84,7 +81,7 @@ function ownedCampaign(id: unknown, owner: string): OwnedCampaign | undefined {
 
 type SvcStep = { action?: string; body?: string; wait_days?: number };
 
-/** Étapes LinkedIn uniquement (invitation / message) : l'email d'un client n'est pas branché ici. */
+/** LinkedIn steps only (invite / message): client email isn't wired here. */
 function validateSteps(steps: unknown): { steps: Required<SvcStep>[] } | { error: string } {
   if (!Array.isArray(steps) || !steps.length || steps.length > 10) return { error: "steps[] : 1 à 10 étapes" };
   const out: Required<SvcStep>[] = [];
@@ -112,7 +109,7 @@ function replaceSteps(campaignId: number, steps: Required<SvcStep>[]): void {
   steps.forEach((s, i) => insert.run(campaignId, i + 1, s.body, s.wait_days, s.action));
 }
 
-/** Variables d'inscription : clés simples, valeurs texte. */
+/** Enrollment variables: simple keys, text values. */
 function cleanVars(vars: unknown): Record<string, string> | null {
   if (!vars || typeof vars !== "object") return null;
   const out: Record<string, string> = {};
@@ -132,7 +129,7 @@ export function registerServiceRoutes(app: express.Express): void {
     next();
   });
 
-  // --- Compte LinkedIn du propriétaire ---
+  // --- Owner's LinkedIn account ---
 
   app.get("/api/svc/li/account", (req, res) => {
     const account = ownerAccount(ownerOf(req)!);
@@ -140,11 +137,10 @@ export function registerServiceRoutes(app: express.Express): void {
   });
 
   /**
-   * Remise de session depuis l'extension (via Azerit). L'identité lue dans le
-   * navigateur est obligatoire. Autre profil que celui du compte : refus (409),
-   * sauf `replace` — geste explicite « changer de compte LinkedIn ». Un compte
-   * qui a déjà des contacts n'est alors pas réécrit : il est désactivé (ses
-   * contacts restent reliés à l'ancien profil) et un nouveau compte le remplace.
+   * Session handoff from the extension (via Azerit). The identity read in the browser is required.
+   * A profile other than the account's is refused (409), unless `replace` — the explicit "switch
+   * LinkedIn account" action. An account that already has contacts is then not overwritten: it is
+   * disabled (its contacts stay tied to the old profile) and a new account replaces it.
    */
   app.post("/api/svc/li/session", (req, res) => {
     const owner = ownerOf(req)!;
@@ -171,14 +167,13 @@ export function registerServiceRoutes(app: express.Express): void {
       }
     }
     if (!account) account = createAccount(name, owner).account;
-    // Propriétaire dont l'extension exécute elle-même les envois : le compte
-    // reste en mode extension, et elle reçoit un jeton neuf de son compte
-    // (l'ancien cesse de valoir) pour se connecter seule.
+    // Owner whose extension performs the sends itself: the account stays in extension mode, and the
+    // extension gets a fresh token for it (the old one stops working) to connect on its own.
     const byExtension = config.linkedin.extensionOwners.includes(owner);
     const r = storeSession(account.id, b.cookies, b.user_agent, member, byExtension ? "extension" : "server");
     if ("error" in r) return res.status(r.code === "other_member" ? 409 : 400).json(r);
     if (!account.active) updateAccount(account.id, { active: true });
-    console.log(`[svc] session LinkedIn de ${owner} reçue (profil ${member.slug}, compte #${account.id})`);
+    console.log(`[svc] LinkedIn session received for ${owner} (profile ${member.slug}, account #${account.id})`);
     res.json({
       account: accountStatus(getAccount(account.id)!),
       ...(byExtension ? { token: rotateToken(account.id) } : {}),
@@ -193,9 +188,9 @@ export function registerServiceRoutes(app: express.Express): void {
     res.json({ account: accountStatus(getAccount(account.id)!) });
   });
 
-  // --- Campagnes du propriétaire ---
+  // --- Owner's campaigns ---
 
-  /** Crée ou met à jour la campagne `external_ref` (étapes remplacées, avancement des contacts conservé). */
+  /** Creates or updates campaign `external_ref` (steps replaced, contacts' progress kept). */
   app.post("/api/svc/campaigns", (req, res) => {
     const owner = ownerOf(req)!;
     const b = req.body as { external_ref?: unknown; name?: unknown; steps?: unknown };
@@ -223,9 +218,9 @@ export function registerServiceRoutes(app: express.Express): void {
   });
 
   /**
-   * Inscrit et lance des candidats : [{ key, first_name, last_name, company,
-   * linkedin, email?, vars? }]. `vars` (ex. le message rédigé pour ce candidat)
-   * reste propre à cette inscription. Un candidat déjà lancé n'est pas relancé.
+   * Enrolls and launches candidates: [{ key, first_name, last_name, company, linkedin, email?,
+   * vars? }]. `vars` (e.g. the message written for this candidate) stays specific to this
+   * enrollment. An already launched candidate isn't relaunched.
    */
   app.post("/api/svc/campaigns/:id/enroll", async (req, res) => {
     const owner = ownerOf(req)!;
@@ -290,7 +285,7 @@ export function registerServiceRoutes(app: express.Express): void {
     res.json({ results });
   });
 
-  /** Avancement de chaque candidat (clé Azerit) : statut, actions LinkedIn, profil émetteur. */
+  /** Each candidate's progress (Azerit key): status, LinkedIn actions, sender profile. */
   app.get("/api/svc/campaigns/:id/contacts", (req, res) => {
     const campaign = ownedCampaign(req.params.id, ownerOf(req)!);
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
@@ -323,9 +318,9 @@ export function registerServiceRoutes(app: express.Express): void {
   });
 
   /**
-   * État de toute la campagne : 'paused' (poste clos : plus rien ne part, rien
-   * n'est perdu), 'active' (reprise), 'stopped' (poste supprimé : chaque
-   * candidat encore en cours est arrêté, actions en file annulées).
+   * Whole-campaign state: 'paused' (job closed: nothing goes out, nothing is lost), 'active'
+   * (resume), 'stopped' (job deleted: every candidate still running is stopped, queued actions
+   * cancelled).
    */
   app.post("/api/svc/campaigns/:id/status", (req, res) => {
     const campaign = ownedCampaign(req.params.id, ownerOf(req)!);
@@ -351,7 +346,7 @@ export function registerServiceRoutes(app: express.Express): void {
     res.json({ ok: true, status });
   });
 
-  /** Arrête la séquence de candidats (clés Azerit) : plus rien ne part, actions en file annulées. */
+  /** Stops candidates' sequences (Azerit keys): nothing more goes out, queued actions cancelled. */
   app.post("/api/svc/campaigns/:id/stop", (req, res) => {
     const campaign = ownedCampaign(req.params.id, ownerOf(req)!);
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });

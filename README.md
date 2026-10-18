@@ -92,6 +92,10 @@ claude mcp add sequence-mail \
 npm install && cp .env.example .env && npm run dev   # http://localhost:3000
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md); report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT

@@ -1,47 +1,47 @@
 #!/usr/bin/env node
-// Prospection GitHub : trouve les entreprises (organisations) dont un repo public
-// dépend d'un package donné, remonte au domaine de la boîte, et peut récolter des
-// emails de devs depuis les commits publics.
+// GitHub prospecting: finds companies (organizations) with a public repo that
+// depends on a given package, gets the company domain, and can collect developer
+// emails from public commits.
 //
-// Principe : une dépendance dans un manifeste (package.json, requirements.txt…) est
-// un signal d'intention fort. Deux sources de candidats :
-//   - github     : API Code Search (cherche la chaîne dans les manifestes). Précis
-//                  mais bridé (~10 req/min, ~1000 résultats max).
-//   - ecosystems : API ecosyste.ms (repos dépendant du package, tous écosystèmes).
-//                  Gratuit, paginé sans limite basse, métadonnées repo incluses.
-// On ne garde que les repos d'*organisations* actives (pas de comptes perso, pas de
-// forks), puis la fiche GitHub de l'org fournit le domaine — clé d'enrichissement
-// et d'import Attio. Avec --emails, on scanne les commits du repo pour extraire les
-// adresses en @domaine-de-l-org (données publiques).
+// A dependency in a manifest (package.json, requirements.txt…) is a strong intent
+// signal. Two candidate sources:
+//   - github     : Code Search API (searches manifests). Precise but throttled
+//                  (~10 req/min, ~1000 results max).
+//   - ecosystems : ecosyste.ms API (repos depending on the package, any ecosystem).
+//                  Free, deep pagination, repo metadata included.
+// Only active *organization* repos are kept (no personal accounts, no forks); the
+// org's GitHub profile gives the domain, the key for enrichment and Attio import.
+// With --emails, the repo's commits are scanned for @org-domain addresses
+// (public data).
 //
-// Usage :
+// Usage:
 //   GITHUB_TOKEN=$(gh auth token) node scripts/github-prospect.mjs \
 //     --dep "@anthropic-ai/sdk" --min-stars 5 --active-since 2025-01-01 \
 //     --source ecosystems --emails --out prospects.csv
 //
-// Sortie : CSV avec company/domain (+ email/first_name/last_name si --emails),
-// colonnes reconnues par l'import de campagne ; le reste devient des {{variables}}.
+// Output: CSV with company/domain (+ email/first_name/last_name with --emails),
+// columns recognized by the campaign import; the rest become {{variables}}.
 
 const API = "https://api.github.com";
 const ECOSYSTEMS_API = "https://repos.ecosyste.ms/api/v1";
 
-// --- Parsing des arguments -------------------------------------------------
+// --- Argument parsing ------------------------------------------------------
 function parseArgs(argv) {
   const opts = {
     deps: [],
     source: "github",       // github | ecosystems
-    manifest: "package.json", // source github : fichier de manifeste ciblé
-    ecosystem: "npm",       // source ecosystems : npm, pypi, go, cargo, rubygems…
-    includeIndirect: false, // source ecosystems : garder les dépendances transitives
+    manifest: "package.json", // github source: target manifest file
+    ecosystem: "npm",       // ecosystems source: npm, pypi, go, cargo, rubygems…
+    includeIndirect: false, // ecosystems source: keep transitive dependencies
     minStars: 0,
-    maxStars: Infinity,     // plafond d'étoiles : écarte les mégaprojets/grosses boîtes
-    orgCreatedAfter: null,  // org GitHub créée après cette date = boîte jeune
-    orgMaxRepos: Infinity,  // orgs avec trop de repos publics = grands groupes
-    activeSince: null,      // ISO date : ne garder que les repos poussés après
-    max: 200,               // nb max de repos candidats parcourus par dépendance
-    emails: false,          // récolte d'emails via les commits publics
-    out: null,              // fichier CSV (défaut : stdout)
-    includeUsers: false,    // par défaut on ignore les comptes perso (type User)
+    maxStars: Infinity,     // star cap: filters out mega-projects/big companies
+    orgCreatedAfter: null,  // GitHub org created after this date = young company
+    orgMaxRepos: Infinity,  // orgs with too many public repos = large groups
+    activeSince: null,      // ISO date: only repos pushed after it
+    max: 200,               // max candidate repos scanned per dependency
+    emails: false,          // collect emails from public commits
+    out: null,              // CSV file (default: stdout)
+    includeUsers: false,    // personal accounts (type User) skipped by default
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -62,40 +62,40 @@ function parseArgs(argv) {
       case "--out": opts.out = next(); break;
       case "--include-users": opts.includeUsers = true; break;
       case "-h": case "--help": opts.help = true; break;
-      default: console.error(`Argument inconnu : ${a}`); process.exit(1);
+      default: console.error(`Unknown argument: ${a}`); process.exit(1);
     }
   }
   if (!["github", "ecosystems"].includes(opts.source)) {
-    console.error(`--source doit être github ou ecosystems (reçu : ${opts.source})`);
+    console.error(`--source must be github or ecosystems (got: ${opts.source})`);
     process.exit(1);
   }
   return opts;
 }
 
-const HELP = `Prospection GitHub par dépendance.
+const HELP = `GitHub prospecting by dependency.
 
-  --dep <nom>           Dépendance à chercher (répétable, ou "a,b,c"). Requis.
-  --source <s>          github (Code Search, défaut) | ecosystems (ecosyste.ms,
-                        pas de limite à 1000 résultats, plus rapide).
-  --manifest <fichier>  [github] Manifeste ciblé (défaut: package.json).
-                        Ex: requirements.txt, pyproject.toml, go.mod, Gemfile.
-  --ecosystem <e>       [ecosystems] npm (défaut), pypi, go, cargo, rubygems…
-  --include-indirect    [ecosystems] Garde aussi les dépendances transitives
-                        (défaut: directes seules, signal plus fort).
-  --min-stars <n>       Ignore les repos sous ce nombre d'étoiles (défaut: 0).
-  --max-stars <n>       Ignore les repos au-dessus (écarte les mégaprojets).
-  --org-created-after <date>  Org GitHub créée après cette date (boîtes jeunes).
-  --org-max-repos <n>   Ignore les orgs avec plus de n repos publics (grands groupes).
-  --active-since <date> Ne garde que les repos poussés après cette date (YYYY-MM-DD).
-  --max <n>             Repos candidats max par dépendance (défaut: 200).
-  --emails              Récolte des emails de devs (@domaine de l'org) dans les
-                        commits publics du repo → colonnes email/first_name/last_name.
-  --include-users       Inclut aussi les comptes perso (défaut: organisations seules).
-  --out <fichier.csv>   Écrit le CSV dans un fichier (défaut: sortie standard).
+  --dep <name>          Dependency to search for (repeatable, or "a,b,c"). Required.
+  --source <s>          github (Code Search, default) | ecosystems (ecosyste.ms,
+                        no 1000-result cap, faster).
+  --manifest <file>     [github] Target manifest (default: package.json).
+                        E.g. requirements.txt, pyproject.toml, go.mod, Gemfile.
+  --ecosystem <e>       [ecosystems] npm (default), pypi, go, cargo, rubygems…
+  --include-indirect    [ecosystems] Also keep transitive dependencies
+                        (default: direct only, stronger signal).
+  --min-stars <n>       Skip repos with fewer stars (default: 0).
+  --max-stars <n>       Skip repos with more stars (filters out mega-projects).
+  --org-created-after <date>  GitHub org created after this date (young companies).
+  --org-max-repos <n>   Skip orgs with more than n public repos (large groups).
+  --active-since <date> Only repos pushed after this date (YYYY-MM-DD).
+  --max <n>             Max candidate repos per dependency (default: 200).
+  --emails              Collect developer emails (@org domain) from the repo's
+                        public commits → email/first_name/last_name columns.
+  --include-users       Also include personal accounts (default: organizations only).
+  --out <file.csv>      Write the CSV to a file (default: stdout).
 
-Auth : place ton token dans GITHUB_TOKEN (scope public_repo suffit).`;
+Auth: put your token in GITHUB_TOKEN (public_repo scope is enough).`;
 
-// --- Client HTTP conscient des rate limits ---------------------------------
+// --- Rate-limit-aware HTTP client --------------------------------------------
 const token = process.env.GITHUB_TOKEN;
 
 async function gh(path, { search = false } = {}) {
@@ -110,7 +110,7 @@ async function gh(path, { search = false } = {}) {
       },
     });
 
-    // 403/429 = rate limit : on attend selon Retry-After ou la fenêtre de reset.
+    // 403/429 = rate limit: wait for Retry-After or the reset window.
     if (res.status === 403 || res.status === 429) {
       const retryAfter = Number(res.headers.get("retry-after"));
       const reset = Number(res.headers.get("x-ratelimit-reset"));
@@ -119,24 +119,24 @@ async function gh(path, { search = false } = {}) {
       if (retryAfter) waitMs = retryAfter * 1000;
       else if (remaining === 0 && reset) waitMs = Math.max(0, reset * 1000 - Date.now()) + 1000;
       else waitMs = (attempt + 1) * 5000;
-      console.error(`  ⏳ rate limit, pause ${Math.ceil(waitMs / 1000)}s…`);
+      console.error(`  ⏳ rate limit, waiting ${Math.ceil(waitMs / 1000)}s…`);
       await sleep(waitMs);
       continue;
     }
     if (!res.ok) {
       throw new Error(`GitHub ${res.status} ${url} : ${await res.text()}`);
     }
-    // La recherche de code est bridée (~10 req/min) : on lisse préventivement.
+    // Code search is throttled (~10 req/min): pace requests up front.
     if (search) await sleep(6500);
     return res.json();
   }
-  throw new Error(`Abandon après plusieurs rate limits : ${url}`);
+  throw new Error(`Giving up after repeated rate limits: ${url}`);
 }
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// --- Candidats : { fullName, owner, repo? } (repo = métadonnées si déjà connues)
-// Source github : Code Search sur le manifeste. Métadonnées via /repos ensuite.
+// --- Candidates: { fullName, owner, repo? } (repo = metadata when already known)
+// github source: Code Search on the manifest; metadata from /repos afterwards.
 async function candidatesFromGithub(dep, manifest, max) {
   const perPage = 100;
   const out = new Map(); // fullName -> { owner, repo: null }
@@ -156,14 +156,14 @@ async function candidatesFromGithub(dep, manifest, max) {
   return out;
 }
 
-// Source ecosystems : repos dépendants du package, métadonnées incluses.
+// ecosystems source: repos depending on the package, metadata included.
 async function candidatesFromEcosystems(dep, ecosystem, max, includeIndirect) {
-  const perPage = 50; // per_page=100 déclenche des 500 côté ecosyste.ms sur les gros packages
+  const perPage = 50; // per_page=100 triggers 500s on ecosyste.ms for big packages
   const out = new Map();
-  // ecosyste.ms exige le @ des scopes npm en littéral ; seul le / doit être encodé.
+  // ecosyste.ms wants the npm scope @ literal; only / is encoded.
   const base = `${ECOSYSTEMS_API}/usage/${ecosystem}/${dep.replace(/\//g, "%2F")}/dependencies`;
   for (let page = 1; out.size < max && page <= Math.ceil(max / perPage) + 20; page++) {
-    // ecosyste.ms renvoie des 500 intermittents (cache froid) : on réessaie avec backoff.
+    // ecosyste.ms returns intermittent 500s (cold cache): retry with backoff.
     let res;
     for (let attempt = 0; ; attempt++) {
       res = await fetch(`${base}?per_page=${perPage}&page=${page}`, {
@@ -171,13 +171,13 @@ async function candidatesFromEcosystems(dep, ecosystem, max, includeIndirect) {
       });
       if (res.status < 500 || attempt >= 2) break;
       const waitMs = (attempt + 1) * 3000;
-      console.error(`  ⏳ ecosyste.ms ${res.status} (page ${page}), retry dans ${waitMs / 1000}s…`);
+      console.error(`  ⏳ ecosyste.ms ${res.status} (page ${page}), retrying in ${waitMs / 1000}s…`);
       await sleep(waitMs);
     }
-    // La pagination profonde d'ecosyste.ms casse (500) au-delà d'un certain offset
-    // sur les gros packages : on garde ce qui a été collecté plutôt que d'échouer.
+    // Deep pagination breaks (500) past some offset on big packages: keep what
+    // was collected instead of failing.
     if (res.status >= 500) {
-      console.error(`  ⚠️ ecosyste.ms indisponible au-delà de la page ${page - 1} — on continue avec ${out.size} repo(s). Pour aller plus loin : --source github.`);
+      console.error(`  ⚠️ ecosyste.ms unavailable past page ${page - 1}; continuing with ${out.size} repo(s). For more: --source github.`);
       break;
     }
     if (!res.ok) throw new Error(`ecosyste.ms ${res.status} : ${await res.text()}`);
@@ -186,7 +186,7 @@ async function candidatesFromEcosystems(dep, ecosystem, max, includeIndirect) {
     for (const it of items) {
       const r = it.repository;
       if (!r || !r.owner || out.has(r.full_name)) continue;
-      if (!includeIndirect && it.direct === false) continue; // transitif = signal faible
+      if (!includeIndirect && it.direct === false) continue; // transitive = weak signal
       out.set(r.full_name, {
         owner: r.owner,
         repo: {
@@ -204,7 +204,7 @@ async function candidatesFromEcosystems(dep, ecosystem, max, includeIndirect) {
   return out;
 }
 
-// --- Enrichissement --------------------------------------------------------
+// --- Enrichment --------------------------------------------------------------
 function domainFromUrl(u) {
   if (!u) return "";
   try {
@@ -219,7 +219,7 @@ async function fetchOrg(login, cache) {
   if (cache.has(login)) return cache.get(login);
   let org = null;
   try {
-    org = await gh(`/users/${login}`); // /users renvoie orgs ET comptes perso
+    org = await gh(`/users/${login}`); // /users returns orgs AND personal accounts
   } catch (e) {
     console.error(`  ⚠️ org ${login} : ${e.message}`);
   }
@@ -239,8 +239,8 @@ async function fetchRepo(fullName, cache) {
   return repo;
 }
 
-// Emails de devs dans les commits publics du repo : on ne retient que les adresses
-// sur le domaine de l'org (exclut noreply/bots), et on privilégie la plus fréquente.
+// Developer emails from the repo's public commits: only addresses on the org
+// domain (no noreply/bots), most frequent first.
 const EMAIL_BLOCKLIST = /noreply|no-reply|bot@|actions@|\[bot\]/i;
 async function harvestEmails(fullName, domain) {
   if (!domain) return { email: "", first_name: "", last_name: "", other_emails: "" };
@@ -250,7 +250,7 @@ async function harvestEmails(fullName, domain) {
     try {
       commits = await gh(`/repos/${fullName}/commits?per_page=100&page=${page}`);
     } catch {
-      break; // repo vide (409) ou inaccessible : tant pis pour les emails
+      break; // empty (409) or inaccessible repo: no emails
     }
     if (!Array.isArray(commits) || !commits.length) break;
     for (const c of commits) {
@@ -288,7 +288,7 @@ function csvCell(v) {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-// --- Programme principal ---------------------------------------------------
+// --- Main -------------------------------------------------------------------
 async function main() {
   const opts = parseArgs(process.argv);
   if (opts.help || !opts.deps.length) {
@@ -296,25 +296,25 @@ async function main() {
     process.exit(opts.help ? 0 : 1);
   }
   if (!token) {
-    console.error("⚠️ GITHUB_TOKEN absent : l'API anonyme sera vite bloquée. Continue quand même…\n");
+    console.error("⚠️ GITHUB_TOKEN missing: the anonymous API gets blocked quickly. Continuing anyway…\n");
   }
 
   const orgCache = new Map();
   const repoCache = new Map();
-  const rows = new Map(); // login -> ligne (dédup par organisation)
+  const rows = new Map(); // login -> row (dedup by organization)
 
   for (const dep of opts.deps) {
-    console.error(`🔎 Recherche de « ${dep} » (source: ${opts.source})…`);
+    console.error(`🔎 Searching "${dep}" (source: ${opts.source})…`);
     const found = opts.source === "ecosystems"
       ? await candidatesFromEcosystems(dep, opts.ecosystem, opts.max, opts.includeIndirect)
       : await candidatesFromGithub(dep, opts.manifest, opts.max);
-    console.error(`  ${found.size} repo(s) candidats, enrichissement…`);
+    console.error(`  ${found.size} candidate repo(s), enriching…`);
 
     for (const [fullName, cand] of found) {
-      // ecosyste.ms fournit déjà les métadonnées ; sinon un appel /repos par candidat.
+      // ecosyste.ms already provides metadata; otherwise one /repos call per candidate.
       const repo = cand.repo ?? await fetchRepo(fullName, repoCache);
       if (!repo) continue;
-      if (repo.fork) continue;                                   // on ignore les forks
+      if (repo.fork) continue;                                   // skip forks
       const stars = repo.stargazers_count || 0;
       if (stars < opts.minStars || stars > opts.maxStars) continue;
       if (opts.activeSince && repo.pushed_at && repo.pushed_at < opts.activeSince) continue;
@@ -323,9 +323,9 @@ async function main() {
       if (!org) continue;
       if (org.type !== "Organization" && !opts.includeUsers) continue; // startups = orgs
       if (opts.orgCreatedAfter && org.created_at && org.created_at < opts.orgCreatedAfter) continue;
-      if ((org.public_repos || 0) > opts.orgMaxRepos) continue;   // grands groupes
+      if ((org.public_repos || 0) > opts.orgMaxRepos) continue;   // large groups
 
-      // Dédup par organisation : on garde le repo le plus étoilé comme représentant.
+      // Dedup by organization: keep the most-starred repo as representative.
       const existing = rows.get(cand.owner);
       if (existing && existing._stars >= (repo.stargazers_count || 0)) continue;
 
@@ -351,7 +351,7 @@ async function main() {
   const sorted = [...rows.values()].sort((a, b) => b.stars - a.stars);
 
   if (opts.emails) {
-    console.error(`📧 Récolte d'emails sur ${sorted.length} organisation(s)…`);
+    console.error(`📧 Collecting emails for ${sorted.length} organization(s)…`);
     for (const row of sorted) {
       Object.assign(row, await harvestEmails(row._fullName, row.domain));
       if (row.email) console.error(`  ✉️ ${row.company} → ${row.email}`);
@@ -364,10 +364,10 @@ async function main() {
   if (opts.out) {
     const { writeFile } = await import("node:fs/promises");
     await writeFile(opts.out, csv);
-    console.error(`\n✅ ${sorted.length} organisation(s) → ${opts.out}`);
+    console.error(`\n✅ ${sorted.length} organization(s) → ${opts.out}`);
   } else {
     process.stdout.write(csv);
-    console.error(`\n✅ ${sorted.length} organisation(s)`);
+    console.error(`\n✅ ${sorted.length} organization(s)`);
   }
 }
 

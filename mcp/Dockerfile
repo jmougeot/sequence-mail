@@ -1,11 +1,11 @@
-# Serveur MCP Sequence Mail en mode HTTP (transport Streamable) pour clients
-# distants — ici l'agent Ruby hébergé. En local (Claude Code), le même code tourne
-# en stdio via ~/.config/sequence-mail-mcp.sh ; ce conteneur ne sert que le HTTP.
+# Sequence Mail MCP server over HTTP (Streamable transport) for remote clients
+# such as a hosted agent. Locally (Claude Code) the same code runs over stdio;
+# this container only serves HTTP.
 FROM node:22-bookworm-slim
 
 WORKDIR /app
 
-# Dépendances d'abord (cache Docker). tsc est en devDependency et sert au build.
+# Dependencies first (Docker cache). tsc is a devDependency, used for the build.
 COPY package.json package-lock.json ./
 RUN npm ci
 

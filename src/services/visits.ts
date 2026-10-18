@@ -1,10 +1,9 @@
 /**
- * Lien personnalisé par prospect ({{link}}) et suivi des visites côté serveur.
- *
- * Chaque campaign_contact reçoit un jeton stable (campaign_contacts.visit_token).
- * Le lien `…/p/<token>` placé dans l'email via {{link}} journalise la visite puis
- * redirige (302) vers la page publique (VISIT_DEST_URL). Fiable car la visite est
- * enregistrée serveur, sans pixel ni image cachée.
+ * Per-prospect personalized link ({{link}}) and server-side visit tracking.
+ * Each campaign_contact gets a stable token (campaign_contacts.visit_token). The `…/p/<token>` link
+ * placed in the email via {{link}} logs the visit, then 302-redirects to the public page
+ * (VISIT_DEST_URL). Reliable since the visit is recorded server-side, with no pixel or hidden
+ * image.
  */
 import crypto from "node:crypto";
 import type { Express } from "express";
@@ -13,9 +12,9 @@ import { db } from "../db.js";
 import { classifyVisit } from "./botFilter.js";
 
 /**
- * Lien personnalisé et stable d'un prospect (campaign_contact) pour {{link}}.
- * Génère un jeton à la première demande puis le réutilise : un même prospect a
- * toujours le même lien dans toute la séquence, et une visite lui est attribuée.
+ * A prospect's (campaign_contact) stable {{link}} URL. The token is created on first request then
+ * reused: a prospect keeps the same link across the whole sequence, and visits are attributed to
+ * them.
  */
 export function visitLink(ccId: number): string {
   const row = db.prepare("SELECT visit_token FROM campaign_contacts WHERE id = ?").get(ccId) as
@@ -29,10 +28,8 @@ export function visitLink(ccId: number): string {
   return `${config.visit.baseUrl}/p/${token}`;
 }
 
-/** Enregistre la route publique du lien personnalisé {{link}}. */
 export function registerVisitRoutes(app: Express): void {
-  // Lien personnalisé {{link}} : journalise la visite du prospect puis redirige
-  // vers la page publique (VISIT_DEST_URL).
+  // {{link}}: logs the prospect's visit, then redirects to the public page (VISIT_DEST_URL).
   app.get("/p/:token", (req, res) => {
     const cc = db
       .prepare("SELECT id FROM campaign_contacts WHERE visit_token = ?")
@@ -42,9 +39,9 @@ export function registerVisitRoutes(app: Express): void {
         const ua = req.get("user-agent") ?? null;
         const ip = req.ip ?? null;
         const now = Date.now();
-        // Délai depuis le dernier email envoyé à ce contact : un clic en quelques
-        // secondes trahit un scanner (Safe Links, Proofpoint…) qui ouvre le lien à la
-        // livraison. Classement bot/humain à l'enregistrement → exclu des compteurs.
+        // Delay since the last email sent to this contact: a click within seconds betrays a scanner
+        // (Safe Links, Proofpoint…) opening the link on delivery. Classified bot/human when
+        // recorded, so bots stay out of the counters.
         const prevSend = db
           .prepare(
             "SELECT MAX(sent_at) AS t FROM messages WHERE campaign_contact_id = ? AND sent_at <= ?"

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { classifyVisit } from "./services/botFilter.js";
 import { normalizeLinkedin } from "./services/linkedin-url.js";
 
-// Relatif au projet (src/../data), pas au répertoire de lancement ; surchargeable via DATA_DIR
+// Relative to the project (src/../data), not the working directory; override with DATA_DIR
 const DATA_DIR = process.env.DATA_DIR ?? fileURLToPath(new URL("../data", import.meta.url));
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -21,11 +21,11 @@ CREATE TABLE IF NOT EXISTS accounts (
   oauth_tokens TEXT NOT NULL,           -- JSON (access_token, refresh_token, expiry_date)
   daily_limit INTEGER NOT NULL,
   sent_today INTEGER NOT NULL DEFAULT 0,
-  sent_today_date TEXT,                 -- YYYY-MM-DD du compteur sent_today
-  last_sent_at INTEGER,                 -- epoch ms du dernier envoi
-  next_allowed_at INTEGER,              -- epoch ms avant lequel ce compte ne doit pas renvoyer
+  sent_today_date TEXT,                 -- YYYY-MM-DD of the sent_today counter
+  last_sent_at INTEGER,                 -- epoch ms of the last send
+  next_allowed_at INTEGER,              -- epoch ms before which this account must not send
   active INTEGER NOT NULL DEFAULT 1,
-  warmup INTEGER NOT NULL DEFAULT 1,    -- montée en charge auto (WARMUP_START/j puis +WARMUP_RAMP/sem. jusqu'au quota)
+  warmup INTEGER NOT NULL DEFAULT 1,    -- auto ramp-up (WARMUP_START/day, +WARMUP_RAMP/week up to the quota)
   created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
 );
 
@@ -40,25 +40,25 @@ CREATE TABLE IF NOT EXISTS steps (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
   step_number INTEGER NOT NULL,          -- 1, 2, 3...
-  subject TEXT NOT NULL,                 -- vide pour les relances => même fil (Re:)
-  subject_b TEXT,                        -- variante B du sujet (A/B test, étape 1 uniquement)
-  body TEXT NOT NULL,                    -- texte avec variables {{first_name}} etc.
-  wait_days INTEGER NOT NULL DEFAULT 0,  -- délai après l'étape précédente
+  subject TEXT NOT NULL,                 -- empty for follow-ups => same thread (Re:)
+  subject_b TEXT,                        -- subject variant B (A/B test, step 1 only)
+  body TEXT NOT NULL,                    -- text with {{first_name}} etc.
+  wait_days INTEGER NOT NULL DEFAULT 0,  -- delay after the previous step
   channel TEXT NOT NULL DEFAULT 'email', -- 'email' | 'linkedin'
-  li_action TEXT,                        -- si channel='linkedin' : 'invite' | 'message'
+  li_action TEXT,                        -- if channel='linkedin': 'invite' | 'message'
   UNIQUE (campaign_id, step_number)
 );
 
 CREATE TABLE IF NOT EXISTS contacts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  email TEXT UNIQUE,                     -- NULL = joignable seulement sur LinkedIn
+  email TEXT UNIQUE,                     -- NULL = reachable on LinkedIn only
   first_name TEXT,
   last_name TEXT,
   company TEXT,
-  linkedin TEXT,                         -- URL du profil LinkedIn (pour les étapes LinkedIn)
-  extra TEXT,                            -- JSON : colonnes CSV supplémentaires
+  linkedin TEXT,                         -- LinkedIn profile URL
+  extra TEXT,                            -- JSON: extra CSV columns
   attio_record_id TEXT,
-  do_not_contact INTEGER NOT NULL DEFAULT 0, -- désinscrit du tableau de bord (campagnes sans propriétaire ; clients : owner_opt_outs)
+  do_not_contact INTEGER NOT NULL DEFAULT 0, -- opted out of the dashboard (ownerless campaigns; clients: owner_opt_outs)
   created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
 );
 
@@ -67,13 +67,13 @@ CREATE TABLE IF NOT EXISTS campaign_contacts (
   campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
   contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
   status TEXT NOT NULL DEFAULT 'pending',  -- pending | in_progress | replied | opted_out | bounced | completed | stopped | failed
-  current_step INTEGER NOT NULL DEFAULT 0, -- dernière étape envoyée (0 = aucune)
-  variant TEXT,                            -- 'A' ou 'B' si A/B test sur le sujet de l'étape 1
-  handled_msgs TEXT,                       -- JSON : ids Gmail des messages déjà traités (ex. réponses auto)
-  next_send_at INTEGER,                    -- epoch ms du prochain envoi prévu
-  account_id INTEGER REFERENCES accounts(id), -- compte assigné au 1er envoi, fixe ensuite (continuité du fil)
-  thread_id TEXT,                          -- thread Gmail
-  last_gmail_message_id TEXT,              -- Message-ID RFC822 du dernier envoi (References/In-Reply-To)
+  current_step INTEGER NOT NULL DEFAULT 0, -- last step sent (0 = none)
+  variant TEXT,                            -- 'A' or 'B' (step 1 subject A/B test)
+  handled_msgs TEXT,                       -- JSON: Gmail ids of already handled messages (e.g. auto-replies)
+  next_send_at INTEGER,                    -- epoch ms of the next planned send
+  account_id INTEGER REFERENCES accounts(id), -- set on the 1st send, then fixed (thread continuity)
+  thread_id TEXT,                          -- Gmail thread
+  last_gmail_message_id TEXT,              -- RFC822 Message-ID of the last send (References/In-Reply-To)
   replied_at INTEGER,
   error TEXT,
   UNIQUE (campaign_id, contact_id)
@@ -93,30 +93,29 @@ CREATE INDEX IF NOT EXISTS idx_cc_due ON campaign_contacts (status, next_send_at
 CREATE INDEX IF NOT EXISTS idx_cc_campaign ON campaign_contacts (campaign_id);
 CREATE INDEX IF NOT EXISTS idx_messages_cc ON messages (campaign_contact_id);
 
--- File des actions LinkedIn d'une séquence (invitation / message). Quand une
--- étape LinkedIn devient due, le scheduler y dépose une ligne ; l'extension
--- Chrome la consomme à un rythme « humain » imposé par outreach.ts (quotas du
--- jour, plage horaire, délais aléatoires, warm-up) — c'est le rempart anti-ban.
--- Le succès fait avancer le campaign_contact à l'étape suivante.
+-- Queue of LinkedIn sequence actions (invite / message), filled by the scheduler
+-- when a LinkedIn step is due. The executor consumes it at the human pace enforced
+-- by outreach.ts (daily caps, hours, random delays): the anti-ban safeguard.
+-- Success moves the campaign_contact to the next step.
 CREATE TABLE IF NOT EXISTS li_actions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   campaign_contact_id INTEGER NOT NULL REFERENCES campaign_contacts(id) ON DELETE CASCADE,
-  step_number INTEGER NOT NULL,          -- étape de séquence à valider au succès
-  linkedin TEXT NOT NULL,                -- URL du profil cible
+  step_number INTEGER NOT NULL,          -- sequence step completed on success
+  linkedin TEXT NOT NULL,                -- target profile URL
   type TEXT NOT NULL,                    -- 'invite' | 'message'
-  body TEXT,                             -- note d'invitation / corps du message (variables rendues)
+  body TEXT,                             -- invite note / message body (variables rendered)
   status TEXT NOT NULL DEFAULT 'pending',-- pending | sending | sent | failed
   attempts INTEGER NOT NULL DEFAULT 0,
   error TEXT,
-  lease_at INTEGER,                      -- bail 'sending' (anti double-envoi)
-  not_before INTEGER,                    -- ne pas tenter avant (report : message à un non-connecté)
+  lease_at INTEGER,                      -- 'sending' lease (prevents double sends)
+  not_before INTEGER,                    -- do not try before (postponed: message to a non-connection)
   created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
   sent_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_li_actions_status ON li_actions (status);
 CREATE INDEX IF NOT EXISTS idx_li_actions_cc ON li_actions (campaign_contact_id);
 
--- Journal des actions LinkedIn réellement effectuées : base des quotas du jour.
+-- Log of LinkedIn actions actually performed: basis of the daily caps.
 CREATE TABLE IF NOT EXISTS li_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   type TEXT NOT NULL,                    -- invite | message
@@ -125,7 +124,7 @@ CREATE TABLE IF NOT EXISTS li_log (
 CREATE INDEX IF NOT EXISTS idx_li_log_sent ON li_log (sent_at);
 `);
 
-// Migrations additives sur les bases existantes
+// Additive migrations for existing databases
 function addColumnIfMissing(table: string, column: string, ddl: string): void {
   const cols = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
     (c) => c.name
@@ -143,20 +142,17 @@ addColumnIfMissing("steps", "channel", "channel TEXT NOT NULL DEFAULT 'email'");
 addColumnIfMissing("steps", "li_action", "li_action TEXT");
 addColumnIfMissing("contacts", "linkedin", "linkedin TEXT");
 addColumnIfMissing("campaign_contacts", "visit_token", "visit_token TEXT");
-// Warm-up : la montée en charge repart de cette date (et non de la création du
-// compte), pour qu'activer le warm-up sur un compte ancien recommence vraiment bas.
+// Warm-up ramps from this date, not account creation, so enabling it on an old account starts low again.
 addColumnIfMissing("accounts", "warmup_started_at", "warmup_started_at INTEGER");
-// Jeton de désinscription stable par contact de campagne (en-tête List-Unsubscribe).
+// Stable unsubscribe token per campaign contact (List-Unsubscribe header).
 addColumnIfMissing("campaign_contacts", "unsub_token", "unsub_token TEXT");
-// Comptes d'envoi autorisés pour la campagne : JSON [ids] ; NULL = tous les comptes
-// (y compris ceux connectés après la création de la campagne).
+// Sending accounts allowed for the campaign: JSON [ids]; NULL = all, including accounts connected later.
 addColumnIfMissing("campaigns", "account_ids", "account_ids TEXT");
 db.exec(
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_unsub_token ON campaign_contacts (unsub_token) WHERE unsub_token IS NOT NULL"
 );
 
-// Nettoyage de l'ancien suivi ouverture/clic (pixel + liens réécrits), retiré au
-// profit du seul lien {{link}} : on supprime tables, index et colonne devenus inutiles.
+// Drop the old open/click tracking (pixel + rewritten links), replaced by the {{link}} visit link.
 db.exec(`
 DROP INDEX IF EXISTS idx_messages_track;
 DROP INDEX IF EXISTS idx_email_events_track;
@@ -167,31 +163,30 @@ DROP TABLE IF EXISTS tracked_links;
 try {
   db.exec("ALTER TABLE messages DROP COLUMN track_id");
 } catch {
-  // colonne déjà absente (base récente) : rien à faire
+  // column already gone (recent database)
 }
 
 db.exec(`
--- Visites du lien personnalisé {{link}} : un jeton stable par campaign_contact
--- (campaign_contacts.visit_token) ; chaque ouverture du lien crée une ligne ici.
+-- Visits of the personal {{link}}: one stable token per campaign_contact
+-- (campaign_contacts.visit_token); one row per opening.
 CREATE TABLE IF NOT EXISTS visits (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   cc_id INTEGER NOT NULL REFERENCES campaign_contacts(id) ON DELETE CASCADE,
   at INTEGER NOT NULL,
   user_agent TEXT,
   ip TEXT,
-  is_bot INTEGER NOT NULL DEFAULT 0,   -- 1 = visite d'un bot/scanner, exclue des compteurs
-  bot_reason TEXT                       -- motif du classement (cf. services/botFilter.ts)
+  is_bot INTEGER NOT NULL DEFAULT 0,   -- 1 = bot/scanner visit, excluded from counts
+  bot_reason TEXT                       -- classification reason (see services/botFilter.ts)
 );
 CREATE INDEX IF NOT EXISTS idx_visits_cc ON visits (cc_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_visit_token ON campaign_contacts (visit_token) WHERE visit_token IS NOT NULL;
 `);
-// Bases déjà créées avant le filtrage bot : on ajoute les colonnes manquantes.
+// Databases created before bot filtering.
 addColumnIfMissing("visits", "is_bot", "is_bot INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("visits", "bot_reason", "bot_reason TEXT");
 
-// v1 : la signature n'est plus ajoutée automatiquement en fin d'email mais placée
-// via {{signature}} — les étapes existantes la reçoivent en fin de corps pour
-// conserver exactement le rendu d'avant.
+// v1: the signature is no longer appended automatically but placed via {{signature}};
+// existing steps get it at the end of the body to keep their exact rendering.
 if ((db.pragma("user_version", { simple: true }) as number) < 1) {
   db.exec(
     "UPDATE steps SET body = body || char(10) || char(10) || '{{signature}}' WHERE body NOT LIKE '%{{signature}}%'"
@@ -199,9 +194,8 @@ if ((db.pragma("user_version", { simple: true }) as number) < 1) {
   db.pragma("user_version = 1");
 }
 
-// Reclasse toutes les visites existantes (bot/scanner vs humain) avec la logique
-// courante : à exécuter quand les heuristiques de botFilter évoluent, pour que les
-// compteurs « ont visité » restent cohérents avec les nouvelles visites.
+// Reclassifies all existing visits (bot vs human) with the current logic: run it when the
+// botFilter heuristics change, so "visited" counts stay consistent with new visits.
 function reclassifyAllVisits(): void {
   const rows = db.prepare("SELECT id, cc_id, at, user_agent, ip FROM visits").all() as Array<{
     id: number;
@@ -224,48 +218,46 @@ function reclassifyAllVisits(): void {
   })();
 }
 
-// v2 : premier classement rétroactif (user-agent + IP datacenter + délai envoi→clic).
+// v2: first retroactive classification (user agent + datacenter IP + send-to-click delay).
 if ((db.pragma("user_version", { simple: true }) as number) < 2) {
   reclassifyAllVisits();
   db.pragma("user_version = 2");
 }
 
-// v3 : plages d'IP datacenter élargies (DigitalOcean, Hetzner, OVH, Linode, Vultr,
-// Scaleway, Oracle) → on reclasse pour absorber les scanners passés inaperçus.
+// v3: wider datacenter IP ranges (DigitalOcean, Hetzner, OVH, Linode, Vultr, Scaleway, Oracle).
 if ((db.pragma("user_version", { simple: true }) as number) < 3) {
   reclassifyAllVisits();
   db.pragma("user_version = 3");
 }
 
-// Plusieurs comptes LinkedIn : chacun a sa propre session (extension Chrome ou
-// navigateur serveur), identifiée par un jeton, et ses propres quotas, délais et
-// pauses. Un contact reste attaché au compte qui l'a abordé en premier : un
-// message LinkedIn ne peut partir que d'un compte connecté au destinataire.
+// Multiple LinkedIn accounts, each with its own session (extension or server browser),
+// token, caps, delays and pauses. A contact stays bound to the account that first
+// reached them: a LinkedIn message can only come from a connection.
 db.exec(`
 CREATE TABLE IF NOT EXISTS li_accounts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  token_hash TEXT NOT NULL UNIQUE,       -- sha256 du jeton envoyé par l'extension (en-tête X-LI-Account)
+  token_hash TEXT NOT NULL UNIQUE,       -- sha256 of the extension token (X-LI-Account header)
   active INTEGER NOT NULL DEFAULT 1,
   invites_per_day INTEGER,               -- NULL = LI_INVITES_PER_DAY
   messages_per_day INTEGER,              -- NULL = LI_MESSAGES_PER_DAY
-  warmup_started_at INTEGER,             -- inutilisé (warm-up LinkedIn retiré)
-  next_allowed_at INTEGER,               -- délai aléatoire entre deux actions
-  paused_until INTEGER,                  -- pause de sécurité après un échec
-  last_seen_at INTEGER,                  -- dernier appel de l'extension (« connecté »)
+  warmup_started_at INTEGER,             -- unused (LinkedIn warm-up removed)
+  next_allowed_at INTEGER,               -- random delay between two actions
+  paused_until INTEGER,                  -- safety pause after a failure
+  last_seen_at INTEGER,                  -- last executor call ("connected")
   created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
 );
 `);
 addColumnIfMissing("li_actions", "li_account_id", "li_account_id INTEGER REFERENCES li_accounts(id)");
 addColumnIfMissing("li_log", "li_account_id", "li_account_id INTEGER REFERENCES li_accounts(id)");
 addColumnIfMissing("campaign_contacts", "li_account_id", "li_account_id INTEGER REFERENCES li_accounts(id)");
-// Comptes LinkedIn autorisés pour la campagne : JSON [ids] ; NULL = tous.
+// LinkedIn accounts allowed for the campaign: JSON [ids]; NULL = all.
 addColumnIfMissing("campaigns", "li_account_ids", "li_account_ids TEXT");
 db.exec("CREATE INDEX IF NOT EXISTS idx_li_actions_account ON li_actions (li_account_id, status)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_li_log_account ON li_log (li_account_id, sent_at)");
 
-// v4 : l'historique LinkedIn d'avant le multi-comptes appartient à un compte
-// « principal », qui sert aussi l'extension déjà installée (sans jeton).
+// v4: LinkedIn history from before multi-account belongs to a "main" account,
+// which also serves the already installed extension (no token).
 if ((db.pragma("user_version", { simple: true }) as number) < 4) {
   db.transaction(() => {
     const hasHistory = db.prepare("SELECT 1 FROM li_actions UNION SELECT 1 FROM li_log LIMIT 1").get();
@@ -287,11 +279,9 @@ if ((db.pragma("user_version", { simple: true }) as number) < 4) {
   })();
 }
 
-// Navigateur serveur (façon lemlist) : un compte en mode 'server' est piloté par
-// le service runner (Chromium sur le VPS, derrière son propre proxy) avec la
-// session LinkedIn envoyée par l'extension. Proxy et session sont chiffrés
-// (LI_SECRET_KEY). last_inbox_at cadence la lecture de la messagerie qui
-// détecte les réponses.
+// Server browser: a 'server' mode account is driven by the runner (Chromium on the VPS,
+// behind its own proxy) with the session sent by the extension. Proxy and session are
+// encrypted (LI_SECRET_KEY). last_inbox_at paces the inbox reads that detect replies.
 addColumnIfMissing("li_accounts", "mode", "mode TEXT NOT NULL DEFAULT 'extension'"); // extension | server
 addColumnIfMissing("li_accounts", "proxy_enc", "proxy_enc TEXT");
 addColumnIfMissing("li_accounts", "session_enc", "session_enc TEXT");
@@ -299,16 +289,15 @@ addColumnIfMissing("li_accounts", "session_state", "session_state TEXT"); // NUL
 addColumnIfMissing("li_accounts", "session_error", "session_error TEXT");
 addColumnIfMissing("li_accounts", "session_updated_at", "session_updated_at INTEGER");
 addColumnIfMissing("li_accounts", "last_inbox_at", "last_inbox_at INTEGER");
-// Fil de messagerie LinkedIn où le contact a répondu (lien dans le tableau de bord).
+// LinkedIn thread where the contact replied (link in the dashboard).
 addColumnIfMissing("campaign_contacts", "li_thread_url", "li_thread_url TEXT");
-// Page Réponses : dernier message LinkedIn du contact (aperçu de la messagerie), réponse ouverte, réponse traitée.
+// Replies page: contact's last LinkedIn message (inbox preview), reply opened, reply handled.
 addColumnIfMissing("campaign_contacts", "li_reply_text", "li_reply_text TEXT");
 addColumnIfMissing("campaign_contacts", "inbox_seen_at", "inbox_seen_at INTEGER");
 addColumnIfMissing("campaign_contacts", "inbox_done_at", "inbox_done_at INTEGER");
 
-// v5 : un contact peut n'avoir que LinkedIn (candidats sans email connu).
-// SQLite ne sait pas retirer un NOT NULL : on reconstruit la table (procédure
-// officielle, clés étrangères suspendues le temps de l'échange).
+// v5: a contact may have only LinkedIn (no known email). SQLite cannot drop a NOT NULL:
+// rebuild the table (official procedure, foreign keys off during the swap).
 if ((db.pragma("user_version", { simple: true }) as number) < 5) {
   const cols = db.prepare("PRAGMA table_info(contacts)").all() as Array<{ name: string; notnull: number }>;
   if (cols.find((c) => c.name === "email")?.notnull) {
@@ -340,7 +329,7 @@ if ((db.pragma("user_version", { simple: true }) as number) < 5) {
       db.pragma("foreign_keys = ON");
     }
   }
-  // URLs LinkedIn sous forme canonique : clé de dédoublonnage et de rapprochement.
+  // Canonical LinkedIn URLs: dedup and matching key.
   const upd = db.prepare("UPDATE contacts SET linkedin = ? WHERE id = ?");
   db.transaction(() => {
     for (const r of db.prepare("SELECT id, linkedin FROM contacts WHERE linkedin IS NOT NULL").all() as Array<{ id: number; linkedin: string }>) {
@@ -352,11 +341,10 @@ if ((db.pragma("user_version", { simple: true }) as number) < 5) {
 }
 db.exec("CREATE INDEX IF NOT EXISTS idx_contacts_linkedin ON contacts (linkedin)");
 
-// Plusieurs clients (Azerit) : chaque compte LinkedIn et chaque campagne
-// appartiennent à un propriétaire (owner_ref, ex. « azerit:u:12 » ; NULL = le
-// tableau de bord Sequence Mail). Une campagne n'est servie qu'aux comptes du
-// même propriétaire (outreach.ts), quel que soit le reste de la configuration.
-// external_ref : clé de la campagne chez le client (ex. le poste Azerit).
+// Multiple clients (Azerit): each LinkedIn account and campaign has an owner (owner_ref,
+// e.g. "azerit:u:12"; NULL = the Sequence Mail dashboard). A campaign is only served to
+// accounts of the same owner (outreach.ts), whatever the rest of the configuration.
+// external_ref: the campaign's key on the client side (e.g. the Azerit job).
 addColumnIfMissing("li_accounts", "owner_ref", "owner_ref TEXT");
 addColumnIfMissing("campaigns", "owner_ref", "owner_ref TEXT");
 addColumnIfMissing("campaigns", "external_ref", "external_ref TEXT");
@@ -364,23 +352,22 @@ db.exec(
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_external ON campaigns (owner_ref, external_ref) WHERE external_ref IS NOT NULL"
 );
 db.exec("CREATE INDEX IF NOT EXISTS idx_li_accounts_owner ON li_accounts (owner_ref)");
-// Identité LinkedIn du compte (profil /in/<slug> réellement connecté), relevée
-// à la remise de session puis revérifiée par l'exécutant avant chaque action :
-// un message ne part jamais d'un autre profil que celui-ci.
+// LinkedIn identity of the account (/in/<slug> actually logged in), read when the session
+// is handed over and rechecked by the executor before each action: a message never
+// leaves from any other profile.
 addColumnIfMissing("li_accounts", "member_slug", "member_slug TEXT");
 addColumnIfMissing("li_accounts", "member_name", "member_name TEXT");
 addColumnIfMissing("li_accounts", "member_avatar", "member_avatar TEXT");
 addColumnIfMissing("li_accounts", "member_checked_at", "member_checked_at INTEGER");
-// Profil qui a effectivement joué l'action (trace « envoyé depuis … »).
+// Profile that actually performed the action ("sent from ...").
 addColumnIfMissing("li_actions", "member_slug", "member_slug TEXT");
-// Variables propres à une inscription (message rédigé pour CE candidat sur CE
-// poste) : prioritaires sur contacts.extra, partagé entre toutes les campagnes.
+// Per-enrollment variables (message written for THIS candidate on THIS job): take
+// precedence over contacts.extra, which is shared across campaigns.
 addColumnIfMissing("campaign_contacts", "vars", "vars TEXT");
-// Clé du candidat chez le client (lead Azerit) : statuts renvoyés par cette clé.
+// Candidate key on the client side (Azerit lead): statuses are reported by this key.
 addColumnIfMissing("campaign_contacts", "external_key", "external_key TEXT");
-// Désinscriptions auprès d'un client (owner_ref) : un refus exprimé sur la
-// campagne d'un client ne vaut que pour lui (cf. services/opt-out.ts). Le
-// tableau de bord (owner_ref NULL) garde contacts.do_not_contact.
+// Opt-outs per client (owner_ref): a refusal on a client's campaign only applies to that
+// client (see services/opt-out.ts). The dashboard (owner_ref NULL) keeps contacts.do_not_contact.
 db.exec(`
 CREATE TABLE IF NOT EXISTS owner_opt_outs (
   owner_ref TEXT NOT NULL,
@@ -391,22 +378,19 @@ CREATE TABLE IF NOT EXISTS owner_opt_outs (
 );
 `);
 
-// Branches de séquence selon l'invitation LinkedIn : une étape peut ne valoir
-// que si l'invitation est acceptée, ou seulement si elle ne l'est pas (NULL =
-// tous les contacts). L'état est relevé par contact de campagne :
-// li_accepted NULL = pas encore connu, 1 = acceptée, 0 = non acceptée.
+// Sequence branches on the LinkedIn invite: a step may apply only if the invite is
+// accepted, or only if it is not (NULL = all contacts).
+// li_accepted: NULL = unknown yet, 1 = accepted, 0 = not accepted.
 addColumnIfMissing("steps", "branch", "branch TEXT");
 addColumnIfMissing("campaign_contacts", "li_accepted", "li_accepted INTEGER");
 
-// Description de la campagne : à qui elle s'adresse, quels contacts y mettre,
-// l'angle du message. Saisie à la création, lue par les agents (MCP) avant
-// d'ajouter des contacts ou de retoucher la séquence.
+// Campaign description (audience, which contacts to add, message angle), read by
+// agents (MCP) before adding contacts or editing the sequence.
 addColumnIfMissing("campaigns", "description", "description TEXT");
 
-// Consigne d'une variable de personnalisation ({{personnalisation}}…) : à quoi elle correspond, ce qu'elle
-// contient, sa longueur, son ton. Une seule par nom de variable, pour toutes les campagnes ; saisie sous le
-// texte des étapes, lue par l'agent (MCP) qui remplit la variable des contacts.
+// Instruction for a personalization variable ({{personnalisation}}…): meaning, content, length, tone.
+// One per variable name, shared by all campaigns; read by the agent (MCP) that fills it for contacts.
 db.exec("CREATE TABLE IF NOT EXISTS variable_instructions (name TEXT PRIMARY KEY, instruction TEXT NOT NULL)");
 
-// Réglages saisis dans l'interface (identifiants Google…), en complément du .env qui reste prioritaire.
+// Settings entered in the UI (Google credentials…); the .env takes precedence.
 db.exec("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");

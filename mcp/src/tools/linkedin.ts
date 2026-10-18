@@ -1,6 +1,6 @@
 /**
- * Canal LinkedIn : état général, interrupteur, et comptes LinkedIn (création
- * avec jeton d'extension, réglages, régénération du jeton, suppression).
+ * LinkedIn channel: overall status, master switch, and LinkedIn accounts
+ * (creation with extension token, settings, token rotation, deletion).
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -8,49 +8,49 @@ import { api, ApiError, PUBLIC_URL } from "../api.js";
 import { isoDates } from "../lib.js";
 import { handler, READ } from "./common.js";
 
-const liAccountId = z.number().int().describe("Identifiant du compte LinkedIn (list_linkedin_accounts).");
+const liAccountId = z.number().int().describe("LinkedIn account id (list_linkedin_accounts).");
 
 const updateShape = {
   li_account_id: liAccountId,
-  name: z.string().min(1).optional().describe("Nouveau nom du compte."),
+  name: z.string().min(1).optional().describe("New account name."),
   active: z
     .boolean()
     .optional()
-    .describe("false = le compte n'agit plus ; true = le réactive (et lève une pause de sécurité en cours)."),
+    .describe("false = the account stops acting; true = reactivates it (and lifts an ongoing safety pause)."),
   mode: z
     .enum(["extension", "server"])
     .optional()
     .describe(
-      "Qui exécute : « extension » (Chrome de l'utilisateur) ou « server » (navigateur serveur, nécessite une session transmise par l'extension : session.stored). Préférer le bouton « Confier ce compte au serveur » de l'extension, qui transmet la session et bascule le mode."
+      "Who runs it: \"extension\" (the user's Chrome) or \"server\" (server-side browser; needs a session handed over by the extension: session.stored). Prefer the extension's \"Confier ce compte au serveur\" (hand over to server) button, which sends the session and switches the mode."
     ),
   proxy: z
     .union([z.string(), z.null()])
     .optional()
-    .describe("Proxy du mode serveur : http://utilisateur:motdepasse@hôte:port (ou https://, socks5://). null ou \"\" le retire."),
+    .describe("Server-mode proxy: http://user:password@host:port (or https://, socks5://). null or \"\" removes it."),
   invites_per_day: z
     .union([z.number().int().min(0), z.null()])
     .optional()
-    .describe("Plafond d'invitations par jour. null = défaut de l'app."),
+    .describe("Daily invitation cap. null = app default."),
   messages_per_day: z
     .union([z.number().int().min(0), z.null()])
     .optional()
-    .describe("Plafond de messages par jour. null = défaut de l'app."),
+    .describe("Daily message cap. null = app default."),
 };
 type UpdateArgs = z.infer<z.ZodObject<typeof updateShape>>;
 
-/** Étapes pour relier un compte LinkedIn à l'extension Chrome avec son jeton. */
+/** Steps to link a LinkedIn account to the Chrome extension with its token. */
 function extensionSteps(token: string): string[] {
   return [
-    `Jeton du compte : ${token} — affiché une seule fois (perdu → rotate_linkedin_token).`,
-    "1. Dans Chrome, se connecter à LinkedIn avec le profil de ce compte (plusieurs comptes LinkedIn = un profil Chrome par compte).",
-    "2. Installer l'extension (une fois par profil Chrome) : chrome://extensions → activer le Mode développeur → « Charger l'extension non empaquetée » → dossier Sequence-mail/extension. L'épingler.",
-    "3. Ouvrir le popup de l'extension (si seule la vue « Azerit » s'affiche, cliquer « Advanced settings »), puis :",
-    `   - Adresse du serveur : ${PUBLIC_URL} → OK ;`,
-    "   - Mot de passe d'accès (prod protégée) : utilisateur et mot de passe du dashboard → OK (laisser vide en local) ;",
-    "   - Jeton du compte LinkedIn : le jeton ci-dessus → OK.",
-    "4. Laisser un onglet Chrome ouvert : au prochain tick (~1 min), list_linkedin_accounts montre connected: true et le profil LinkedIn détecté (member).",
-    "5. Facultatif : bouton « Confier ce compte au serveur » du popup → mode serveur, le serveur agit sans que ce Chrome reste ouvert (ne pas se déconnecter de LinkedIn ensuite). Nécessite server_mode_ready: true dans linkedin_status.",
-    "Ensuite : la campagne doit autoriser ce compte (li_account_ids de create_campaign / update_campaign ; omis = tous les comptes). Quotas et proxy : update_linkedin_account.",
+    `Account token: ${token} — shown only once (lost → rotate_linkedin_token).`,
+    "1. In Chrome, log in to LinkedIn with this account's profile (several LinkedIn accounts = one Chrome profile per account).",
+    "2. Install the extension (once per Chrome profile): chrome://extensions → enable Developer mode → \"Load unpacked\" → folder Sequence-mail/extension. Pin it.",
+    "3. Open the extension popup (if only the \"Azerit\" view shows, click \"Advanced settings\"), then:",
+    `   - "Adresse du serveur" (server address): ${PUBLIC_URL} → OK;`,
+    "   - \"Mot de passe d'accès\" (access password, protected instance): dashboard username and password → OK (leave empty locally);",
+    "   - \"Jeton du compte LinkedIn\" (LinkedIn account token): the token above → OK.",
+    "4. Keep a Chrome tab open: at the next tick (~1 min), list_linkedin_accounts shows connected: true and the detected LinkedIn profile (member).",
+    "5. Optional: the popup's \"Confier ce compte au serveur\" (hand over to server) button → server mode, the server acts without this Chrome staying open (don't log out of LinkedIn afterwards). Requires server_mode_ready: true in linkedin_status.",
+    "Then: the campaign must allow this account (li_account_ids of create_campaign / update_campaign; omitted = all accounts). Quotas and proxy: update_linkedin_account.",
   ];
 }
 
@@ -58,9 +58,9 @@ export function registerLinkedinTools(server: McpServer): void {
   server.registerTool(
     "linkedin_status",
     {
-      title: "État du canal LinkedIn",
+      title: "LinkedIn channel status",
       description:
-        "État de l'automatisation LinkedIn, multi-comptes : interrupteur général, totaux du jour, file, server_mode_ready (mode serveur disponible), et détail par compte LinkedIn (accounts : id, nom, extension connectée, quotas du jour, pause de sécurité, contacts attachés).",
+        "LinkedIn automation status, multi-account: master switch, today's totals, queue, server_mode_ready (server mode available), and per-account detail (accounts: id, name, extension connected, today's quotas, safety pause, attached contacts).",
       inputSchema: {},
       annotations: READ,
     },
@@ -70,10 +70,10 @@ export function registerLinkedinTools(server: McpServer): void {
   server.registerTool(
     "linkedin_toggle",
     {
-      title: "Activer/désactiver le canal LinkedIn",
+      title: "Enable/disable the LinkedIn channel",
       description:
-        "Active ou met en pause l'automatisation LinkedIn de TOUS les comptes (interrupteur général). Renvoie le nouvel état. Pour un seul compte : update_linkedin_account { active }.",
-      inputSchema: { enabled: z.boolean().describe("true pour activer, false pour mettre en pause.") },
+        "Enables or pauses LinkedIn automation for ALL accounts (master switch). Returns the new state. For a single account: update_linkedin_account { active }.",
+      inputSchema: { enabled: z.boolean().describe("true to enable, false to pause.") },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     handler(({ enabled }: { enabled: boolean }) => api("POST", "/api/li/toggle", { json: { enabled } }))
@@ -82,9 +82,9 @@ export function registerLinkedinTools(server: McpServer): void {
   server.registerTool(
     "list_linkedin_accounts",
     {
-      title: "Comptes LinkedIn",
+      title: "LinkedIn accounts",
       description:
-        "Liste les comptes LinkedIn : id (pour li_account_ids des campagnes et les tools *_linkedin_account), nom, profil LinkedIn détecté (member), actif, mode (extension|server), connected (exécutant vu il y a moins de 2 min), session (mode serveur : état, stockée ou non), proxy, plafonds et envois du jour, file, contacts attachés. owner_ref non nul = compte d'un client Azerit (géré depuis Azerit). Dates en ISO 8601 (UTC).",
+        "Lists LinkedIn accounts: id (for campaigns' li_account_ids and the *_linkedin_account tools), name, detected LinkedIn profile (member), active, mode (extension|server), connected (runner seen within 2 min), session (server mode: state, stored or not), proxy, caps and today's sends, queue, attached contacts. Non-null owner_ref = an Azerit client's account (managed from Azerit). Dates in ISO 8601 (UTC).",
       inputSchema: {},
       annotations: READ,
     },
@@ -94,11 +94,11 @@ export function registerLinkedinTools(server: McpServer): void {
   server.registerTool(
     "create_linkedin_account",
     {
-      title: "Créer un compte LinkedIn",
+      title: "Create a LinkedIn account",
       description:
-        "Crée un compte LinkedIn d'envoi et renvoie son jeton EN CLAIR (affiché une seule fois) avec les étapes pour le relier : installer l'extension Chrome une fois et y coller le jeton (geste fait par l'utilisateur, hors de Claude). Démarre avec les plafonds par défaut. Donne le jeton et les étapes à l'utilisateur.",
+        "Creates a LinkedIn sending account and returns its token IN CLEAR (shown only once) with the steps to link it: install the Chrome extension once and paste the token (done by the user, outside Claude). Starts with default caps. Give the token and steps to the user.",
       inputSchema: {
-        name: z.string().min(1).describe("Nom du compte (ex. le nom de la personne dont c'est le profil LinkedIn)."),
+        name: z.string().min(1).describe("Account name (e.g. the name of the person whose LinkedIn profile it is)."),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
@@ -113,15 +113,15 @@ export function registerLinkedinTools(server: McpServer): void {
   server.registerTool(
     "update_linkedin_account",
     {
-      title: "Modifier un compte LinkedIn",
+      title: "Update a LinkedIn account",
       description:
-        "Modifie un compte LinkedIn : nom, actif/inactif, mode (extension|server), proxy, plafonds quotidiens d'invitations et de messages (null = défaut de l'app). Seuls les champs fournis changent. Renvoie l'état du compte.",
+        "Updates a LinkedIn account: name, active/inactive, mode (extension|server), proxy, daily invitation and message caps (null = app default). Only provided fields change. Returns the account state.",
       inputSchema: updateShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     handler(async ({ li_account_id, ...fields }: UpdateArgs) => {
       const body = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
-      if (!Object.keys(body).length) throw new Error("Aucun champ à modifier.");
+      if (!Object.keys(body).length) throw new Error("No field to update.");
       return isoDates(await api("PATCH", `/api/li/accounts/${li_account_id}`, { json: body }));
     })
   );
@@ -129,9 +129,9 @@ export function registerLinkedinTools(server: McpServer): void {
   server.registerTool(
     "rotate_linkedin_token",
     {
-      title: "Régénérer le jeton LinkedIn",
+      title: "Rotate LinkedIn token",
       description:
-        "Remplace le jeton d'extension d'un compte LinkedIn (jeton perdu ou divulgué). L'ancien cesse IMMÉDIATEMENT de marcher : l'extension qui l'utilise est refusée jusqu'à ce que le nouveau jeton soit collé dans son popup. Un compte en mode serveur continue d'agir (le serveur n'utilise pas ce jeton). À confirmer avec l'utilisateur.",
+        "Replaces a LinkedIn account's extension token (lost or leaked). The old one stops working IMMEDIATELY: the extension using it is refused until the new token is pasted into its popup. A server-mode account keeps acting (the server doesn't use this token). Confirm with the user.",
       inputSchema: { li_account_id: liAccountId },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
@@ -140,7 +140,7 @@ export function registerLinkedinTools(server: McpServer): void {
       return {
         token,
         next_steps:
-          "Affiché une seule fois. Dans le popup de l'extension de ce compte : champ « Jeton du compte LinkedIn » → coller le nouveau jeton → OK.",
+          "Shown only once. In this account's extension popup: field \"Jeton du compte LinkedIn\" (LinkedIn account token) → paste the new token → OK.",
       };
     })
   );
@@ -148,9 +148,9 @@ export function registerLinkedinTools(server: McpServer): void {
   server.registerTool(
     "delete_linkedin_account",
     {
-      title: "Supprimer un compte LinkedIn",
+      title: "Delete a LinkedIn account",
       description:
-        "Supprime DÉFINITIVEMENT un compte LinkedIn qui n'a encore rien fait. L'app refuse si le compte a déjà agi ou a des contacts (leurs messages ne peuvent partir que de lui) : le désactiver alors avec update_linkedin_account { active: false }. À confirmer avec l'utilisateur.",
+        "PERMANENTLY deletes a LinkedIn account that hasn't done anything yet. The app refuses if the account has already acted or has contacts (their messages can only come from it): deactivate it instead with update_linkedin_account { active: false }. Confirm with the user.",
       inputSchema: { li_account_id: liAccountId },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
@@ -160,7 +160,7 @@ export function registerLinkedinTools(server: McpServer): void {
       } catch (err) {
         if (err instanceof ApiError && err.status === 409) {
           throw new Error(
-            `${err.message}\nConseil : désactive-le plutôt avec update_linkedin_account { li_account_id: ${li_account_id}, active: false } — ses contacts restent attachés à ce compte.`
+            `${err.message}\nTip: deactivate it instead with update_linkedin_account { li_account_id: ${li_account_id}, active: false }; its contacts stay attached to this account.`
           );
         }
         throw err;

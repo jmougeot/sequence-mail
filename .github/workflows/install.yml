@@ -1,0 +1,62 @@
+# Runs the one-command install exactly as a user would, on a fresh runner.
+# install.sh is fetched from this repo's main branch, so this tests the
+# published state (raw.githubusercontent.com may serve it a few minutes stale).
+name: install
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - install.sh
+      - setup.sh
+      - docker-compose.yml
+      - Caddyfile.template
+      - Dockerfile
+      - src/**
+  workflow_dispatch:
+  # Re-test once a new image is published to ghcr.io
+  workflow_run:
+    workflows: [docker]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: install-test
+  cancel-in-progress: true
+
+jobs:
+  install:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install (curl | sudo bash)
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh \
+            | sudo DOMAIN=localhost DASHBOARD_PASSWORD=ci-password bash
+
+      - name: Dashboard requires the password
+        run: |
+          code="$(curl -sk -o /dev/null -w '%{http_code}' https://localhost/)"
+          echo "GET / without auth -> $code"
+          test "$code" = 401
+
+      - name: API answers with the password
+        run: |
+          code="$(curl -sk -u admin:ci-password -o settings.json -w '%{http_code}' https://localhost/api/settings)"
+          echo "GET /api/settings with auth -> $code"
+          test "$code" = 200
+          jq -e '.google_configured == false' settings.json
+
+      - name: Tracking links stay public
+        run: |
+          code="$(curl -sk -o /dev/null -w '%{http_code}' https://localhost/p/doesnotexist)"
+          echo "GET /p/doesnotexist without auth -> $code"
+          test "$code" != 401
+          test "$code" != 000
+
+      - name: Logs
+        if: failure()
+        run: sudo docker compose -f /opt/sequence-mail/docker-compose.yml logs

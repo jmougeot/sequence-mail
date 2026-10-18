@@ -1,21 +1,8 @@
 /**
- * Boîte de réception unifiée et outils de pilotage (façon lemlist), appelés par
- * le serveur MCP (Claude) comme par le tableau de bord :
- *   - /api/inbox : réponses reçues, toutes campagnes confondues (texte lu dans Gmail sur demande) ;
- *   - /api/inbox/counts et /api/campaign-contacts/:ccId/inbox : réponses à traiter, ouvertes, traitées
- *     (page Réponses du tableau de bord) ;
- *   - /api/campaign-contacts/:ccId/conversation : fil complet d'un contact
- *     (emails lus dans Gmail, étapes envoyées, actions LinkedIn) ;
- *   - /api/campaign-contacts/:ccId/reply : répondre à la main dans le fil email ;
- *   - /api/contacts : recherche globale de contacts ;
- *   - /api/activity : journal d'activité (envois, réponses, LinkedIn, visites) ;
- *   - /api/test-email : email de test d'une étape, rendu comme au scheduler ;
- *   - /api/campaigns/:id/preview : variables manquantes sur tous les contacts
- *     d'une campagne, avec le rendu des étapes pour quelques-uns.
- *
- * Toutes les campagnes sont visibles, y compris celles des clients Azerit
- * (owner_ref renvoyé). Une lecture Gmail qui échoue ne fait jamais échouer une
- * liste : l'erreur est rapportée sur la ligne concernée.
+ * Unified inbox and control tools (lemlist-style), used by the MCP server (Claude) and the dashboard:
+ * replies and their tracking, conversations, manual replies, contact search, activity log, test
+ * emails, campaign preview. All campaigns are visible, Azerit clients' included (owner_ref returned).
+ * A failed Gmail read never fails a list: the error is reported on the affected row.
  */
 import type express from "express";
 import { config } from "../config.js";
@@ -35,14 +22,14 @@ import { visitLink } from "./visits.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 const INBOX_STATUSES = ["replied", "opted_out", "bounced"];
-const GMAIL_CONCURRENCY = 5; // lectures Gmail simultanées au plus (include_text)
+const GMAIL_CONCURRENCY = 5; // max concurrent Gmail reads (include_text)
 const REPLY_TEXT_MAX = 2000;
 const THREAD_TEXT_MAX = 8000;
 const EVENTS_MAX = 300;
-// Aperçu d'une campagne : contacts à qui il reste quelque chose à envoyer
+// Campaign preview: contacts with something left to send
 const PREVIEW_STATUSES = ["held", "pending", "in_progress", "awaiting_li"];
 const CC_STATUSES = [...PREVIEW_STATUSES, "replied", "opted_out", "bounced", "completed", "stopped", "failed"];
-// Variables fournies par le compte d'envoi, pas par le contact
+// Variables provided by the sender account, not the contact
 const SENDER_VARS = new Set(["sender_name", "link", "signature"]);
 
 const SAMPLE_CONTACT = {
@@ -63,7 +50,7 @@ type ContactVars = {
 type MailKind = "sent" | "reply" | "auto_reply" | "bounce";
 type Handler = (req: express.Request, res: express.Response) => Promise<unknown>;
 
-/** Express 4 ne rattrape pas les promesses rejetées : une erreur imprévue devient un 500 JSON. */
+/** Express 4 doesn't catch rejected promises: an unexpected error becomes a JSON 500. */
 function safe(fn: Handler): express.RequestHandler {
   return (req, res) => {
     fn(req, res).catch((err) => {
@@ -73,17 +60,14 @@ function safe(fn: Handler): express.RequestHandler {
   };
 }
 
-/** Entier d'un paramètre (requête ou body) : undefined si absent, NaN si invalide. */
+/** Integer parameter (query or body): undefined if absent, NaN if invalid. */
 function optInt(v: unknown): number | undefined {
   if (v === undefined || v === null || v === "") return undefined;
   const n = Number(v);
   return Number.isInteger(n) ? n : NaN;
 }
 
-/**
- * dry_run : tout ce qui n'est pas explicitement faux vaut simulation — en cas
- * de doute on n'envoie rien.
- */
+/** dry_run: anything not explicitly false is a simulation — when in doubt, send nothing. */
 function isDryRun(v: unknown): boolean {
   return v !== undefined && v !== null && v !== false && v !== 0 && v !== "false" && v !== "0" && v !== "";
 }
@@ -92,12 +76,12 @@ function accountById(id: number): AccountRow | undefined {
   return db.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as AccountRow | undefined;
 }
 
-/** En-tête From tel que l'envoie sendEmail : « Nom <adresse> » ou l'adresse seule. */
+/** From header as sendEmail sends it: "Name <address>" or the bare address. */
 function fromLabel(account: Pick<AccountRow, "email" | "from_name">): string {
   return account.from_name ? `${account.from_name} <${account.email}>` : account.email;
 }
 
-/** {{sender_name}}, {{link}}, {{signature}} d'un compte, rendus comme au scheduler. */
+/** An account's {{sender_name}}, {{link}}, {{signature}}, rendered as by the scheduler. */
 function senderVars(
   account: Pick<AccountRow, "email" | "from_name" | "signature"> | undefined,
   contact: ContactVars,
@@ -111,7 +95,7 @@ function senderVars(
   };
 }
 
-/** Classe un message du fil avec les mêmes règles que la détection des réponses. */
+/** Classifies a thread message with the same rules as reply detection. */
 function kindOf(m: ThreadMessage): MailKind {
   if (m.outgoing) return "sent";
   if (isBounce(m)) return "bounce";
@@ -119,17 +103,17 @@ function kindOf(m: ThreadMessage): MailKind {
   return "reply";
 }
 
-/** Dernier message entrant écrit par le contact (ni bounce ni réponse automatique). */
+/** Last incoming message written by the contact (not a bounce or auto-reply). */
 function lastReply(msgs: ThreadMessage[]): ThreadMessage | undefined {
   return msgs.filter((m) => m.from && kindOf(m) === "reply").at(-1);
 }
 
-/** Retire les préfixes de réponse répétés (« Re: RE : Réf. : … »). */
+/** Strips repeated reply prefixes ("Re: RE : Réf. : …"). */
 function stripReplyPrefixes(subject: string): string {
   return subject.replace(/^\s*((re|ré|réf|ref|rép|aw|sv)\.?\s*(\[\d+\])?\s*:\s*)+/iu, "").trim();
 }
 
-/** JSON en base → objet, null si vide ou illisible. */
+/** DB JSON → object; null if empty or unparseable. */
 function parseJsonObject(s: string | null): Record<string, unknown> | null {
   if (!s) return null;
   try {
@@ -140,7 +124,7 @@ function parseJsonObject(s: string | null): Record<string, unknown> | null {
   }
 }
 
-/** Applique fn à chaque élément, `limit` à la fois au plus (fn ne doit pas lever). */
+/** Applies fn to each item, at most `limit` at a time (fn must not throw). */
 async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
   const worker = async () => {
@@ -150,7 +134,7 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<v
 }
 
 export function registerInboxRoutes(app: express.Express): void {
-  // --- Boîte de réception : réponses reçues, triées de la plus récente à la plus ancienne ---
+  // --- Inbox: received replies, newest first ---
   app.get(
     "/api/inbox",
     safe(async (req, res) => {
@@ -168,7 +152,7 @@ export function registerInboxRoutes(app: express.Express): void {
         return res.status(400).json({ error: "campaign_id, since and limit must be integers" });
       }
       const includeText = req.query.include_text === "1" || req.query.include_text === "true";
-      // done=0 : réponses à traiter ; done=1 : déjà traitées ; absent : toutes
+      // done=0: replies to handle; done=1: already handled; absent: all
       const done = req.query.done === "0" ? 0 : req.query.done === "1" ? 1 : null;
 
       const rows = db
@@ -211,17 +195,17 @@ export function registerInboxRoutes(app: express.Express): void {
           }
         >;
 
-      // Canal de la réponse : un fil LinkedIn connu prime, sinon le fil Gmail
+      // Reply channel: a known LinkedIn thread wins, else the Gmail thread
       const items = rows.map(({ thread_id, account_id, li_reply_text, inbox_seen_at, inbox_done_at, ...r }) => {
         const channel: "email" | "linkedin" = r.li_thread_url ? "linkedin" : thread_id ? "email" : "linkedin";
         const item: Record<string, unknown> = { ...r, channel, seen: inbox_seen_at != null, done: inbox_done_at != null };
-        // réponse LinkedIn : son texte vient de la messagerie, déjà en base
+        // LinkedIn reply: its text comes from the inbox sync, already in the DB
         if (includeText && channel === "linkedin") item.reply_text = li_reply_text;
         return { item, thread_id, account_id, channel };
       });
 
       if (includeText) {
-        const authErrors = new Map<number, string>(); // compte dont l'accès Google est expiré : inutile d'insister
+        const authErrors = new Map<number, string>(); // accounts whose Google access expired: no point retrying
         const accounts = new Map<number, AccountRow | undefined>();
         await mapLimit(
           items.filter((i) => i.channel === "email"),
@@ -241,7 +225,7 @@ export function registerInboxRoutes(app: express.Express): void {
             }
             try {
               const msgs = await getThreadMessages(account, thread_id);
-              // Contact en bounce : à défaut de vraie réponse, le rapport de non-remise
+              // Bounced contact: lacking a real reply, the non-delivery report
               const m =
                 lastReply(msgs) ??
                 (item.status === "bounced" ? msgs.filter((x) => !x.outgoing && kindOf(x) === "bounce").at(-1) : undefined);
@@ -261,7 +245,7 @@ export function registerInboxRoutes(app: express.Express): void {
     })
   );
 
-  // --- Compteurs de la page Réponses (pastille du menu) : réponses et refus à traiter, dont non ouverts ---
+  // --- Replies page counters (menu badge): replies and refusals to handle, incl. unseen ---
   app.get("/api/inbox/counts", (_req, res) => {
     const row = db
       .prepare(
@@ -272,7 +256,7 @@ export function registerInboxRoutes(app: express.Express): void {
     res.json(row);
   });
 
-  // --- Suivi d'une réponse : ouverte (seen) et traitée (done), réversibles ---
+  // --- Reply tracking: seen and done, both reversible ---
   app.post("/api/campaign-contacts/:ccId/inbox", (req, res) => {
     const { seen, done } = (req.body ?? {}) as { seen?: unknown; done?: unknown };
     if (seen === undefined && done === undefined) return res.status(400).json({ error: "seen or done is required" });
@@ -294,7 +278,7 @@ export function registerInboxRoutes(app: express.Express): void {
     res.json({ ok: true });
   });
 
-  // --- Fil complet d'un contact : emails (lus dans Gmail), étapes envoyées, actions LinkedIn ---
+  // --- A contact's full thread: emails (read from Gmail), sent steps, LinkedIn actions ---
   app.get(
     "/api/campaign-contacts/:ccId/conversation",
     safe(async (req, res) => {
@@ -404,7 +388,7 @@ export function registerInboxRoutes(app: express.Express): void {
         },
         sender: cc.sender,
         li_sender: cc.li_sender,
-        // le fil dans Gmail, ouvert sur le compte qui l'a envoyé
+        // the Gmail thread, opened in the account that sent it
         gmail_url: cc.thread_id && cc.sender ? `https://mail.google.com/mail/?authuser=${encodeURIComponent(cc.sender)}#all/${cc.thread_id}` : null,
         email_thread: emailThread,
         ...(emailThreadError ? { email_thread_error: emailThreadError } : {}),
@@ -418,10 +402,10 @@ export function registerInboxRoutes(app: express.Express): void {
     })
   );
 
-  // --- Réponse manuelle dans le fil email du contact ---
-  // Envoyée depuis le compte du fil, dans le même thread Gmail, en réponse au
-  // dernier message. Le statut du contact ne bouge pas ; last_gmail_message_id
-  // suit, pour que d'éventuelles relances restent dans le fil.
+  // --- Manual reply in the contact's email thread ---
+  // Sent from the thread's account, in the same Gmail thread, replying to the last message. The
+  // contact's status doesn't change; last_gmail_message_id follows so any follow-ups stay in the
+  // thread.
   app.post(
     "/api/campaign-contacts/:ccId/reply",
     safe(async (req, res) => {
@@ -453,22 +437,22 @@ export function registerInboxRoutes(app: express.Express): void {
       const account = accountById(cc.account_id);
       if (!account) return res.status(400).json({ error: "Google account of this thread not found" });
 
-      // Le fil est relu (même en simulation) : sujet et Message-ID du message
-      // auquel on répond. Un accès expiré se voit donc dès le dry_run.
+      // The thread is re-read (even in dry run) for the subject and Message-ID being replied to, so
+      // expired access shows up at dry_run.
       let msgs: ThreadMessage[];
       try {
         msgs = await getThreadMessages(account, cc.thread_id);
       } catch (err) {
         return res.status(502).json({ error: googleErrorMessage(err, account.email) });
       }
-      // Dernier message du fil, hors bounce / réponse automatique (sujet
-      // « Réponse automatique : … » ou NDR) quand il y en a un autre
+      // Last thread message, skipping bounces / auto-replies ("Réponse automatique : …" subject or
+      // NDR) when there is another one
       const last = msgs.filter((m) => kindOf(m) === "sent" || kindOf(m) === "reply").at(-1) ?? msgs.at(-1);
 
       const vars = senderVars(account, cc, config.visit.enabled ? visitLink(cc.cc_id) : "");
       let baseSubject = last ? stripReplyPrefixes(last.subject) : "";
       if (!baseSubject) {
-        // Fil sans sujet lisible : celui de l'étape 1 réellement reçu (variante A/B)
+        // Thread without a readable subject: step 1's subject as actually received (A/B variant)
         const first = db
           .prepare("SELECT subject, subject_b FROM steps WHERE campaign_id = ? AND step_number = 1")
           .get(cc.campaign_id) as { subject: string; subject_b: string | null } | undefined;
@@ -489,28 +473,28 @@ export function registerInboxRoutes(app: express.Express): void {
           body: finalBody,
           threadId: cc.thread_id,
           inReplyTo: last?.messageId || cc.last_gmail_message_id,
-          listUnsubscribeUrl: null, // conversation en cours, pas un envoi de séquence
+          listUnsubscribeUrl: null, // ongoing conversation, not a sequence send
         });
       } catch (err) {
         return res.status(502).json({ error: googleErrorMessage(err, account.email) });
       }
-      // répondre traite la réponse : elle quitte « À traiter » (réversible depuis la page Réponses)
+      // replying handles the reply: it leaves "To handle" (reversible from the Replies page)
       db.prepare(
         `UPDATE campaign_contacts SET last_gmail_message_id = ?,
            inbox_seen_at = COALESCE(inbox_seen_at, ?), inbox_done_at = COALESCE(inbox_done_at, ?) WHERE id = ?`
       ).run(result.rfc822MessageId, Date.now(), Date.now(), cc.cc_id);
-      console.log(`[réponse manuelle] ${cc.email} via ${account.email}`);
+      console.log(`[manual reply] ${cc.email} via ${account.email}`);
       res.json({ ...out, sent: true, gmail_message_id: result.gmailMessageId, thread_id: result.threadId });
     })
   );
 
-  // --- Recherche globale de contacts (toutes campagnes) ---
+  // --- Global contact search (all campaigns) ---
   app.get("/api/contacts", (req, res) => {
     const q = String(req.query.q ?? "").trim();
     if (q.length < 2) return res.status(400).json({ error: "q is required (at least 2 characters)" });
     const limit = optInt(req.query.limit) ?? 50;
     if (Number.isNaN(limit)) return res.status(400).json({ error: "limit must be an integer" });
-    // LIKE insensible à la casse (ASCII) ; % et _ saisis sont cherchés tels quels
+    // Case-insensitive LIKE (ASCII); typed % and _ are matched literally
     const like = `%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
     const contacts = db
       .prepare(
@@ -528,7 +512,7 @@ export function registerInboxRoutes(app: express.Express): void {
       )
       .all({ like, q, limit: Math.min(Math.max(limit, 1), 200) }) as Array<{ contact_id: number; extra: string | null }>;
 
-    // Inscriptions des contacts trouvés, en une requête
+    // Enrollments of the matched contacts, in one query
     const byContact = new Map<number, unknown[]>();
     if (contacts.length) {
       const ids = contacts.map((c) => c.contact_id);
@@ -551,7 +535,7 @@ export function registerInboxRoutes(app: express.Express): void {
     );
   });
 
-  // --- Journal d'activité : envois, réponses, actions LinkedIn, visites (hors bots) ---
+  // --- Activity log: sends, replies, LinkedIn actions, visits (excluding bots) ---
   app.get("/api/activity", (req, res) => {
     const days = optInt(req.query.days) ?? 7;
     const campaignId = optInt(req.query.campaign_id);
@@ -559,7 +543,7 @@ export function registerInboxRoutes(app: express.Express): void {
       return res.status(400).json({ error: "days and campaign_id must be integers" });
     }
     const since = Date.now() - Math.min(Math.max(days, 1), 90) * DAY_MS;
-    // Un événement par ligne ; totals et events lisent la même union (même périmètre)
+    // One event per row; totals and events read the same union (same scope)
     const EVENTS = `
       WITH ev AS (
         SELECT m.sent_at AS at, 'email_sent' AS type, cc.campaign_id, cc.id AS cc_id, cc.contact_id,
@@ -616,7 +600,7 @@ export function registerInboxRoutes(app: express.Express): void {
         li_messages: n("li_message"),
         visits: n("visit"),
       },
-      // step_number / account omis quand sans objet (visites)
+      // step_number / account omitted when irrelevant (visits)
       events: events.map(({ step_number, account, ...e }) => ({
         ...e,
         ...(step_number != null ? { step_number } : {}),
@@ -625,8 +609,8 @@ export function registerInboxRoutes(app: express.Express): void {
     });
   });
 
-  // --- Email de test d'une étape : rendu identique au scheduler, sujet préfixé [TEST] ---
-  // Ne touche ni aux quotas, ni aux statuts, ni à la table messages.
+  // --- Test email for a step: rendered like the scheduler, subject prefixed [TEST] ---
+  // Touches no quotas, statuses or messages table.
   app.post(
     "/api/test-email",
     safe(async (req, res) => {
@@ -656,7 +640,7 @@ export function registerInboxRoutes(app: express.Express): void {
       const step = steps.find((s) => s.step_number === stepNumber);
       if (!step) return res.status(404).json({ error: `Step ${stepNumber} not found in this campaign` });
 
-      // Contact : celui demandé, sinon le 1er de la campagne, sinon un contact d'exemple
+      // Contact: the requested one, else the campaign's first, else a sample contact
       let contact: ContactVars | undefined;
       if (contactId !== undefined) {
         contact = db
@@ -679,7 +663,7 @@ export function registerInboxRoutes(app: express.Express): void {
       const sample = contact ?? SAMPLE_CONTACT;
 
       if (step.channel === "linkedin") {
-        // Rendu tel que mis en file pour LinkedIn (sans expéditeur ni signature)
+        // Rendered as queued for LinkedIn (no sender or signature)
         const rendered = step.body?.trim() ? renderTemplate(step.body, sample, { sender_name: "", signature: "" }) : "";
         return res.status(400).json({
           error: `Step ${stepNumber} is a LinkedIn step: no test email possible`,
@@ -687,7 +671,8 @@ export function registerInboxRoutes(app: express.Express): void {
         });
       }
 
-      // Compte : celui demandé, sinon le 1er actif autorisé par la campagne, sinon le 1er actif
+      // Account: the requested one, else the first active one allowed by the campaign, else the
+      // first active one
       let account: AccountRow | undefined;
       if (accountId !== undefined) {
         account = accountById(accountId);
@@ -705,7 +690,7 @@ export function registerInboxRoutes(app: express.Express): void {
       const subjectFor = (s: { subject: string; subject_b: string | null }) =>
         variant === "B" && s.subject_b ? s.subject_b : s.subject;
       const first = steps.find((s) => s.step_number === 1);
-      // Relance sans sujet : « Re: » + sujet de l'étape 1 (même fil, comme au scheduler)
+      // Subjectless follow-up: "Re: " + step 1's subject (same thread, as in the scheduler)
       const subject =
         step.step_number > 1 && !step.subject
           ? first && subjectFor(first)
@@ -729,14 +714,14 @@ export function registerInboxRoutes(app: express.Express): void {
       } catch (err) {
         return res.status(502).json({ error: googleErrorMessage(err, account.email) });
       }
-      console.log(`[test] étape ${stepNumber} de la campagne ${campaignId} -> ${to} via ${account.email}`);
+      console.log(`[test] step ${stepNumber} of campaign ${campaignId} -> ${to} via ${account.email}`);
       res.json({ ...out, sent: true });
     })
   );
 
-  // --- Aperçu d'une campagne sur tous ses contacts : variables manquantes, étapes sautées ---
-  // Même résolution des variables que le scheduler (celles de l'inscription
-  // comprises). Seules les étapes restant à envoyer à chaque contact comptent.
+  // --- Campaign preview across all its contacts: missing variables, skipped steps ---
+  // Same variable resolution as the scheduler (enrollment variables included). Only the steps still
+  // to send to each contact count.
   app.get("/api/campaigns/:id/preview", (req, res) => {
     const campaign = db.prepare("SELECT id, name, status, account_ids FROM campaigns WHERE id = ?").get(req.params.id) as
       | { id: number; name: string; status: string; account_ids: string | null }
@@ -769,10 +754,10 @@ export function registerInboxRoutes(app: express.Express): void {
         ContactVars & { cc_id: number; contact_id: number; status: string; current_step: number; variant: string | null; account_id: number | null; linkedin: string | null }
       >;
 
-    // Variables de chaque étape (un email : sujets + corps ; LinkedIn : corps seul)
+    // Variables of each step (email: subjects + body; LinkedIn: body only)
     const stepText = (s: Step) => (s.channel === "linkedin" ? s.body : [s.subject, s.subject_b ?? "", s.body].join("\n"));
     const stepVars = new Map(steps.map((s) => [s.step_number, templateVariables(stepText(s))]));
-    // Un bloc {{si …}} commandé par une variable d'expéditeur est tenu pour rempli
+    // An {{if …}} block driven by a sender variable counts as filled
     const senderFilled = Object.fromEntries([...SENDER_VARS].map((key) => [key, "x"]));
     const stats = new Map<string, { steps: number[]; genderOnly: boolean; used: number; missing: number }>();
     for (const s of steps) {
@@ -785,8 +770,8 @@ export function registerInboxRoutes(app: express.Express): void {
       }
     }
 
-    // Un contact sans email saute les étapes email ; sans profil, les étapes LinkedIn
-    // et celles « si invitation acceptée »
+    // A contact without email skips email steps; without a profile, LinkedIn steps and "if
+    // invitation accepted" ones
     const unreachable = (s: Step, r: { email: string | null; linkedin: string | null }) =>
       (s.channel === "linkedin" || s.branch === "accepted" ? !r.linkedin : !r.email);
     const skipped = new Map<number, number>();
@@ -801,12 +786,13 @@ export function registerInboxRoutes(app: express.Express): void {
       const used = new Set<string>();
       const missing = new Set<string>();
       for (const s of steps) {
-        if (s.step_number <= r.current_step) continue; // déjà envoyée
+        if (s.step_number <= r.current_step) continue; // already sent
         if (unreachable(s, r)) {
           skipped.set(s.step_number, (skipped.get(s.step_number) ?? 0) + 1);
           continue;
         }
-        // blocs conditionnels résolus pour ce contact : seules comptent les variables du texte qu'il recevra
+        // conditional blocks resolved for this contact: only variables of the text they will
+        // receive count
         for (const key of templateVariables(resolveSections(stepText(s), { ...senderFilled, ...values })).keys()) {
           if (SENDER_VARS.has(key)) continue;
           used.add(key);
@@ -817,13 +803,13 @@ export function registerInboxRoutes(app: express.Express): void {
       for (const key of missing) stats.get(key)!.missing++;
       return { row: r, missing: [...missing] };
     });
-    // Une variable vide chez tous ses contacts est signalée une fois, pas contact par contact
+    // A variable empty for all its contacts is reported once, not per contact
     const nowhere = new Set([...stats].filter(([, st]) => st.used > 0 && st.missing === st.used).map(([key]) => key));
     const incomplete = checked
       .map(({ row, missing }) => ({ row, missing: missing.filter((key) => !nowhere.has(key)) }))
       .filter((c) => c.missing.length);
 
-    // Comptes qui porteront les premiers envois : actifs et autorisés par la campagne
+    // Accounts that will carry the first sends: active and allowed by the campaign
     const allowed = parseAccountIds(campaign.account_ids);
     const senders = (db.prepare("SELECT * FROM accounts WHERE active = 1 ORDER BY id").all() as AccountRow[]).filter(
       (a) => !allowed || allowed.includes(a.id)
@@ -842,7 +828,7 @@ export function registerInboxRoutes(app: express.Express): void {
       warnings.push("{{link}} will be empty: the tracked link is disabled (VISIT_ENABLED=false).");
     }
     for (const s of steps) {
-      // un {{si …}} resté après résolution n'a pas de {{fin}} : il partirait tel quel dans le message
+      // an {{if …}} left after resolution has no {{end}}: it would go out verbatim
       if (UNCLOSED_SECTION.test(resolveSections(stepText(s), {}))) warnings.push(`Step ${s.step_number}: {{if …}} block without {{end}}.`);
     }
     for (const s of steps.filter((x) => x.channel === "linkedin")) {
@@ -852,7 +838,7 @@ export function registerInboxRoutes(app: express.Express): void {
       }
     }
 
-    // Rendu des étapes restantes pour les premiers contacts, tel qu'il partira
+    // Remaining steps rendered for the first contacts, as they will be sent
     const link = config.visit.enabled ? `${config.visit.baseUrl}/p/exemple` : "";
     const firstEmail = emailSteps[0];
     const rendered = rows.slice(0, Math.min(Math.max(samples, 0), 5)).map((r) => {
@@ -879,7 +865,7 @@ export function registerInboxRoutes(app: express.Express): void {
                   step_number: s.step_number,
                   channel: s.channel,
                   ...(s.branch ? { branch: s.branch } : {}),
-                  // Relance sans sujet : même fil que le premier email
+                  // Subjectless follow-up: same thread as the first email
                   subject: s !== firstEmail && !s.subject ? `Re: ${renderTemplate(subjectOf(firstEmail), r, vars)}` : renderTemplate(subjectOf(s), r, vars),
                   body: renderTemplate(s.body, r, vars),
                 }
@@ -898,7 +884,7 @@ export function registerInboxRoutes(app: express.Express): void {
         li_action: s.li_action,
         ...(s.branch ? { branch: s.branch } : {}),
         variables: [...stepVars.get(s.step_number)!.keys()],
-        // contacts qui sauteront l'étape (sans email / sans profil LinkedIn)
+        // contacts that will skip the step (no email / no LinkedIn profile)
         ...(skipped.has(s.step_number) ? { skipped: skipped.get(s.step_number) } : {}),
       })),
       missing: [...stats]

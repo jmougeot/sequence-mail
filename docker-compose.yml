@@ -1,22 +1,22 @@
-# Déploiement VPS : l'app Node + Caddy (HTTPS automatique via Let's Encrypt).
-# Caddy laisse les routes publiques de suivi (/p/, /t/) ouvertes et protège tout
-# le reste (dashboard, API, OAuth) par mot de passe.
+# VPS deployment: the Node app + Caddy (automatic HTTPS via Let's Encrypt).
+# Caddy leaves the public tracking routes (/p/, /t/) open and password-protects
+# everything else (dashboard, API, OAuth).
 services:
   app:
-    # Image publiée par GitHub Actions (pas de build sur le serveur) ;
-    # `docker compose build` reconstruit depuis les sources si besoin.
+    # Image published by GitHub Actions (no build on the server);
+    # `docker compose build` rebuilds from source if needed.
     image: ghcr.io/jmougeot/sequence-mail:latest
     build: .
     restart: unless-stopped
-    # Variables lues depuis .env (BASE_URL, VISIT_*, quotas…)
+    # Settings from .env (BASE_URL, VISIT_*, quotas…)
     env_file: .env
     environment:
       - DATA_DIR=/data
       - PORT=3000
     volumes:
-      - sequence-data:/data # base SQLite persistée
+      - sequence-data:/data # SQLite database
     expose:
-      - "3000" # accessible seulement depuis Caddy, pas exposé publiquement
+      - "3000" # reachable from Caddy only, not published
 
   caddy:
     image: caddy:2
@@ -26,7 +26,7 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data # certificats TLS
+      - caddy-data:/data # TLS certificates
       - caddy-config:/config
     depends_on:
       - app

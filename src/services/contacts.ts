@@ -7,33 +7,30 @@ import { resolveSections, splitSections } from "./template-sections.js";
 
 export const KNOWN_COLUMNS = new Set(["email", "first_name", "last_name", "company", "linkedin"]);
 
-// Valeur d'un champ personnalisé qui le retire du contact au lieu de l'écrire : un
-// import ignore une cellule vide, il faut donc le dire explicitement pour vider.
+// Custom field value that removes the field from the contact instead of writing it: imports skip
+// empty cells, so clearing must be explicit.
 export const CLEAR_FIELD = "[vider]";
 
-// Champs personnalisés vus par un template : ceux de l'inscription (cc.vars, propres
-// à une campagne) priment sur ceux du contact (c.extra, partagés entre campagnes).
-// Même fusion que le scheduler (DUE_SELECT).
+// Custom fields seen by a template: the enrollment's (cc.vars, per campaign) override the contact's
+// (c.extra, shared across campaigns). Same merge as the scheduler (DUE_SELECT).
 export const MERGED_EXTRA = `CASE WHEN cc.vars IS NULL THEN c.extra WHEN c.extra IS NULL THEN cc.vars
   ELSE json_patch(c.extra, cc.vars) END`;
 
 export interface ImportReport {
   imported: number;
-  updated: number; // déjà inscrit à la campagne : ses champs ont été rafraîchis
+  updated: number; // already enrolled in the campaign: fields refreshed
   skipped: number;
   errors: string[];
-  // Sur demande (source.withIds) : contact retenu pour chaque ligne, dans
-  // l'ordre des lignes (null = ligne ignorée ou contact désinscrit auprès du
-  // propriétaire de la campagne).
+  // On request (source.withIds): the contact kept for each row, in row order (null = row skipped or
+  // contact opted out with the campaign's owner).
   contact_ids?: Array<number | null>;
 }
 
 const mxCache = new Map<string, boolean>();
 
 /**
- * Vérifie qu'un domaine peut recevoir des emails (enregistrement MX).
- * Élimine les bounces avant l'envoi. En cas de doute (DNS indisponible,
- * timeout…), on laisse passer : seul ENOTFOUND/ENODATA rejette.
+ * Checks that a domain can receive email (MX record), to avoid bounces. When in doubt (DNS down,
+ * timeout…) it passes: only ENOTFOUND/ENODATA reject.
  */
 export async function domainAcceptsMail(domain: string): Promise<boolean> {
   const cached = mxCache.get(domain);
@@ -50,11 +47,10 @@ export async function domainAcceptsMail(domain: string): Promise<boolean> {
 }
 
 /**
- * Insère/met à jour les contacts puis les inscrit à la campagne (statut held).
- * Un contact est joignable par email, par LinkedIn, ou les deux : une ligne
- * sans email valide est gardée si elle a un profil LinkedIn. Dédoublonnage par
- * email, sinon par profil LinkedIn (URL canonique) — un candidat importé d'abord
- * sans email puis avec est donc complété, pas dupliqué.
+ * Upserts contacts, then enrolls them in the campaign (status held). A contact is reachable by
+ * email, LinkedIn or both: a row without a valid email is kept if it has a LinkedIn profile. Dedup
+ * by email, else by LinkedIn profile (canonical URL), so a candidate imported first without email
+ * then with one is completed, not duplicated.
  */
 export async function importContacts(
   campaignId: number,
@@ -63,10 +59,10 @@ export async function importContacts(
 ): Promise<ImportReport> {
   const report: ImportReport = { imported: 0, updated: 0, skipped: 0, errors: [] };
   const ids: Array<number | null> = [];
-  // Colonnes rattachées à l'inscription (campaign_contacts.vars) plutôt qu'au contact
+  // Columns attached to the enrollment (campaign_contacts.vars) rather than the contact
   const campaignVars = new Set(source.campaignVars ?? []);
 
-  // Vérification MX par domaine, en amont de la transaction (résolution DNS asynchrone)
+  // MX check per domain, before the transaction (DNS resolution is async)
   const domains = new Set(
     rows
       .map((r) => (r.email ?? "").trim().toLowerCase().split("@")[1])
@@ -98,14 +94,14 @@ export async function importContacts(
       attio_record_id = COALESCE(@attio_record_id, attio_record_id)
     WHERE id = @id
   `);
-  // Désinscription propre au propriétaire de la campagne (cf. opt-out.ts)
+  // Opt-out specific to the campaign's owner (see opt-out.ts)
   const owner = (db.prepare("SELECT owner_ref FROM campaigns WHERE id = ?").get(campaignId) as { owner_ref: string | null } | undefined)
     ?.owner_ref ?? null;
   const enroll = db.prepare(`
     INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, status)
     VALUES (?, ?, 'held')
   `);
-  // Même fusion que les champs du contact : les nouvelles valeurs écrasent les anciennes
+  // Same merge as contact fields: new values overwrite old ones
   const setVars = db.prepare(`
     UPDATE campaign_contacts SET vars = NULLIF(json_patch(COALESCE(vars, '{}'), @vars), '{}')
     WHERE campaign_id = @campaign AND contact_id = @contact
@@ -123,7 +119,7 @@ export async function importContacts(
         report.errors.push(`${email} : domaine sans serveur mail (MX introuvable)${linkedin ? " — gardé pour LinkedIn" : ""}`);
         email = null;
       }
-      ids.push(null); // remplacé par l'id du contact s'il est retenu
+      ids.push(null); // replaced by the contact id if kept
       if (!email && !linkedin) {
         report.skipped++;
         if (label === "(ligne vide)") report.errors.push("Ligne sans email ni profil LinkedIn ignorée");
@@ -144,8 +140,8 @@ export async function importContacts(
         extra: Object.keys(extra).length ? JSON.stringify(extra) : null,
         attio_record_id: (email && source.attioRecordIds?.[email]) || null,
       };
-      // Contact existant : même email, sinon même profil LinkedIn (sans email
-      // différent — deux emails distincts sur un même profil restent deux fiches).
+      // Existing contact: same email, else same LinkedIn profile (unless the emails differ: two
+      // distinct emails on one profile stay two records).
       let existing = email ? (byEmail.get(email) as { id: number } | undefined) : undefined;
       if (!existing && linkedin) {
         const li = byLinkedin.get(linkedin) as { id: number; email: string | null } | undefined;
@@ -156,18 +152,18 @@ export async function importContacts(
         update.run({ ...fields, id: existing.id });
         id = existing.id;
       } else {
-        // contact nouveau : rien à retirer
+        // new contact: nothing to remove
         const created = Object.fromEntries(Object.entries(extra).filter(([, v]) => v !== null));
         id = Number(insert.run({ ...fields, extra: Object.keys(created).length ? JSON.stringify(created) : null }).lastInsertRowid);
       }
       if (isOptedOut(id, owner)) {
-        report.skipped++; // désinscrit : ne jamais le réinscrire
+        report.skipped++; // opted out: never re-enroll
         continue;
       }
       ids[ids.length - 1] = id;
       const r = enroll.run(campaignId, id);
       if (r.changes > 0) report.imported++;
-      else report.updated++; // déjà inscrit : ses champs viennent d'être mis à jour
+      else report.updated++; // already enrolled: fields just updated
       if (Object.keys(vars).length) setVars.run({ vars: JSON.stringify(vars), campaign: campaignId, contact: id });
     }
   });
@@ -176,12 +172,12 @@ export async function importContacts(
   return report;
 }
 
-/** Nom de colonne normalisé en snake_case minuscule (« Prénom du contact » → prénom_du_contact). */
+/** Column name normalized to lowercase snake_case (« Prénom du contact » → prénom_du_contact). */
 export function normalizeColumn(name: string): string {
   return name.trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
 
-/** Parse un CSV (entêtes en première ligne, normalisées en snake_case). */
+/** Parses a CSV (headers on the first line, normalized to snake_case). */
 export function parseCsv(content: string): Array<Record<string, string>> {
   return parse(content, {
     columns: (header: string[]) => header.map(normalizeColumn),
@@ -193,8 +189,8 @@ export function parseCsv(content: string): Array<Record<string, string>> {
 }
 
 /**
- * Détecte le séparateur depuis la 1re ligne. Les exports Excel FR utilisent
- * souvent « ; » (ou tabulation), là où le CSV standard utilise « , ».
+ * Detects the delimiter from the first line. French Excel exports often use ";" (or tab) where
+ * standard CSV uses ",".
  */
 function detectDelimiter(content: string): string {
   const firstLine = content.replace(/^﻿/, "").split(/\r?\n/, 1)[0] ?? "";
@@ -208,8 +204,8 @@ function detectDelimiter(content: string): string {
 }
 
 /**
- * Une valeur de genre est-elle féminine ? Reconnaît F, femme, féminin,
- * female, Mme, Madame… Tout le reste (y compris vide) est traité au masculin.
+ * Is a gender value feminine? Recognizes F, femme, féminin, female, Mme, Madame… Anything else
+ * (empty included) is treated as masculine.
  */
 function isFeminine(value?: string): boolean {
   const s = (value ?? "").trim().toLowerCase();
@@ -217,10 +213,10 @@ function isFeminine(value?: string): boolean {
 }
 
 /**
- * Remplace les variables {{first_name}}, {{company}}, etc. et gère l'accord
- * en genre via {{genre:masculin|féminin}} : la colonne `genre` du contact
- * choisit la 1re forme (masculin) ou la 2e (féminin). Les blocs conditionnels
- * {{si variable}}…{{sinon}}…{{fin}} sont résolus d'abord (template-sections.ts).
+ * Replaces variables {{first_name}}, {{company}}, etc. and handles gender agreement via
+ * {{genre:masculin|féminin}}: the contact's `genre` column picks the 1st (masculine) or 2nd
+ * (feminine) form. Conditional blocks {{if variable}}…{{else}}…{{end}} are resolved first
+ * (template-sections.ts).
  */
 export function renderTemplate(
   template: string,
@@ -236,25 +232,24 @@ export function renderTemplate(
     ...extraVars,
   };
   return resolveSections(template, vars)
-    // Accord en genre : {{genre:masculin|féminin}} — placé avant les variables
-    // simples car la clé est suivie de « : », exclue du motif générique ci-dessous.
+    // Gender agreement {{genre:masculin|féminin}}: before simple variables, since the key is
+    // followed by ":", which the generic pattern below excludes.
     .replace(
       /\{\{\s*([\p{L}\p{N}_]+)\s*:\s*([^|{}]*)\|([^{}]*)\}\}/gu,
       (_, key: string, masc: string, fem: string) => (isFeminine(vars[key]) ? fem : masc).trim()
     )
-    // Variables simples : {{first_name}}
+    // Simple variables: {{first_name}}
     .replace(/\{\{\s*([\p{L}\p{N}_]+)\s*\}\}/gu, (_, key: string) => vars[key] ?? "");
 }
 
-/** Variables que l'app remplit elle-même ; les autres sont des champs de contact ou des variables de campagne. */
+/** Variables the app fills itself; the others are contact fields or campaign variables. */
 export const BUILT_IN_VARIABLES = new Set(["email", "first_name", "last_name", "company", "sender_name", "signature", "link"]);
 
 /**
- * Variables référencées par un template, avec les mêmes motifs que
- * renderTemplate. La valeur indique si la variable n'apparaît que dans un accord
- * en genre ({{genre:masculin|féminin}}) : absente, elle donne le masculin, pas un trou.
- * Les deux textes d'un bloc conditionnel comptent ; pour les seules variables
- * du texte qu'un contact recevra, résoudre d'abord ses blocs (resolveSections).
+ * Variables referenced by a template, with the same patterns as renderTemplate. The value tells
+ * whether the variable only appears in a gender agreement ({{genre:masculin|féminin}}): absent, it
+ * renders the masculine form, not a gap. Both texts of a conditional block count; to get only the
+ * variables of the text a contact will receive, resolve its blocks first (resolveSections).
  */
 export function templateVariables(template: string): Map<string, boolean> {
   const out = new Map<string, boolean>();
@@ -262,7 +257,7 @@ export function templateVariables(template: string): Map<string, boolean> {
   for (const m of text.matchAll(/\{\{\s*([\p{L}\p{N}_]+)\s*(:\s*[^|{}]*\|[^{}]*)?\}\}/gu)) {
     out.set(m[1], (out.get(m[1]) ?? true) && m[2] !== undefined);
   }
-  // une variable qui ne fait que commander un bloc ne laisse pas de trou non plus
+  // a variable that only drives a block doesn't leave a gap either
   for (const key of conditions) if (!out.has(key)) out.set(key, true);
   return out;
 }

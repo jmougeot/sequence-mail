@@ -1,11 +1,9 @@
 /**
- * Désinscription en un clic (en-tête List-Unsubscribe / RFC 8058).
- *
- * Chaque email porte un lien `…/u/<token>` propre au prospect. Gmail/Yahoo
- * appellent ce lien (POST, sans interaction) quand le destinataire utilise leur
- * bouton « Se désabonner » ; un clic humain (GET) aboutit au même résultat. Le
- * contact est alors désinscrit auprès du propriétaire de la campagne et ses
- * séquences chez lui sont stoppées (cf. opt-out.ts).
+ * One-click unsubscribe (List-Unsubscribe header / RFC 8058).
+ * Each email carries a per-prospect `…/u/<token>` link. Gmail/Yahoo call it (POST, no interaction)
+ * when the recipient uses their "Unsubscribe" button; a human click (GET) has the same effect. The
+ * contact is then opted out with the campaign's owner and their sequences with that owner stopped
+ * (see opt-out.ts).
  */
 import crypto from "node:crypto";
 import type { Express } from "express";
@@ -13,7 +11,7 @@ import { config } from "../config.js";
 import { db } from "../db.js";
 import { optOutFromCampaignOf } from "./opt-out.js";
 
-/** Lien de désinscription stable d'un prospect (pour l'en-tête List-Unsubscribe). */
+/** A prospect's stable unsubscribe link (for the List-Unsubscribe header). */
 export function unsubLink(ccId: number): string {
   const row = db.prepare("SELECT unsub_token FROM campaign_contacts WHERE id = ?").get(ccId) as
     | { unsub_token: string | null }
@@ -26,7 +24,7 @@ export function unsubLink(ccId: number): string {
   return `${config.baseUrl}/u/${token}`;
 }
 
-/** Désinscrit le contact (chez le propriétaire de la campagne) et stoppe ses séquences. */
+/** Opts the contact out (with the campaign's owner) and stops their sequences. */
 function optOut(token: string): boolean {
   const cc = db.prepare("SELECT id FROM campaign_contacts WHERE unsub_token = ?").get(token) as { id: number } | undefined;
   if (!cc) return false;
@@ -38,13 +36,13 @@ function optOut(token: string): boolean {
 }
 
 export function registerUnsubscribeRoutes(app: Express): void {
-  // One-click (RFC 8058) : Gmail/Yahoo POSTent ici sans interaction humaine.
+  // One-click (RFC 8058): Gmail/Yahoo POST here without human interaction.
   app.post("/u/:token", (req, res) => {
     optOut(req.params.token);
     res.status(200).send("OK");
   });
 
-  // Clic humain depuis le client mail : confirme visuellement la désinscription.
+  // Human click from the mail client: shows a confirmation.
   app.get("/u/:token", (req, res) => {
     const ok = optOut(req.params.token);
     res.set("Content-Type", "text/html; charset=utf-8");

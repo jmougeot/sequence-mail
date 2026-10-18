@@ -1,23 +1,22 @@
 /**
- * Blocs conditionnels d'un template : {{if variable}}…{{else}}…{{end}}, ou leur forme
- * française {{si variable}}…{{sinon}}…{{fin}} (les deux restent acceptées).
+ * Conditional template blocks: {{if variable}}…{{else}}…{{end}}, or the French form
+ * {{si variable}}…{{sinon}}…{{fin}} (both accepted).
  *
- * Le premier texte est gardé quand la variable est remplie pour le contact, le
- * second ({{sinon}}, facultatif) quand elle est vide. Une même étape sert ainsi
- * les contacts qui ont la donnée et ceux qui ne l'ont pas, sans phrase trouée :
+ * The first text is kept when the variable is filled for the contact, the second ({{else}},
+ * optional) when it is empty. So one step serves contacts with and without the data, with no broken
+ * sentence:
  *
- *   {{si competences}}Vous cherchez notamment {{competences}}.{{sinon}}Vous recrutez.{{fin}}
+ *   {{if competences}}Vous cherchez notamment {{competences}}.{{else}}Vous recrutez.{{end}}
  *
- * Pas d'imbrication : un bloc se ferme au premier {{fin}}. Un template sans
- * bloc est rendu tel quel.
+ * No nesting: a block closes at the first {{end}}. A template without blocks is rendered as is.
  */
 const SECTION =
   /\{\{\s*(?:if|si)\s+([\p{L}\p{N}_]+)\s*\}\}([\s\S]*?)(?:\{\{\s*(?:else|sinon)\s*\}\}([\s\S]*?))?\{\{\s*(?:end|fin)\s*\}\}/giu;
 
-/** Ouverture de bloc restée sans fermeture une fois les blocs complets résolus. */
+/** Block opening still unclosed once complete blocks are resolved. */
 export const UNCLOSED_SECTION = /\{\{\s*(?:if|si)\s/iu;
 
-/** Template dont chaque bloc conditionnel est remplacé par le texte retenu pour ces valeurs. */
+/** Template with each conditional block replaced by the text chosen for these values. */
 export function resolveSections(template: string, vars: Record<string, unknown>): string {
   return template.replace(SECTION, (_, key: string, filled: string, empty?: string) =>
     String(vars[key] ?? "").trim() ? filled : (empty ?? "")
@@ -25,8 +24,8 @@ export function resolveSections(template: string, vars: Record<string, unknown>)
 }
 
 /**
- * Template sans ses balises de bloc (les deux textes de chaque bloc sont gardés),
- * et variables qui commandent un bloc.
+ * Template without its block tags (both texts of each block kept), and the variables that drive a
+ * block.
  */
 export function splitSections(template: string): { text: string; conditions: string[] } {
   const conditions: string[] = [];

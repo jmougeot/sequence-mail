@@ -12,7 +12,7 @@ function firstValue(person: AttioPerson, attr: string): Record<string, unknown> 
   return person.values[attr]?.[0];
 }
 
-// Attributs système Attio sans intérêt pour la personnalisation d'emails
+// Attio system attributes useless for email personalization
 const SKIP_ATTRS = new Set([
   "email_addresses",
   "name",
@@ -20,7 +20,7 @@ const SKIP_ATTRS = new Set([
   "created_by",
   "avatar_url",
   "record_id",
-  "company", // référence vers une fiche, pas un texte
+  "company", // reference to a record, not text
   "associated_deals",
   "associated_users",
   "matching_criteria",
@@ -30,9 +30,8 @@ const SKIP_ATTRS = new Set([
 ]);
 
 /**
- * Extrait la valeur d'un attribut Attio sous forme de texte, quel que soit son
- * type (texte, select, statut, téléphone, domaine, nombre…). Renvoie "" pour
- * les types non textuels (références, interactions…), qui sont alors ignorés.
+ * An Attio attribute value as text, whatever its type (text, select, status, phone, domain,
+ * number…). Returns "" for non-text types (references, interactions…), which are then ignored.
  */
 export function attioValueText(v: Record<string, unknown>): string {
   if (typeof v.value === "string") return v.value.trim();
@@ -49,8 +48,8 @@ export function attioValueText(v: Record<string, unknown>): string {
 }
 
 /**
- * Convertit une fiche Attio en ligne d'import : tous les attributs ayant une
- * valeur textuelle non vide deviennent des champs personnalisés ({{variables}}).
+ * Converts an Attio record into an import row: every attribute with a non-empty text value becomes
+ * a custom field ({{variables}}).
  */
 export function attioPersonToRow(person: AttioPerson): Record<string, string> {
   const row: Record<string, string> = {};
@@ -59,7 +58,7 @@ export function attioPersonToRow(person: AttioPerson): Record<string, string> {
     const text = vals.map(attioValueText).filter(Boolean).join(", ");
     if (!text) continue;
     const key = slug.trim().toLowerCase().replace(/[\s-]+/g, "_");
-    // La clé doit être utilisable comme variable {{...}}
+    // The key must be usable as a {{...}} variable
     if (!/^[\p{L}\p{N}_]+$/u.test(key)) continue;
     if (["email", "first_name", "last_name", "company"].includes(key)) continue;
     row[key] = text;
@@ -68,8 +67,8 @@ export function attioPersonToRow(person: AttioPerson): Record<string, string> {
 }
 
 /**
- * Résout les noms des fiches sociétés référencées, par requêtes groupées
- * (l'attribut `company` d'une personne ne contient qu'un record_id).
+ * Resolves referenced company record names in batched requests (a person's `company` attribute only
+ * holds a record_id).
  */
 async function fetchCompanyNames(recordIds: string[]): Promise<Map<string, string>> {
   const names = new Map<string, string>();
@@ -100,8 +99,8 @@ async function fetchCompanyNames(recordIds: string[]): Promise<Map<string, strin
 }
 
 /**
- * Écrit l'avancement de séquence sur la fiche Attio du contact
- * (attribut texte configuré via ATTIO_STAGE_ATTRIBUTE). Silencieux si non configuré.
+ * Writes sequence progress to the contact's Attio record (text attribute set via
+ * ATTIO_STAGE_ATTRIBUTE). No-op if not configured.
  */
 export async function pushSequenceStatus(attioRecordId: string, value: string): Promise<void> {
   if (!config.attioApiKey || !config.attioStageAttribute) return;
@@ -121,8 +120,8 @@ export async function pushSequenceStatus(attioRecordId: string, value: string): 
 }
 
 /**
- * Importe depuis Attio les personnes dont l'attribut `statusAttribute`
- * (slug, ex: "stage" ou un attribut select personnalisé) vaut l'un des `statuses`.
+ * Imports Attio people whose `statusAttribute` (slug, e.g. "stage" or a custom select attribute)
+ * equals one of `statuses`.
  */
 export async function syncFromAttio(
   campaignId: number,
@@ -139,8 +138,7 @@ export async function syncFromAttio(
   let offset = 0;
   const limit = 500;
 
-  // Les attributs de type select n'acceptent que $eq : un $or de $eq couvre
-  // tous les types d'attributs, contrairement à $in.
+  // Select attributes only accept $eq: an $or of $eq works for every attribute type, unlike $in.
   const filter =
     statuses.length === 1
       ? { [statusAttribute]: { $eq: statuses[0] } }
@@ -166,7 +164,7 @@ export async function syncFromAttio(
       if (!email) continue;
       const nameVal = firstValue(person, "name");
       rows.push({
-        ...attioPersonToRow(person), // tous les attributs non vides => variables {{...}}
+        ...attioPersonToRow(person), // all non-empty attributes => {{...}} variables
         email,
         first_name: (nameVal?.first_name as string) ?? "",
         last_name: (nameVal?.last_name as string) ?? "",

@@ -1,32 +1,32 @@
 /**
- * Guide d'utilisation envoyé à tout client MCP à l'initialisation
- * (champ `instructions`) : règles de sécurité, identifiants, flux.
+ * Usage guide sent to every MCP client at initialization (`instructions` field):
+ * safety rules, ids, flows.
  *
- * Rester sous 2 000 caractères, sécurité en tête : les clients tronquent un
- * guide plus long (Claude Code le coupe à 2 048) et la fin n'est alors pas lue.
+ * Keep it under 2,000 characters, safety first: clients truncate longer guides
+ * (Claude Code cuts at 2,048) and the end is then never read.
  */
-export const INSTRUCTIONS = `Sequence Mail : prospection multicanale (emails Gmail + LinkedIn), pilotable par ces tools.
+export const INSTRUCTIONS = `Sequence Mail: multichannel outreach (Gmail emails + LinkedIn), driven by these tools.
 
-SÉCURITÉ (obligatoire)
-- Accord EXPLICITE de l'utilisateur, après un aperçu (preview_campaign, dry_run, nombre de contacts), avant : launch_contacts, resume_campaign, reply_to_contact et send_test_email en dry_run: false, remove_contacts, set_contacts_status opted_out, rotate_linkedin_token, tout delete_*.
-- Jamais plus de contacts lancés que demandé (all_held avec limit) ; annoncer le nombre avant.
-- Un accord vaut pour l'action montrée, pas pour les suivantes.
-- Ranger une campagne : archive_campaign. delete_campaign seulement sur demande explicite de suppression définitive.
+SAFETY (mandatory)
+- EXPLICIT user approval, after a preview (preview_campaign, dry_run, contact count), before: launch_contacts, resume_campaign, reply_to_contact and send_test_email with dry_run: false, remove_contacts, set_contacts_status opted_out, rotate_linkedin_token, any delete_*.
+- Never launch more contacts than asked (all_held with limit); state the count first.
+- An approval covers the action shown, not the next ones.
+- To put a campaign away: archive_campaign. delete_campaign only on an explicit request for permanent deletion.
 
-IDENTIFIANTS
-- contact_id = contact global (update_contact, preview_email, send_test_email).
-- cc_id = inscription d'un contact à UNE campagne (launch/stop/remove_contacts, set_contacts_status, get_conversation, reply_to_contact).
-- Ne jamais inventer un id : le lire (list_campaign_contacts, list_replies, search_contacts).
+IDS
+- contact_id = global contact (update_contact, preview_email, send_test_email).
+- cc_id = a contact's enrollment in ONE campaign (launch/stop/remove_contacts, set_contacts_status, get_conversation, reply_to_contact).
+- Never invent an id: read it (list_campaign_contacts, list_replies, search_contacts).
 
-CAMPAGNE
-1. list_accounts, list_linkedin_accounts : comptes d'envoi.
-2. create_campaign, description et contacts compris : naît en pause, contacts en « held », rien ne part. Ajouts : import_contacts, import_contacts_csv.
-3. preview_campaign : variables vides sur tous les contacts, rendu des étapes.
-4. launch_contacts (une ou plusieurs campagnes) ; resume_campaign si elle est en pause.
-get_settings : fuseau du serveur, fenêtre d'envoi, prochain envoi. Modifier : update_step (une étape), update_campaign. Un contact va dans la campagne dont la description (list_campaigns) lui correspond. Suivi : list_campaigns, list_campaign_contacts (paginé), get_activity.
+CAMPAIGN
+1. list_accounts, list_linkedin_accounts: sending accounts.
+2. create_campaign, with description and contacts: starts paused, contacts "held", nothing is sent. Add more: import_contacts, import_contacts_csv.
+3. preview_campaign: empty variables across all contacts, rendered steps.
+4. launch_contacts (one or more campaigns); resume_campaign if paused.
+get_settings: server timezone, send window, next send. Edit: update_step (one step), update_campaign. A contact goes in the campaign whose description (list_campaigns) fits it. Tracking: list_campaigns, list_campaign_contacts (paginated), get_activity.
 
-RÉPONSES
-list_replies (include_text) → get_conversation → reply_to_contact (dry_run d'abord).
+REPLIES
+list_replies (include_text) → get_conversation → reply_to_contact (dry_run first).
 
-Résultats : champ absent = vide ; compteur absent de list_campaigns = 0.
-Hors Claude : connect_google_account donne un lien OAuth à ouvrir ; create_linkedin_account, un jeton à coller dans l'extension Chrome.`;
+Results: missing field = empty; missing list_campaigns counter = 0.
+Outside Claude: connect_google_account gives an OAuth link to open; create_linkedin_account, a token to paste into the Chrome extension.`;

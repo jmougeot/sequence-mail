@@ -1,6 +1,6 @@
-# Image de production pour Sequence Mail (Node + Express + SQLite).
-# better-sqlite3 est natif : on garde les outils de build au cas où le binaire
-# précompilé ne correspond pas à la plateforme du VPS.
+# Production image for Sequence Mail (Node + Express + SQLite).
+# better-sqlite3 is native: keep build tools in case no prebuilt binary
+# matches the platform.
 FROM node:22-bookworm-slim
 
 RUN apt-get update \
@@ -9,15 +9,15 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Dépendances d'abord (cache Docker). tsx/typescript sont en devDependencies et
-# sont nécessaires à l'exécution (npm start = tsx src/index.ts) → on installe tout.
+# Dependencies first (Docker cache). tsx/typescript are devDependencies but
+# needed at runtime (npm start = tsx src/index.ts), so install everything.
 COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
 
 ENV NODE_ENV=production
-# Base SQLite persistée hors du conteneur (volume monté sur /data)
+# SQLite database lives outside the container (volume mounted on /data)
 ENV DATA_DIR=/data
 ENV PORT=3000
 

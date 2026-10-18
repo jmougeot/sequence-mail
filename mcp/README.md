@@ -1,63 +1,61 @@
-# Sequence Mail — serveur MCP
+# Sequence Mail — MCP server
 
-Expose Sequence Mail (campagnes, contacts, réponses, comptes Google et LinkedIn)
-comme **tools MCP**, utilisables depuis Claude Desktop, Claude Code ou tout client
-MCP. Lecture **et** écriture : tout se pilote depuis Claude, sans l'interface web
-(connexion des comptes, campagnes, import, export, réponses et messages), à deux
-gestes près faits par l'utilisateur (voir « Hors Claude »).
+Exposes Sequence Mail (campaigns, contacts, replies, Google and LinkedIn accounts) as
+**MCP tools** for Claude Desktop, Claude Code or any MCP client. Read **and** write:
+everything runs from Claude without the web UI (account connection, campaigns, import,
+export, replies), except two steps the user does by hand (see [Outside Claude](#outside-claude)).
 
-Le serveur ne touche pas la base SQLite : il appelle l'**API HTTP** de l'app
-(transport stdio côté MCP, ou HTTP pour un agent distant). Il marche donc aussi bien contre une instance locale
-(`http://localhost:3000`) que contre la prod déployée (`https://go.…`).
+The server never touches the SQLite database: it calls the app's **HTTP API** (stdio
+transport, or HTTP for a remote agent). It works against a local instance
+(`http://localhost:3000`) as well as a deployed one (`https://go.yourdomain.com`).
 
-## Installation
+## Install
 
 ```bash
 cd Sequence-mail/mcp
 npm install
-npm run build      # compile vers dist/
+npm run build      # compiles to dist/
 ```
 
 ## Configuration
 
-| Variable | Rôle | Défaut |
+| Variable | Purpose | Default |
 |---|---|---|
-| `SEQUENCE_MAIL_BASE_URL` | URL de l'app Sequence Mail | `http://localhost:3000` |
-| `SEQUENCE_MAIL_BASIC_AUTH` | `user:pass` si l'app est protégée par basic auth (prod derrière Caddy) | — |
-| `SEQUENCE_MAIL_PUBLIC_URL` | URL de l'app vue d'un navigateur, pour les liens donnés à l'utilisateur (OAuth Google, adresse du serveur dans l'extension). À renseigner quand le MCP parle à l'app par un réseau interne (conteneur `mcp` : `http://sequence-app:3000`) | `SEQUENCE_MAIL_BASE_URL` |
-| `MCP_HTTP_PORT` | Sert le MCP en HTTP (agent distant) au lieu de stdio. Dans ce mode, `csv_path` et `file_path` sont refusés (pas d'accès aux fichiers de l'utilisateur) | — |
+| `SEQUENCE_MAIL_BASE_URL` | Sequence Mail app URL | `http://localhost:3000` |
+| `SEQUENCE_MAIL_BASIC_AUTH` | `user:pass` if the app is behind basic auth (production behind Caddy) | — |
+| `SEQUENCE_MAIL_PUBLIC_URL` | App URL as seen from a browser, for links given to the user (Google OAuth, server address in the extension). Set it when the MCP reaches the app over an internal network (`mcp` container: `http://sequence-app:3000`) | `SEQUENCE_MAIL_BASE_URL` |
+| `MCP_HTTP_PORT` | Serve MCP over HTTP (remote agent) instead of stdio. In this mode `csv_path` and `file_path` are refused (no access to the user's files) | — |
 
-> En local, l'app n'a pas d'auth → seule `SEQUENCE_MAIL_BASE_URL` suffit (et le
-> défaut convient si l'app tourne sur le port 3000). Pour viser la prod, renseigne
-> l'URL publique **et** `SEQUENCE_MAIL_BASIC_AUTH` (le même `admin:motdepasse` que
-> le dashboard). **Prérequis : l'app Sequence Mail doit tourner** — le MCP est un
-> adaptateur, pas un serveur autonome.
+> Locally the app has no auth, so `SEQUENCE_MAIL_BASE_URL` is enough (the default works
+> if the app runs on port 3000). For production, set the public URL **and**
+> `SEQUENCE_MAIL_BASIC_AUTH` (the same `admin:password` as the dashboard).
+> **The Sequence Mail app must be running**: the MCP is an adapter, not a standalone server.
 
-## Brancher le serveur
+## Connect it
 
 ### Claude Code
 
 ```bash
-# chemin absolu vers le build
-claude mcp add sequence-mail -- node /chemin/vers/Sequence-mail/mcp/dist/index.js
+# absolute path to the build
+claude mcp add sequence-mail -- node /path/to/Sequence-mail/mcp/dist/index.js
 
-# en visant la prod :
+# against production:
 claude mcp add sequence-mail \
-  -e SEQUENCE_MAIL_BASE_URL=https://go.votre-domaine.com \
-  -e SEQUENCE_MAIL_BASIC_AUTH=admin:motdepasse \
-  -- node /chemin/vers/Sequence-mail/mcp/dist/index.js
+  -e SEQUENCE_MAIL_BASE_URL=https://go.yourdomain.com \
+  -e SEQUENCE_MAIL_BASIC_AUTH=admin:password \
+  -- node /path/to/Sequence-mail/mcp/dist/index.js
 ```
 
 ### Claude Desktop
 
-Dans `claude_desktop_config.json` (Réglages → Developer → Edit Config) :
+In `claude_desktop_config.json` (Settings → Developer → Edit Config):
 
 ```json
 {
   "mcpServers": {
     "sequence-mail": {
       "command": "node",
-      "args": ["/chemin/absolu/vers/Sequence-mail/mcp/dist/index.js"],
+      "args": ["/absolute/path/to/Sequence-mail/mcp/dist/index.js"],
       "env": {
         "SEQUENCE_MAIL_BASE_URL": "http://localhost:3000"
       }
@@ -66,109 +64,96 @@ Dans `claude_desktop_config.json` (Réglages → Developer → Edit Config) :
 }
 ```
 
-Redémarre le client : les tools `sequence-mail` apparaissent.
+Restart the client: the `sequence-mail` tools appear.
 
-## Tools exposés
+## Tools
 
-Le serveur envoie aussi des **instructions** à l'initialisation (`src/instructions.ts`) :
-règles de sécurité d'abord, puis identifiants, flux d'une campagne et des réponses. Tout
-client MCP les charge — à garder sous 2 000 caractères : Claude Code tronque à 2 048.
+The server also sends **instructions** on initialization (`src/instructions.ts`): safety
+rules first, then ids, campaign and reply flows. Every MCP client loads them; keep them
+under 2,000 characters (Claude Code truncates at 2,048).
 
-**Campagnes** — `list_campaigns` (archives masquées par défaut, `include_archived`),
-`get_campaign` (avec les variables de la séquence et leur consigne), `list_variable_instructions`,
-`set_variable_instruction`, `get_activity` (journal : totaux et événements sur N jours),
-`preview_campaign` (variables vides sur tous les contacts d'une campagne, étapes sautées,
-rendu des étapes), `preview_email`, `send_test_email` (email `[TEST]` d'une étape,
-`dry_run` par défaut), `create_campaign` (avec `contacts` : création et import en un
-appel), `update_campaign` (seuls les champs fournis changent), `update_step` (une seule
-étape), `delete_campaign`, `pause_campaign`, `resume_campaign`, `archive_campaign`,
-`unarchive_campaign`.
+**Campaigns** — `list_campaigns` (archived hidden by default, `include_archived`),
+`get_campaign` (with the sequence's variables and their instructions), `list_variable_instructions`,
+`set_variable_instruction`, `get_activity` (log: totals and events over N days),
+`preview_campaign` (empty variables across all contacts, skipped steps, rendered steps),
+`preview_email`, `send_test_email` (`[TEST]` email of a step, `dry_run` by default),
+`create_campaign` (with `contacts`: create and import in one call), `update_campaign`
+(only provided fields change), `update_step` (a single step), `delete_campaign`,
+`pause_campaign`, `resume_campaign`, `archive_campaign`, `unarchive_campaign`.
 
-**Contacts** — `list_campaign_contacts` (filtres `status`/`search`, paginé `limit`/`offset`,
-renvoie `{ total, returned, offset, contacts }`), `search_contacts` (toutes campagnes),
-`export_campaign_contacts` (CSV en texte ou fichier local), `import_contacts` (liste
-d'objets JSON), `import_contacts_csv` (texte `csv` ou fichier local `csv_path`),
-`attio_sync`, `launch_contacts` (`cc_ids`, ou `all_held` + `limit` ; `campaign_id` accepte
-une liste de campagnes), `stop_contacts`, `set_contacts_status`, `remove_contacts`,
-`update_contact`.
+**Contacts** — `list_campaign_contacts` (`status`/`search` filters, paginated `limit`/`offset`,
+returns `{ total, returned, offset, contacts }`), `search_contacts` (all campaigns),
+`export_campaign_contacts` (CSV as text or local file), `import_contacts` (list of JSON
+objects), `import_contacts_csv` (`csv` text or local file `csv_path`), `attio_sync`,
+`launch_contacts` (`cc_ids`, or `all_held` + `limit`; `campaign_id` accepts a list),
+`stop_contacts`, `set_contacts_status`, `remove_contacts`, `update_contact`.
 
-**Réponses** — `list_replies` (boîte de réception unifiée, texte des réponses en option),
-`get_conversation` (fil complet d'un contact), `reply_to_contact` (réponse dans le fil
-Gmail, `dry_run` par défaut).
+**Replies** — `list_replies` (unified inbox, reply text optional), `get_conversation`
+(a contact's full thread), `reply_to_contact` (reply in the Gmail thread, `dry_run` by default).
 
-**Comptes Google** — `list_accounts`, `connect_google_account` (lien OAuth + marche à
-suivre), `update_account` (`account_id` accepte une liste), `delete_google_account` (compte
-désactivé au préalable ; efface son historique d'envois), `get_settings` (réglages, fuseau
-du serveur, fenêtre d'envoi ouverte ou non, prochain envoi estimé).
+**Google accounts** — `list_accounts`, `connect_google_account` (OAuth link + steps),
+`update_account` (`account_id` accepts a list), `delete_google_account` (account must be
+deactivated first; erases its send history), `get_settings` (settings, server timezone,
+send window open or not, estimated next send).
 
 **LinkedIn** — `linkedin_status`, `linkedin_toggle`, `list_linkedin_accounts`,
-`create_linkedin_account` (jeton en clair + étapes de liaison de l'extension),
-`update_linkedin_account` (nom, actif, mode extension/serveur, proxy, plafonds,
-warm-up), `rotate_linkedin_token`, `delete_linkedin_account`.
+`create_linkedin_account` (plain-text token + extension linking steps),
+`update_linkedin_account` (name, active, extension/server mode, proxy, caps, warm-up),
+`rotate_linkedin_token`, `delete_linkedin_account`.
 
-### À savoir
+### Good to know
 
-- **Aucun envoi à la création.** Une campagne naît `paused`, ses contacts en `held`. Le
-  flux complet : `create_campaign` (contacts compris, ou `import_contacts` /
-  `import_contacts_csv` ensuite) → `preview_campaign` → `launch_contacts` (passe en
-  `pending` et réactive la campagne) → `resume_campaign` si elle est en pause. Les envois
-  respectent ensuite la fenêtre d'envoi, les quotas et le warm-up de l'app.
-- **Réponses compactes.** Les résultats sont du JSON sur une ligne, sans les champs
-  vides (`null`, `""`, liste ou objet vide) : un champ absent est vide. `false` et `0`
-  sont gardés, sauf les compteurs et taux de `list_campaigns` et les compteurs de visites
-  de `list_campaign_contacts`, absents quand ils valent 0.
-- **Variables de campagne.** Un champ personnalisé appartient au contact et vaut dans
-  toutes ses campagnes. `campaign_vars` (sur `create_campaign`, `import_contacts`,
-  `import_contacts_csv`) rattache les champs nommés à l'inscription : `{{phrase}}` peut
-  alors différer d'une campagne à l'autre pour un même contact, et prime à l'envoi sur le
-  champ du contact de même nom. `list_campaign_contacts` les rend dans `vars`.
-- **Blocs conditionnels.** `{{si variable}}…{{sinon}}…{{fin}}` dans un sujet ou un corps : le
-  premier texte part si la variable est remplie pour le contact, le second sinon.
-  `preview_campaign` ne compte une variable vide que chez les contacts qui recevront le
-  texte où elle figure, et signale un bloc resté sans `{{fin}}`.
-- **Fenêtre d'envoi.** Ses heures se lisent à l'heure du serveur : `get_settings` donne
-  son fuseau (`server.timezone`, `utc_offset`), si la fenêtre est ouverte et l'heure du
-  prochain envoi au plus tôt.
-- **Réponses** : `list_replies` → `get_conversation` → `reply_to_contact`.
-- **Deux identifiants distincts** :
-  - `contact_id` = le contact **global** → `update_contact`, `preview_email`,
-    `send_test_email` ;
-  - `cc_id` = l'**inscription à une campagne** → `launch_contacts`, `stop_contacts`,
+- **Nothing is sent on creation.** A campaign starts `paused`, its contacts `held`. Full
+  flow: `create_campaign` (with contacts, or `import_contacts` / `import_contacts_csv`
+  later) → `preview_campaign` → `launch_contacts` (moves to `pending` and reactivates the
+  campaign) → `resume_campaign` if paused. Sends then follow the app's send window,
+  quotas and warm-up.
+- **Compact results.** Single-line JSON without empty fields (`null`, `""`, empty array
+  or object): a missing field is empty. `false` and `0` are kept, except `list_campaigns`
+  counters and rates and `list_campaign_contacts` visit counters, omitted when 0.
+- **Campaign variables.** A custom field belongs to the contact and applies in all its
+  campaigns. `campaign_vars` (on `create_campaign`, `import_contacts`,
+  `import_contacts_csv`) attaches the named fields to the enrollment instead: `{{hook}}`
+  can then differ per campaign for the same contact, and overrides the contact field of
+  the same name at send time. `list_campaign_contacts` returns them in `vars`.
+- **Conditional blocks.** `{{if variable}}…{{else}}…{{end}}` in a subject or body: the
+  first text is sent if the variable is set for the contact, the second otherwise (the
+  French `{{si}}…{{sinon}}…{{fin}}` is still accepted). `preview_campaign` only counts an
+  empty variable for contacts who will get the text containing it, and flags a block
+  left without `{{end}}`.
+- **Send window.** Its hours are in server time: `get_settings` gives the timezone
+  (`server.timezone`, `utc_offset`), whether the window is open and the earliest next send.
+- **Two distinct ids**:
+  - `contact_id` = the **global** contact → `update_contact`, `preview_email`, `send_test_email`;
+  - `cc_id` = the **enrollment in a campaign** → `launch_contacts`, `stop_contacts`,
     `set_contacts_status`, `remove_contacts`, `get_conversation`, `reply_to_contact`.
-- **Envois réels** : `reply_to_contact` et `send_test_email` sont en `dry_run: true`
-  par défaut (rendu sans envoi) ; il faut passer `dry_run: false` pour envoyer. Ils sont
-  annotés `openWorldHint`, comme `launch_contacts` et `resume_campaign`.
-- Les tools destructifs (`delete_campaign`, `delete_google_account`, `delete_linkedin_account`,
+- **Real sends**: `reply_to_contact` and `send_test_email` default to `dry_run: true`
+  (render without sending); pass `dry_run: false` to send. They are annotated
+  `openWorldHint`, like `launch_contacts` and `resume_campaign`.
+- Destructive tools (`delete_campaign`, `delete_google_account`, `delete_linkedin_account`,
   `rotate_linkedin_token`, `remove_contacts`, `set_contacts_status`, `stop_contacts`,
-  `update_campaign`) sont annotés `destructiveHint` — les clients peuvent demander
-  confirmation avant exécution.
-- **Fichiers locaux** (`csv_path`, `file_path`) : lus/écrits par le process MCP, donc
-  seulement quand il tourne en local (stdio). Un CSV en Windows-1252 (export Excel
-  français) est reconnu ; l'export écrit de l'UTF-8 avec BOM (lisible par Excel),
-  séparateur `;` en option.
-- Les tools ajoutés (`list_replies`, `get_conversation`, `search_contacts`,
-  `get_activity`, comptes LinkedIn) rendent les dates en **ISO 8601 UTC** ; les tools
-  historiques gardent les epoch ms de l'API.
+  `update_campaign`) are annotated `destructiveHint`, so clients can ask for confirmation.
+- **Local files** (`csv_path`, `file_path`) are read/written by the MCP process, so only
+  when it runs locally (stdio). Windows-1252 CSVs (French Excel exports) are detected;
+  exports are UTF-8 with BOM (Excel-readable), `;` delimiter optional.
+- Newer tools (`list_replies`, `get_conversation`, `search_contacts`, `get_activity`,
+  LinkedIn accounts) return dates as **ISO 8601 UTC**; older tools keep the API's epoch ms.
 
-### Hors Claude
+### Outside Claude
 
-- **Compte Google** : un clic d'autorisation OAuth par compte, sur le lien donné par
-  `connect_google_account` (le même lien reconnecte un compte expiré).
-- **Compte LinkedIn** : installer l'extension Chrome (`Sequence-mail/extension`) une fois
-  par compte et y coller le jeton donné par `create_linkedin_account`.
+- **Google account**: one OAuth consent click per account, on the link from
+  `connect_google_account` (the same link reconnects an expired account).
+- **LinkedIn account**: install the Chrome extension (`Sequence-mail/extension`) once per
+  account and paste the token from `create_linkedin_account`.
 
-## Développement
+## Development
 
 ```bash
-npm run dev        # tsx, sans build
+npm run dev        # tsx, no build
 npm run typecheck  # tsc --noEmit
 ```
 
-Organisation : `src/index.ts` (construction du serveur et transports stdio/HTTP),
-`src/api.ts` (client HTTP de l'app), `src/instructions.ts` (guide envoyé aux clients),
-`src/lib.ts` (fonctions pures : CSV, filtres, dates), `src/tools/*.ts` (un fichier
-par domaine : campagnes, contacts, réponses, comptes Google, LinkedIn).
-
-> Le code de prospection B2B (recherche d'entreprises, enrichissement d'emails)
-> n'est **pas** dans Sequence Mail mais dans le projet `Enrichissement/` (port 3100).
-> Ce serveur MCP ne couvre donc que les campagnes / contacts / réponses / comptes.
+Layout: `src/index.ts` (server setup, stdio/HTTP transports), `src/api.ts` (app HTTP
+client), `src/instructions.ts` (guide sent to clients), `src/lib.ts` (pure functions:
+CSV, filters, dates), `src/tools/*.ts` (one file per domain: campaigns, contacts,
+replies, Google accounts, LinkedIn).

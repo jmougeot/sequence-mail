@@ -1,15 +1,14 @@
 /**
- * Fonctions pures du serveur MCP (ni réseau, ni MCP) : réponses compactes,
- * construction et lecture de CSV, filtres et pagination des contacts,
- * conversion des dates. Testables isolément.
+ * Pure functions (no network, no MCP): compact responses, CSV building and
+ * reading, contact filtering and pagination, date conversion. Testable alone.
  */
 
-// --- Réponses compactes ---------------------------------------------------------
+// --- Compact responses ----------------------------------------------------------
 
 /**
- * Copie profonde sans les champs vides (null, "", liste ou objet vide) : dans
- * une réponse, un champ absent vaut « vide ». false et 0 sont gardés ; les
- * éléments d'une liste aussi (leur position peut compter).
+ * Deep copy without empty fields (null, "", empty array or object): in a
+ * response, a missing field means empty. false and 0 are kept, and so are array
+ * items (their position may matter).
  */
 export function compact<T>(value: T): T {
   if (Array.isArray(value)) return value.map((v) => compact(v)) as T;
@@ -26,23 +25,23 @@ export function compact<T>(value: T): T {
   return value;
 }
 
-/** Copie d'une ligne sans ses compteurs à zéro (sauf `keep`) : un compteur absent vaut 0. */
+/** Copy of a row without its zero counters (except `keep`): a missing counter means 0. */
 export function omitZeros(row: Record<string, unknown>, keep: string[] = []): Record<string, unknown> {
   return Object.fromEntries(Object.entries(row).filter(([k, v]) => v !== 0 || keep.includes(k)));
 }
 
-// Statistiques d'A/B test de GET /api/campaigns, sans objet hors A/B test.
+// A/B test stats from GET /api/campaigns, meaningless without an A/B test.
 const AB_KEYS = ["subject_b", "ab_test", "contacted_a", "replied_a", "reply_rate_a", "contacted_b", "replied_b", "reply_rate_b"];
 
-/** Ligne de list_campaigns : compteurs et taux nuls omis, statistiques A/B seulement s'il y a un A/B test. */
+/** list_campaigns row: zero counters and rates omitted, A/B stats only with an A/B test. */
 export function campaignSummary(campaign: Record<string, unknown>): Record<string, unknown> {
   const row = campaign.ab_test ? campaign : Object.fromEntries(Object.entries(campaign).filter(([k]) => !AB_KEYS.includes(k)));
   return omitZeros(row, ["steps", "contacts"]);
 }
 
-// --- Valeurs ------------------------------------------------------------------
+// --- Values -------------------------------------------------------------------
 
-/** Texte d'une cellule : null/undefined → "", objet → JSON, le reste → String. */
+/** Cell text: null/undefined → "", object → JSON, anything else → String. */
 export function cellText(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
@@ -50,13 +49,13 @@ export function cellText(value: unknown): string {
   return String(value);
 }
 
-/** Epoch ms → ISO 8601 (UTC) ; vide si absent ou illisible. */
+/** Epoch ms → ISO 8601 (UTC); empty if missing or unreadable. */
 export function isoOrEmpty(value: unknown): string {
   const n = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
   return typeof n === "number" && Number.isFinite(n) ? new Date(n).toISOString() : "";
 }
 
-/** Champs personnalisés d'un contact : `extra` arrive en chaîne JSON (ou objet, ou null). */
+/** A contact's custom fields: `extra` arrives as a JSON string (or object, or null). */
 export function parseExtra(extra: unknown): Record<string, unknown> {
   let v = extra;
   if (typeof v === "string") {
@@ -69,7 +68,7 @@ export function parseExtra(extra: unknown): Record<string, unknown> {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
-// Clés horodatées (epoch ms) que les tools récents rendent en ISO 8601.
+// Timestamp keys (epoch ms) that newer tools return as ISO 8601.
 const DATE_KEYS = new Set([
   "at",
   "date",
@@ -94,8 +93,8 @@ const DATE_KEYS = new Set([
 ]);
 
 /**
- * Copie profonde où les horodatages epoch ms (clés connues) deviennent des
- * chaînes ISO 8601 UTC — plus sûr à lire pour un modèle qu'un entier.
+ * Deep copy where epoch ms timestamps (known keys) become ISO 8601 UTC strings,
+ * safer for a model to read than an integer.
  */
 export function isoDates<T>(value: T): T {
   if (Array.isArray(value)) return value.map((v) => isoDates(v)) as T;
@@ -112,9 +111,8 @@ export function isoDates<T>(value: T): T {
 // --- CSV (RFC 4180) -----------------------------------------------------------
 
 /**
- * Sérialise des lignes en CSV RFC 4180 : un champ est mis entre guillemets s'il
- * contient le séparateur, un guillemet ou un retour ligne (guillemets doublés),
- * lignes terminées par CRLF.
+ * Serializes rows as RFC 4180 CSV: a field is quoted if it contains the
+ * delimiter, a quote or a newline (quotes doubled); lines end with CRLF.
  */
 export function toCsv(columns: string[], rows: Array<Record<string, string>>, delimiter = ","): string {
   const field = (v: string) => (v.includes(delimiter) || /["\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
@@ -123,24 +121,24 @@ export function toCsv(columns: string[], rows: Array<Record<string, string>>, de
   return lines.join("\r\n") + "\r\n";
 }
 
-/** Nom de colonne tel que l'app le normalise à l'import (snake_case minuscule). */
+/** Column name as the app normalizes it on import (lowercase snake_case). */
 export function normalizeKey(key: string): string {
   return key.trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
 
-/** Une variable de template {{clé}} n'accepte que lettres, chiffres et _. */
+/** A {{key}} template variable only allows letters, digits and _. */
 const KEY_RE = /^[\p{L}\p{N}_]+$/u;
 
-/** Colonnes reconnues par l'import de l'app ; toute autre devient une variable. */
+/** Columns known to the app's import; any other becomes a variable. */
 export const KNOWN_IMPORT_COLUMNS = ["email", "first_name", "last_name", "company", "linkedin"];
 
 /**
- * Construit le CSV d'import à partir d'objets contacts : clés normalisées comme
- * l'app, colonnes = union des clés (connues d'abord, puis dans l'ordre
- * d'apparition), valeurs non textuelles converties en texte.
+ * Builds the import CSV from contact objects: keys normalized like the app,
+ * columns = union of keys (known first, then in order of appearance), non-text
+ * values converted to text.
  */
 export function buildImportCsv(contacts: Array<Record<string, unknown>>): { csv: string; columns: string[]; rows: number } {
-  if (!contacts.length) throw new Error("contacts[] est vide");
+  if (!contacts.length) throw new Error("contacts[] is empty");
   const present = new Set<string>();
   const extraColumns: string[] = [];
   const invalid = new Set<string>();
@@ -153,7 +151,7 @@ export function buildImportCsv(contacts: Array<Record<string, unknown>>): { csv:
         continue;
       }
       const value = cellText(rawValue);
-      // Deux clés qui se normalisent pareil (« Email » et « email ») : la première non vide gagne.
+      // Two keys normalizing alike ("Email" and "email"): the first non-empty one wins.
       if (!(key in row) || (!row[key] && value)) row[key] = value;
       if (!present.has(key)) {
         present.add(key);
@@ -164,34 +162,34 @@ export function buildImportCsv(contacts: Array<Record<string, unknown>>): { csv:
   });
   if (invalid.size) {
     throw new Error(
-      `Nom(s) de champ invalide(s) : ${[...invalid].map((k) => `« ${k} »`).join(", ")} — lettres, chiffres et _ uniquement (espaces et tirets deviennent _).`
+      `Invalid field name(s): ${[...invalid].map((k) => `"${k}"`).join(", ")} — letters, digits and _ only (spaces and hyphens become _).`
     );
   }
   if (!present.has("email") && !present.has("linkedin")) {
-    throw new Error("Aucun contact n'a de champ « email » ni « linkedin » (URL du profil) : l'app exige l'un des deux.");
+    throw new Error("No contact has an \"email\" or \"linkedin\" (profile URL) field: the app requires one of them.");
   }
   const columns = [...KNOWN_IMPORT_COLUMNS.filter((k) => present.has(k)), ...extraColumns];
   return { csv: toCsv(columns, rows), columns, rows: rows.length };
 }
 
 /**
- * Valide campaign_vars (champs à rattacher à l'inscription plutôt qu'au contact)
- * contre les colonnes de l'import ; renvoie les noms normalisés.
+ * Validates campaign_vars (fields attached to the enrollment rather than the
+ * contact) against the import columns; returns normalized names.
  */
 export function checkCampaignVars(campaignVars: string[] | undefined, columns: string[]): string[] {
   const names = [...new Set((campaignVars ?? []).map(normalizeKey).filter(Boolean))];
   const reserved = names.filter((k) => KNOWN_IMPORT_COLUMNS.includes(k));
   if (reserved.length) {
-    throw new Error(`campaign_vars : ${reserved.join(", ")} sont des champs du contact, pas des variables de campagne.`);
+    throw new Error(`campaign_vars: ${reserved.join(", ")} are contact fields, not campaign variables.`);
   }
   const unknown = names.filter((k) => !columns.includes(k));
-  if (unknown.length) throw new Error(`campaign_vars : champ(s) absent(s) des contacts : ${unknown.join(", ")}.`);
+  if (unknown.length) throw new Error(`campaign_vars: field(s) missing from the contacts: ${unknown.join(", ")}.`);
   return names;
 }
 
 /**
- * Décode un fichier CSV : UTF-8 (BOM retiré), sinon Windows-1252 — l'encodage
- * des exports Excel français « CSV (séparateur : point-virgule) ».
+ * Decodes a CSV file: UTF-8 (BOM stripped), else Windows-1252, the encoding of
+ * French Excel "CSV (semicolon-separated)" exports.
  */
 export function decodeCsvBytes(bytes: Uint8Array): { text: string; encoding: "utf-8" | "windows-1252" } {
   try {
@@ -201,28 +199,27 @@ export function decodeCsvBytes(bytes: Uint8Array): { text: string; encoding: "ut
   }
 }
 
-// --- Contacts d'une campagne --------------------------------------------------
+// --- Campaign contacts --------------------------------------------------------
 
-/** Ligne de GET /api/campaigns/:id/contacts (forme libre au-delà de ces champs). */
+/** Row of GET /api/campaigns/:id/contacts (free-form beyond these fields). */
 export type CampaignContactRow = Record<string, unknown> & { cc_id: number; status: string };
 
 /**
- * Ligne de list_campaign_contacts : champs personnalisés en objets (extra = ceux
- * du contact, vars = ceux de l'inscription à cette campagne), compteurs de
- * visites nuls omis.
+ * list_campaign_contacts row: custom fields as objects (extra = the contact's,
+ * vars = this campaign enrollment's), zero visit counters omitted.
  */
 export function contactSummary(row: CampaignContactRow): Record<string, unknown> {
   return { ...omitZeros(row, ["current_step"]), extra: parseExtra(row.extra), vars: parseExtra(row.vars) };
 }
 
-/** Minuscules sans accents, pour une recherche tolérante (« helene » trouve « Hélène »). */
+/** Lowercase without accents, for lenient search ("helene" finds "Hélène"). */
 function fold(s: string): string {
   return s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 }
 
 /**
- * Filtre par statut(s) et par sous-chaîne (casse et accents ignorés) sur email,
- * prénom, nom, « prénom nom », société et URL LinkedIn.
+ * Filters by status(es) and substring (case- and accent-insensitive) on email,
+ * first name, last name, "first last", company and LinkedIn URL.
  */
 export function filterContacts<T extends Record<string, unknown>>(
   rows: T[],
@@ -241,19 +238,19 @@ export function filterContacts<T extends Record<string, unknown>>(
   });
 }
 
-/** Page d'une liste : total (après filtre), nombre rendu, décalage, éléments. */
+/** A page of a list: total (after filtering), returned count, offset, items. */
 export function paginate<T>(rows: T[], offset = 0, limit = 100): { total: number; returned: number; offset: number; items: T[] } {
   const items = rows.slice(offset, offset + limit);
   return { total: rows.length, returned: items.length, offset, items };
 }
 
-/** Contacts « held » d'une campagne, par cc_id croissant, limités aux N premiers. */
+/** A campaign's "held" contacts, by ascending cc_id, limited to the first N. */
 export function pickHeld(rows: CampaignContactRow[], limit?: number): CampaignContactRow[] {
   const held = rows.filter((r) => r.status === "held").sort((a, b) => a.cc_id - b.cc_id);
   return limit === undefined ? held : held.slice(0, limit);
 }
 
-/** Colonnes fixes de l'export, dans l'ordre ; les clés de `extra` suivent. */
+/** Fixed export columns, in order; `extra` keys follow. */
 export const EXPORT_COLUMNS = [
   "email",
   "first_name",
@@ -273,12 +270,12 @@ export const EXPORT_COLUMNS = [
 const EXPORT_DATE_COLUMNS = new Set(["replied_at", "next_send_at"]);
 
 /**
- * Aplatit les contacts d'une campagne pour l'export : colonnes fixes (dates en
- * ISO), puis une colonne par champ personnalisé — `extra`, et `vars` qui prime
- * comme à l'envoi (préfixée extra_ si elle entre en collision avec une colonne fixe).
+ * Flattens a campaign's contacts for export: fixed columns (ISO dates), then one
+ * column per custom field: `extra`, and `vars` taking precedence as at send time
+ * (prefixed extra_ on collision with a fixed column).
  */
 export function exportTable(rows: Array<Record<string, unknown>>): { columns: string[]; rows: Array<Record<string, string>> } {
-  const columnOf = new Map<string, string>(); // clé extra → nom de colonne
+  const columnOf = new Map<string, string>(); // extra key → column name
   const taken = new Set(EXPORT_COLUMNS);
   const extraColumns: string[] = [];
   const out = rows.map((r) => {
@@ -300,7 +297,7 @@ export function exportTable(rows: Array<Record<string, unknown>>): { columns: st
   return { columns: [...EXPORT_COLUMNS, ...extraColumns], rows: out };
 }
 
-/** Rapport d'import : la liste d'erreurs est tronquée pour ne pas noyer le contexte. */
+/** Import report: the error list is truncated so it doesn't flood the context. */
 export function summarizeImport(report: unknown, maxErrors = 30): unknown {
   if (report && typeof report === "object" && Array.isArray((report as { errors?: unknown }).errors)) {
     const errors = (report as { errors: unknown[] }).errors;

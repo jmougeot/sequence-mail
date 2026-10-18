@@ -1,11 +1,11 @@
-# Dépendances
+# Dependencies
 node_modules/
 
-# Secrets & config locale (NE JAMAIS versionner)
+# Secrets & local config (NEVER commit)
 .env
 .env.local
 
-# Données locales (bases, exports de prospects, logs)
+# Local data (databases, prospect exports, logs)
 data/*.db
 data/*.db-wal
 data/*.db-shm
@@ -19,12 +19,12 @@ data/*.csv
 # Build / cache
 dist/
 
-# Apps desktop générées
+# Generated desktop apps
 *.app/
 
 # macOS
 .DS_Store
 
-# Caddyfile rendu par setup.sh (contient le hash du mot de passe). Le modèle versionné est Caddyfile.template.
+# Rendered by setup.sh (contains the password hash); the template is Caddyfile.template.
 Caddyfile
 data/

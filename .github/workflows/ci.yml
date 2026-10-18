@@ -1,0 +1,60 @@
+# Type-checks the app and the MCP server, then boots the Docker image and
+# checks that it answers.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            mcp/package-lock.json
+      - name: App
+        run: |
+          npm ci
+          npx tsc --noEmit
+      - name: MCP server
+        working-directory: mcp
+        run: |
+          npm ci
+          npx tsc --noEmit
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t sm .
+      - name: Run container
+        run: docker run -d --name sm -p 3000:3000 sm
+      - name: Wait for the API (60 s max)
+        run: |
+          for _ in $(seq 1 30); do
+            curl -sf localhost:3000/api/settings > settings.json && exit 0
+            sleep 2
+          done
+          echo "App did not answer on /api/settings within 60 s" >&2
+          exit 1
+      - name: Check responses
+        run: |
+          # No credentials in a fresh install
+          jq -e '.google_configured == false' settings.json
+          code="$(curl -s -o /dev/null -w '%{http_code}' localhost:3000/)"
+          echo "GET / -> $code"
+          test "$code" = 200
+      - name: Container logs
+        if: always()
+        run: docker logs sm || true

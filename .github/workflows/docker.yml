@@ -1,5 +1,5 @@
-# Image prête à l'emploi : ghcr.io/<owner>/sequence-mail:latest (amd64 + arm64).
-# L'installeur et docker-compose.yml la téléchargent : pas de build sur le serveur.
+# Ready-to-run image: ghcr.io/<owner>/sequence-mail:latest (amd64 + arm64).
+# The installer and docker-compose.yml pull it: no build on the server.
 name: docker
 
 on:

@@ -1,19 +1,15 @@
 /**
- * API du canal LinkedIn des séquences.
- *
- * Côté exécutant : chaque compte demande la prochaine action autorisée (/next),
- * rend son verdict (/result) et remet la messagerie lue (/inbox) ; la
- * cadence/anti-ban vit dans outreach.ts. Deux façons de s'identifier :
- *   - extension Chrome : jeton du compte dans l'en-tête X-LI-Account (sans
- *     jeton : le compte le plus ancien, extension d'avant le multi-comptes) ;
- *   - runner (navigateurs serveur) : secret partagé X-LI-Runner + X-LI-Account-Id.
- *
- * Côté tableau de bord : /status (tous comptes) et /accounts (création, jeton,
- * mode, proxy, quotas, activation).
- *
- * Chaque verdict et chaque lecture de messagerie porte le profil LinkedIn lu
- * dans la page (`member`) : c'est ce qui garantit, côté serveur, que l'action
- * est partie du bon compte (cf. outreach.ts, recordResult).
+ * LinkedIn channel API for sequences.
+ * Executor side: each account asks for its next allowed action (/next), reports the outcome
+ * (/result) and uploads the inbox it read (/inbox); pacing/anti-ban lives in outreach.ts. Two ways
+ * to authenticate:
+ * - Chrome extension: account token in the X-LI-Account header (no token: the oldest account, for
+ *   pre-multi-account extensions);
+ * - runner (server browsers): shared secret X-LI-Runner + X-LI-Account-Id.
+ * Dashboard side: /status (all accounts) and /accounts (creation, token, mode, proxy, quotas,
+ * activation).
+ * Every outcome and inbox read carries the LinkedIn profile read in the page (`member`): that is
+ * how the server ensures the action came from the right account (see outreach.ts, recordResult).
  */
 import type express from "express";
 import { processInbox, processThreadReply, type LiConversation } from "./li-inbox.js";
@@ -46,7 +42,7 @@ const ACCOUNT_HEADER = "x-li-account";
 const RUNNER_HEADER = "x-li-runner";
 const RUNNER_ACCOUNT_HEADER = "x-li-account-id";
 
-/** Compte de l'exécutant appelant et son type ; répond lui-même 401/409 si introuvable. */
+/** The calling executor's account and type; replies 401/409 itself if not found. */
 function caller(req: express.Request, res: express.Response): { account: LiAccount; via: LiMode } | undefined {
   const runnerSecret = req.get(RUNNER_HEADER);
   if (runnerSecret) {
@@ -63,8 +59,8 @@ function caller(req: express.Request, res: express.Response): { account: LiAccou
   }
   const raw = req.get(ACCOUNT_HEADER);
   const token = raw?.trim() || undefined;
-  // En-tête présent mais vide : jamais le compte par défaut (sans jeton, seul
-  // l'appel derrière le mot de passe d'accès y a droit).
+  // Header present but empty: never the default account (without a token, only a call behind the
+  // access password gets it).
   const account = raw !== undefined && !token ? "invalid" : resolveAccount(token);
   if (account === "invalid") {
     res.status(401).json({ error: "Jeton de compte LinkedIn inconnu — recopiez-le depuis Réglages." });
@@ -78,9 +74,8 @@ function caller(req: express.Request, res: express.Response): { account: LiAccou
 }
 
 /**
- * Comptes servis par une extension : son en-tête X-LI-Account peut porter
- * plusieurs jetons séparés par des virgules (compte Sequence Mail + compte
- * Azerit dans le même navigateur). Le runner, lui, en sert un seul.
+ * Accounts served by an extension: its X-LI-Account header may carry several comma-separated tokens
+ * (Sequence Mail account + Azerit account in the same browser). The runner serves only one.
  */
 function callers(req: express.Request, res: express.Response): { accounts: LiAccount[]; via: LiMode } | undefined {
   const raw = req.get(ACCOUNT_HEADER);
@@ -105,7 +100,7 @@ function nullableInt(v: unknown): number | null | undefined {
 }
 
 export function registerOutreachRoutes(app: express.Express): void {
-  // CORS minimal : l'extension (origine chrome-extension://…) appelle ce serveur.
+  // Minimal CORS: the extension (chrome-extension://… origin) calls this server.
   app.use("/api/li", (req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Headers", `content-type, authorization, ${ACCOUNT_HEADER}`);
@@ -114,10 +109,10 @@ export function registerOutreachRoutes(app: express.Express): void {
     next();
   });
 
-  // --- Exécutant (extension ou runner) ---
+  // --- Executor (extension or runner) ---
 
-  // Plusieurs comptes : le serveur choisit lequel agit ; `account` (rang du
-  // jeton dans l'en-tête) dit avec quel jeton rendre le verdict.
+  // Several accounts: the server picks which one acts; `account` (token index in the header) says
+  // which token to report the outcome with.
   app.get("/api/li/next", (req, res) => {
     const c = callers(req, res);
     if (c) res.json(nextForAccounts(c.accounts, c.via));
@@ -129,7 +124,7 @@ export function registerOutreachRoutes(app: express.Express): void {
     const b = req.body as Record<string, unknown>;
     const id = Number(b.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: "id manquant" });
-    // Le contact a écrit dans la conversation : l'exécutant n'a rien envoyé.
+    // The contact wrote in the conversation: the executor sent nothing.
     if (b.replied && !b.ok && !b.wrong_account) {
       const text = typeof b.reply_text === "string" ? b.reply_text.slice(0, 2000) : "";
       if (!processThreadReply(c.account, id, text)) return res.status(404).json({ error: "Action inconnue pour ce compte" });
@@ -147,7 +142,7 @@ export function registerOutreachRoutes(app: express.Express): void {
     res.json({ ok: true });
   });
 
-  // Messagerie lue (action sync_inbox) : { ok, conversations?: [...], error?, member?, wrong_account? }
+  // Inbox read (sync_inbox action): { ok, conversations?: [...], error?, member?, wrong_account? }
   app.post("/api/li/inbox", (req, res) => {
     const c = caller(req, res);
     if (!c) return;
@@ -162,16 +157,16 @@ export function registerOutreachRoutes(app: express.Express): void {
       return res.json({ ok: true, processed: false, wrong_account: true });
     }
     if (!b.ok || !Array.isArray(b.conversations)) {
-      // Lecture ratée : pas de pause (ce n'est pas un envoi), sauf contrôle de sécurité.
+      // Failed read: no pause (it isn't a send), unless it's a security check.
       if (/contrôle de sécurité|checkpoint|captcha/i.test(b.error ?? "")) pauseForCheckpoint(c.account, b.error!);
-      console.warn(`[linkedin] lecture de la messagerie impossible (${c.account.name}) : ${b.error ?? "?"}`);
+      console.warn(`[linkedin] cannot read the inbox (${c.account.name}): ${b.error ?? "?"}`);
       return res.json({ ok: true, processed: false });
     }
     res.json({ ok: true, ...processInbox(c.account, b.conversations.slice(0, 200)) });
   });
 
-  // L'extension transmet la session LinkedIn de son navigateur : le compte passe
-  // en mode serveur (le runner prend le relais, l'extension cesse d'agir).
+  // The extension hands over its browser's LinkedIn session: the account switches to server mode
+  // (the runner takes over, the extension stops acting).
   app.post("/api/li/session", (req, res) => {
     const c = caller(req, res);
     if (!c) return;
@@ -182,14 +177,14 @@ export function registerOutreachRoutes(app: express.Express): void {
     res.json({ ok: true, account: accountStatus(getAccount(c.account.id)!) });
   });
 
-  // Avec jeton : état de CE compte (popup). Sans jeton : état global (tableau de bord).
+  // With a token: THIS account's status (popup). Without: global status (dashboard).
   app.get("/api/li/status", (req, res) => {
     if (!req.get(ACCOUNT_HEADER) && !req.get(RUNNER_HEADER)) return res.json(outreachStatus());
     const c = caller(req, res);
     if (c) res.json(accountStatus(c.account));
   });
 
-  // Avec jeton : (dés)active ce compte. Sans jeton : interrupteur général.
+  // With a token: (de)activates this account. Without: master switch.
   app.post("/api/li/toggle", (req, res) => {
     const enabled = Boolean((req.body as Record<string, unknown>).enabled);
     if (!req.get(ACCOUNT_HEADER)) {
@@ -200,14 +195,14 @@ export function registerOutreachRoutes(app: express.Express): void {
     if (c) res.json(accountStatus(updateAccount(c.account.id, { active: enabled })!));
   });
 
-  // --- Runner (réseau interne, secret partagé) ---
+  // --- Runner (internal network, shared secret) ---
 
   app.get("/api/li/runner/accounts", (req, res) => {
     if (!isRunner(req.get(RUNNER_HEADER))) return res.status(401).json({ error: "Secret runner invalide" });
     res.json({ window: runnerWindow(), accounts: runnerAccounts() });
   });
 
-  // Le runner signale l'état de la session : expired (déconnecté), checkpoint, ok.
+  // The runner reports the session state: expired (logged out), checkpoint, ok.
   app.post("/api/li/runner/session-state", (req, res) => {
     const c = caller(req, res);
     if (!c) return;
@@ -217,15 +212,15 @@ export function registerOutreachRoutes(app: express.Express): void {
       return res.status(400).json({ error: "state attendu : ok | expired | checkpoint | wrong_account" });
     }
     setSessionState(c.account.id, b.state, typeof b.error === "string" ? b.error.slice(0, 500) : undefined);
-    console.warn(`[linkedin] session ${b.state} pour « ${c.account.name} »${b.error ? ` : ${b.error}` : ""}`);
+    console.warn(`[linkedin] session ${b.state} for "${c.account.name}"${b.error ? `: ${b.error}` : ""}`);
     res.json({ ok: true });
   });
 
-  // --- Tableau de bord : comptes ---
+  // --- Dashboard: accounts ---
 
   app.get("/api/li/accounts", (_req, res) => res.json(outreachStatus().accounts));
 
-  // Le jeton en clair n'est rendu qu'à la création (et à la régénération).
+  // The plaintext token is only returned on creation (and regeneration).
   app.post("/api/li/accounts", (req, res) => {
     const name = String((req.body as Record<string, unknown>).name ?? "").trim();
     if (!name) return res.status(400).json({ error: "Nom du compte requis" });

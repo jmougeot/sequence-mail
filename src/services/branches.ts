@@ -1,13 +1,11 @@
 /**
- * Branches « invitation acceptée / non acceptée » d'une séquence.
- *
- * C'est la première étape « si acceptée » — forcément un message LinkedIn —
- * qui teste l'acceptation : le message ne part qu'une fois la relation établie.
- * Tant que l'état est inconnu, les étapes « si non acceptée » sont passées et
- * le message est retenté ; parti, l'invitation est acceptée. Sans acceptation
- * à l'échéance (délai de la première étape « si non acceptée », compté depuis
- * l'envoi de l'invitation), le contact bascule sur les étapes « si non
- * acceptée ». Un contact sans profil LinkedIn y va directement.
+ * "Invitation accepted / not accepted" branches of a sequence.
+ * The first "if accepted" step — necessarily a LinkedIn message — tests acceptance: the message
+ * only goes out once connected. While the state is unknown, "if not accepted" steps are skipped and
+ * the message is retried; once it is sent, the invitation is accepted. Without acceptance by the
+ * deadline (delay of the first "if not accepted" step, counted from the invitation), the contact
+ * switches to the "if not accepted" steps. A contact without a LinkedIn profile goes there
+ * directly.
  */
 export type Branch = "accepted" | "not_accepted";
 
@@ -19,20 +17,23 @@ export interface BranchStep {
 }
 
 /**
- * Prochaine étape à jouer après l'étape `after` (étapes triées par numéro),
- * selon l'état de l'invitation : null = pas encore connu, 1 = acceptée, 0 = non.
+ * Next step to play after step `after` (steps sorted by number), given the invitation state: null =
+ * unknown yet, 1 = accepted, 0 = not.
  */
 export function nextStep<T extends BranchStep>(steps: T[], after: number, accepted: number | null): T | undefined {
   const want: Branch = accepted === 0 ? "not_accepted" : "accepted";
   return steps.find((s) => s.step_number > after && (!s.branch || s.branch === want));
 }
 
-/** Première étape « si non acceptée » : son délai est l'échéance d'acceptation. */
+/** First "if not accepted" step: its delay is the acceptance deadline. */
 export function firstNotAccepted<T extends BranchStep>(steps: T[]): T | undefined {
   return steps.find((s) => s.branch === "not_accepted");
 }
 
-/** Étape que ce contact ne peut pas recevoir (email sans adresse, LinkedIn sans profil) : elle sera sautée. */
+/**
+ * Step this contact can't receive (email without address, LinkedIn without profile): it will be
+ * skipped.
+ */
 export function unreachable(
   step: { channel: string | null },
   contact: { email: string | null; linkedin: string | null }
