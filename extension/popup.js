@@ -95,6 +95,11 @@ document.getElementById("showAdvanced").addEventListener("click", () => {
   refresh();
 });
 
+document.getElementById("reload").addEventListener("click", async () => {
+  const r = await chrome.runtime.sendMessage({ type: "reload-extension" }).catch(() => null);
+  if (r && r.deferred) document.getElementById("statusText").textContent = "Rechargement à la fin de l'action en cours…";
+});
+
 document.getElementById("toggle").addEventListener("click", async () => {
   const { enabled } = await chrome.storage.local.get("enabled");
   const next = enabled === false; // on inverse

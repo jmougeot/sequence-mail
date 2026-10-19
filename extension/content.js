@@ -27,7 +27,9 @@ async function waitFor(find, timeout = 8000) {
     if (el) return el;
     await sleep(300);
   }
-  return null;
+  // Dernier essai à l'échéance : dans un onglet en arrière-plan, Chrome peut
+  // retarder les minuteries au-delà du délai, et la boucle sortirait sans revoir la page.
+  return find() || null;
 }
 
 /** Racines de recherche : le document d'abord, puis les shadow roots ouverts
@@ -201,18 +203,100 @@ const RE_PENDING = /^(en attente|pending)\b/i;
  *  la barre de navigation (en FR il matche le même mot et arrive plus tôt dans le
  *  DOM : on cliquait la mauvaise fenêtre → « zone de saisie introuvable »).
  *  On écarte donc tout lien vers /messaging/ (c'est la nav) et on privilégie le
- *  vrai bouton d'action du profil (« Message » / « Envoyer un message à … »). */
+ *  vrai bouton d'action du profil (« Message » / « Envoyer un message à … »).
+ *  Cherché aussi dans les shadow roots (nouveau design), jamais dans la colonne
+ *  de droite ni sur un bouton qui nomme quelqu'un d'autre (cf. findOwnClickable). */
 function findProfileMessageBtn() {
-  const nodes = document.querySelectorAll('button, a, [role="button"]');
-  for (const el of nodes) {
-    if (el.disabled || el.offsetParent === null) continue;
+  const me = profileName();
+  for (const el of deepQueryAll('button, a, [role="button"]')) {
+    if (el.disabled || !isShown(el) || el.closest("aside")) continue;
     const href = el.getAttribute("href") || "";
-    if (/\/messaging\b/.test(href)) continue; // lien de nav global → ignoré
-    const label = `${el.getAttribute("aria-label") || ""} ${el.textContent || ""}`.trim();
+    if (/\/messaging\/?$/.test(href.split("?")[0])) continue; // lien de nav global → ignoré
+    const aria = el.getAttribute("aria-label") || "";
+    const label = `${aria} ${el.textContent || ""}`.trim();
     if (/^messagerie$/i.test(label)) continue; // libellé nav seul → ignoré
-    if (/(?:^|\b)message\b/i.test(label) || /envoyer un message/i.test(label)) return el;
+    if (!/(?:^|\b)message\b/i.test(label) && !/envoyer un message/i.test(label)) continue;
+    const who = messagee(aria);
+    if (who && me && !who.startsWith(me) && !me.startsWith(who)) continue; // « Message Jean » sur « Jean Dupont, PhD »
+    return el;
   }
   return null;
+}
+
+/** Personne nommée par un libellé « Message X » / « Envoyer un message à X », sinon null. */
+function messagee(label) {
+  const m = label.match(/^(?:message|envoyer un message à)\s+(.+)$/i);
+  return m ? normWords(m[1]) : null;
+}
+
+/** Degré de relation affiché à côté du nom (« · 1st », « · 2e »…) : 1, 2, 3, ou null s'il n'est pas lu. */
+function profileDegree() {
+  const main = document.querySelector("main") || document.body;
+  const m = /[·•]\s*(1st|2nd|3rd|1er|2e|3e)\b/i.exec(readableText(main).slice(0, 800));
+  return m ? Number(m[1][0]) : null;
+}
+
+/** Pas encore en relation : « Se connecter » / « En attente » affiché, ou degré 2 ou 3.
+ *  Le degré compte quand ces boutons sont rangés dans « Plus » : seuls « Message »
+ *  (lien /messaging/compose/, qui mène à une rédaction impossible) et « Suivre » restent visibles. */
+const notConnected = () =>
+  Boolean(findOwnClickable(RE_CONNECT) || findOwnClickable(RE_PENDING)) || profileDegree() > 1;
+
+/** Bouton « Message » du profil, éventuellement rangé dans le menu « Plus ».
+ *  `pending` : pas encore en relation (« Se connecter » / « En attente » affiché,
+ *  y compris dans le menu, relevé avant de le refermer). LinkedIn affiche aussi
+ *  « Message » sur certains profils hors relation (lien /messaging/compose/) :
+ *  `pending` prime alors, c'est à l'appelant de ne pas écrire. */
+async function findMessageButton(timeout = 6000) {
+  let btn = await waitFor(() => findProfileMessageBtn(), timeout);
+  if (btn) return { btn, pending: notConnected() };
+  if (notConnected()) return { btn: null, pending: true };
+  const more = findOwnClickable(RE_MORE);
+  if (!more) return { btn: null, pending: false };
+  await clickHuman(more);
+  await human();
+  btn = await waitFor(() => findProfileMessageBtn(), 3000);
+  if (btn) return { btn, pending: false };
+  const pending = notConnected();
+  await dismissDialog(); // referme le menu
+  return { btn: null, pending };
+}
+
+/** Zone de saisie de la conversation qu'on vient d'ouvrir. D'autres bulles de
+ *  messagerie peuvent déjà être ouvertes : on prend celle qui a le focus (LinkedIn
+ *  le donne à la nouvelle), sinon la dernière affichée — jamais la première du
+ *  document, qui peut appartenir à une autre conversation. */
+function findEditor() {
+  const editors = deepQueryAll('.msg-form__contenteditable[contenteditable="true"], .msg-form__contenteditable [contenteditable="true"], div[role="textbox"][contenteditable="true"]')
+    .filter(isShown);
+  const active = editors.find((e) => e === document.activeElement || e.contains(document.activeElement));
+  return active || editors[editors.length - 1] || null;
+}
+
+/** État de la page quand la zone de saisie manque, joint à l'erreur (cf. inviteDiagnostic). */
+function messageDiagnostic(clicked) {
+  const all = deepQueryAll('[contenteditable="true"]');
+  const bubbles = deepQueryAll(".msg-overlay-conversation-bubble, .msg-convo-wrapper");
+  const what = clicked
+    ? `${clicked.tagName.toLowerCase()} « ${(clicked.getAttribute("aria-label") || clicked.textContent || "").trim().replace(/\s+/g, " ").slice(0, 30)} »${/\/messaging\/compose/.test(clicked.getAttribute("href") || "") ? " (lien compose)" : ""}`
+    : "aucun (fil déjà ouvert)";
+  return [
+    `clic sur ${what}`,
+    `onglet ${document.visibilityState}${document.hasFocus() ? "" : " sans focus"} ${innerWidth}×${innerHeight}`,
+    `page ${location.pathname}`,
+    `${all.length} champ(s) éditable(s) dont ${all.filter(isShown).length} affiché(s)`,
+    `${bubbles.length} bulle(s) de messagerie`,
+  ].join(" ; ");
+}
+
+/** Bouton Envoyer actif du même formulaire que l'éditeur. */
+function findSendButton(editor) {
+  const form = editor.closest("form") || threadRoot(editor);
+  const btn = form.querySelector("button.msg-form__send-button:not([disabled])");
+  if (btn) return btn;
+  return [...form.querySelectorAll("button")].find(
+    (b) => !b.disabled && isShown(b) && RE_SEND_MSG.test(`${b.getAttribute("aria-label") || ""} ${b.textContent || ""}`.trim())
+  ) || null;
 }
 
 /** Nom du profil ouvert, lu dans le titre de l'onglet (« (3) Prénom Nom | LinkedIn »). */
@@ -456,26 +540,21 @@ async function threadGuard(editor, text, guard, meName) {
  *  d'écrire, cf. threadGuard ; `meName` = profil connecté. */
 async function doMessage(text, inThread, guard, meName) {
   if (!text || !text.trim()) return { ok: false, error: "message vide" };
+  let msgClicked = null;
   if (!inThread) {
-    const msgBtn = await waitFor(() => findProfileMessageBtn(), 6000);
-    if (!msgBtn) {
-      // Pas encore en relation (invitation en attente ou à envoyer) : le serveur
-      // reporte le message de quelques heures, sans pause punitive.
-      if (findOwnClickable(RE_CONNECT) || findOwnClickable(RE_PENDING)) {
-        return { ok: false, retry: true, error: "pas encore en relation (invitation non acceptée)" };
-      }
-      return { ok: false, error: "bouton « Message » du profil introuvable" };
-    }
+    const { btn: msgBtn, pending } = await findMessageButton();
+    // Pas encore en relation (invitation en attente ou à envoyer) : le serveur
+    // reporte le message de quelques heures, sans pause punitive.
+    if (pending) return { ok: false, retry: true, error: "pas encore en relation (invitation non acceptée)" };
+    if (!msgBtn) return { ok: false, error: "bouton « Message » du profil introuvable" };
+    msgClicked = msgBtn;
     await clickHuman(msgBtn);
     await human();
   }
   // Dans un fil, le champ de saisie est déjà présent — pas de bouton à cliquer.
 
-  const editor = await waitFor(
-    () => document.querySelector('.msg-form__contenteditable [contenteditable="true"], div[role="textbox"][contenteditable="true"]'),
-    6000
-  );
-  if (!editor) return { ok: false, error: "zone de saisie du message introuvable" };
+  const editor = await waitFor(findEditor, 6000);
+  if (!editor) return { ok: false, error: `zone de saisie du message introuvable — ${messageDiagnostic(msgClicked)}` };
 
   if (guard) {
     const stop = await threadGuard(editor, text, guard, meName);
@@ -484,14 +563,16 @@ async function doMessage(text, inThread, guard, meName) {
 
   // Saisie par COLLAGE (méthode principale : plus robuste et plus humaine — un
   // vrai éditeur active le bouton Envoyer sur un paste).
+  // Clic dans le champ d'abord : sans curseur dedans (onglet en arrière-plan),
+  // l'éditeur ignore le collage comme la saisie et Envoyer reste grisé.
+  await clickHuman(editor);
   await pasteInto(editor, text.trim());
-  let send = await waitFor(() => document.querySelector('button.msg-form__send-button:not([disabled])'), 4000);
+  let send = await waitFor(() => findSendButton(editor), 4000);
   if (!send) {
     // Repli : saisie directe si le collage n'a pas réveillé l'éditeur.
     await typeInto(editor, text.trim());
-    send = await waitFor(() => document.querySelector('button.msg-form__send-button:not([disabled])'), 4000);
+    send = await waitFor(() => findSendButton(editor), 4000);
   }
-  if (!send) send = findClickable(RE_SEND_MSG);
   if (!send) return { ok: false, error: "le champ n'a pas été reconnu par LinkedIn (bouton Envoyer resté désactivé après collage et saisie)" };
   await clickHuman(send);
   await human();
@@ -505,7 +586,7 @@ async function doMessage(text, inThread, guard, meName) {
  */
 async function doReadMessages(limit = 25, inThread) {
   if (!inThread) {
-    const msgBtn = await waitFor(() => findProfileMessageBtn(), 6000);
+    const { btn: msgBtn } = await findMessageButton();
     if (!msgBtn) return { ok: false, error: "bouton « Message » du profil introuvable" };
     await clickHuman(msgBtn);
     await human();

@@ -21,6 +21,7 @@ const ALARM = "li-tick";
 const AZERIT_ORIGIN = /^(https:\/\/app\.azerit\.tech|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)$/;
 
 let busy = false; // garde-fou : jamais deux actions en parallèle
+let reloadPending = false; // rechargement demandé depuis le popup pendant une action
 
 /** Adresse du serveur, réglable depuis le popup (sinon valeur par défaut). */
 async function getServer() {
@@ -122,6 +123,7 @@ async function tick() {
     await setStatus({ kind: "err", text: `Serveur injoignable (${SERVER}). Lancez l'app Sequence Mail.` });
   } finally {
     busy = false;
+    if (reloadPending) chrome.runtime.reload();
   }
 }
 
@@ -165,7 +167,8 @@ async function serve(SERVER, tokens) {
     await postVerdict(`${SERVER}/api/li/result`, auth, {
       id: res.action.id,
       ok: verdict.ok,
-      error: verdict.error,
+      // version jointe aux échecs : on sait quelle extension a échoué sans voir le Chrome
+      error: !verdict.ok && verdict.error ? `${verdict.error} [ext ${chrome.runtime.getManifest().version}]` : verdict.error,
       retry: verdict.retry,
       member: verdict.member,
       wrong_account: verdict.wrong_account,
@@ -204,12 +207,32 @@ async function postVerdict(url, auth, body) {
   throw new Error("verdict non transmis");
 }
 
-/** Onglet LinkedIn à réutiliser (sinon on en crée un en arrière-plan, chargé). */
+/**
+ * Onglet de travail : seul dans sa propre fenêtre Chrome, réduite, créée par
+ * l'extension. Les onglets LinkedIn de la personne ne sont jamais touchés (avant,
+ * le premier trouvé était pris et emmené sur le profil d'un prospect), et un clic
+ * par erreur dans une fenêtre réduite est peu probable. Fermée, elle est recréée
+ * à l'action suivante. L'onglet est protégé de l'économiseur de mémoire, qui le
+ * déchargerait entre deux actions.
+ */
+const WORK_TAB = "workTab";
+
 async function ensureTab() {
-  const tabs = await chrome.tabs.query({ url: "https://www.linkedin.com/*" });
-  if (tabs.length) return tabs[0];
-  const tab = await chrome.tabs.create({ url: "https://www.linkedin.com/feed/", active: false });
-  await waitForLoad(tab.id);
+  // En storage.local (survit au rechargement de l'extension). Après un redémarrage
+  // de Chrome, les identifiants repartent de zéro : on ne reprend l'onglet que
+  // s'il est encore seul dans la fenêtre notée, jamais un onglet de la personne.
+  const { [WORK_TAB]: saved } = await chrome.storage.local.get(WORK_TAB);
+  if (saved) {
+    const tab = await chrome.tabs.get(saved.tabId).catch(() => null);
+    if (tab && tab.windowId === saved.windowId && (await chrome.tabs.query({ windowId: tab.windowId })).length === 1) return tab;
+  }
+  const win = await chrome.windows.create({ url: "https://www.linkedin.com/feed/", focused: false });
+  // macOS ignore state: "minimized" à la création ; la réduction passe par update
+  await chrome.windows.update(win.id, { state: "minimized" }).catch(() => {});
+  const tab = win.tabs[0];
+  await chrome.storage.local.set({ [WORK_TAB]: { tabId: tab.id, windowId: win.id } });
+  await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
+  if ((await chrome.tabs.get(tab.id)).status !== "complete") await waitForLoad(tab.id);
   return tab;
 }
 
@@ -253,7 +276,14 @@ async function runAction(action) {
     await chrome.tabs.update(tab.id, { url: profileUrl(action.linkedin) });
     await waitForLoad(tab.id);
     await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500)); // laisse l'UI se stabiliser
-    return await sendToTab(tab.id, { type: "li-action", action });
+    const res = await sendToTab(tab.id, { type: "li-action", action });
+    if (res.ok || res.error !== "content script injoignable") return res;
+    // content.js absent de la page (onglet déchargé, ou extension rechargée) :
+    // rien n'a été joué, un rechargement l'y remet.
+    await chrome.tabs.reload(tab.id);
+    await waitForLoad(tab.id);
+    await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500));
+    return await sendToTab(tab.id, { type: "li-action", action }, 10);
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }
@@ -357,6 +387,13 @@ async function connectToAzerit(origin, code, replace) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || typeof msg !== "object") return;
+  if (msg.type === "reload-extension" && sender.id === chrome.runtime.id && !sender.tab) {
+    // jamais au milieu d'une action : on attend sa fin
+    sendResponse({ ok: true, deferred: busy });
+    if (busy) reloadPending = true;
+    else chrome.runtime.reload();
+    return;
+  }
   if (msg.type === "capture-linkedin" && sender.id === chrome.runtime.id && !sender.tab) {
     captureLinkedIn().then(sendResponse); // popup de l'extension
     return true;
