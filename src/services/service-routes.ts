@@ -13,7 +13,7 @@ import { timingSafeEqual } from "node:crypto";
 import type express from "express";
 import { config } from "../config.js";
 import { db } from "../db.js";
-import { importContacts } from "./contacts.js";
+import { MERGED_EXTRA, importContacts, renderTemplate } from "./contacts.js";
 import { normalizeLinkedin } from "./linkedin-url.js";
 import {
   accountStatus,
@@ -283,6 +283,56 @@ export function registerServiceRoutes(app: express.Express): void {
       })();
     }
     res.json({ results });
+  });
+
+  /**
+   * Rewrites one candidate's enrollment variables (Azerit key), e.g. the message retouched in
+   * Azerit. A LinkedIn action already queued but not yet sent, whose step uses one of these
+   * variables, is re-rendered with them; what has gone out stays as it was.
+   * `requeued`: queued actions rewritten.
+   */
+  app.post("/api/svc/campaigns/:id/vars", (req, res) => {
+    const campaign = ownedCampaign(req.params.id, ownerOf(req)!);
+    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    const b = req.body as { key?: unknown; vars?: unknown };
+    const key = typeof b.key === "string" ? b.key.trim() : "";
+    const vars = cleanVars(b.vars);
+    if (!key || !vars) return res.status(400).json({ error: "key et vars requis" });
+    const cc = db
+      .prepare("SELECT id FROM campaign_contacts WHERE campaign_id = ? AND external_key = ?")
+      .get(campaign.id, key) as { id: number } | undefined;
+    if (!cc) return res.status(404).json({ error: "Candidat introuvable dans cette campagne" });
+
+    const uses = (template: string) =>
+      Object.keys(vars).some((k) => new RegExp(`\\{\\{\\s*(?:(?:if|si)\\s+)?${k}\\s*[}:]`, "iu").test(template));
+    const requeued = db.transaction(() => {
+      db.prepare("UPDATE campaign_contacts SET vars = NULLIF(json_patch(COALESCE(vars, '{}'), ?), '{}') WHERE id = ?").run(
+        JSON.stringify(vars),
+        cc.id
+      );
+      const contact = db
+        .prepare(
+          `SELECT c.email, c.first_name, c.last_name, c.company, ${MERGED_EXTRA} AS extra
+           FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id WHERE cc.id = ?`
+        )
+        .get(cc.id) as Parameters<typeof renderTemplate>[1];
+      const queued = db
+        .prepare(
+          `SELECT la.id, s.body FROM li_actions la
+           JOIN steps s ON s.campaign_id = ? AND s.step_number = la.step_number
+           WHERE la.campaign_contact_id = ? AND la.status = 'pending'`
+        )
+        .all(campaign.id, cc.id) as Array<{ id: number; body: string | null }>;
+      // 'pending' only: an action the executor has already taken ('sending') is not touched
+      const rewrite = db.prepare("UPDATE li_actions SET body = ? WHERE id = ? AND status = 'pending'");
+      let n = 0;
+      for (const a of queued) {
+        if (!a.body?.trim() || !uses(a.body)) continue;
+        n += rewrite.run(renderTemplate(a.body, contact, { sender_name: "", signature: "" }), a.id).changes;
+      }
+      return n;
+    })();
+    res.json({ ok: true, requeued });
   });
 
   /** Each candidate's progress (Azerit key): status, LinkedIn actions, sender profile. */
