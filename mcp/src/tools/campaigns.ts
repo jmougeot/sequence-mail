@@ -26,6 +26,12 @@ const stepSchema = z.object({
     .int()
     .optional()
     .describe("Days to wait before this step. Ignored for step 1 (always 0). Default 3."),
+  with_previous: z
+    .boolean()
+    .optional()
+    .describe(
+      "true = this step goes at the same time as the previous one, without delay (wait_days ignored). Pairs an email with a LinkedIn action (one of each), in the same branch, e.g. a LinkedIn invite and the first email together. After a LinkedIn step, the email does not wait for the action to be played; later delays count from the email."
+    ),
   channel: z.enum(["email", "linkedin"]).optional().describe("Step channel. Default \"email\"."),
   li_action: z
     .enum(["invite", "message"])
@@ -187,7 +193,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Campaign detail",
       description:
-        "Returns a campaign's detail (description included) and its ordered steps (subject, body, wait_days, channel, li_action, branch). variables: the sequence's personalization variables (excluding first_name, company… which the app fills) with their instruction (what the variable holds, its length, its tone); read before filling a variable for contacts; without an instruction, ask the user. Missing account_ids / li_account_ids = all accounts; a follow-up without subject goes in the first email's thread. Read before editing a step's text (update_step) or the sequence (update_campaign).",
+        "Returns a campaign's detail (description included) and its ordered steps (subject, body, wait_days, channel, li_action, branch, with_previous). variables: the sequence's personalization variables (excluding first_name, company… which the app fills) with their instruction (what the variable holds, its length, its tone); read before filling a variable for contacts; without an instruction, ask the user. Missing account_ids / li_account_ids = all accounts; a follow-up without subject goes in the first email's thread. Read before editing a step's text (update_step) or the sequence (update_campaign).",
       inputSchema: { campaign_id: z.number().int().describe("Campaign id.") },
       annotations: READ,
     },
@@ -363,7 +369,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Update a step",
       description:
-        "Updates ONE campaign step without resending the rest of the sequence: only provided fields change (subject, subject_b, body, wait_days, channel, li_action, branch). An empty string clears the field: empty subject on a follow-up = same thread as the first email, empty subject_b = ends the A/B test. The body is replaced whole (no partial text edits): read it first with get_campaign. The resulting sequence must stay valid (subject on the first email, body on every step except invites). Contacts keep their progress; upcoming sends of this step use the new content. Returns the step as saved.",
+        "Updates ONE campaign step without resending the rest of the sequence: only provided fields change (subject, subject_b, body, wait_days, with_previous, channel, li_action, branch). An empty string clears the field: empty subject on a follow-up = same thread as the first email, empty subject_b = ends the A/B test. The body is replaced whole (no partial text edits): read it first with get_campaign. The resulting sequence must stay valid (subject on the first email, body on every step except invites). Contacts keep their progress; upcoming sends of this step use the new content. Returns the step as saved.",
       inputSchema: updateStepShape,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },

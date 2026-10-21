@@ -279,6 +279,7 @@ interface StepRow {
   channel: string;
   li_action: string | null;
   branch: string | null;
+  with_previous: number;
 }
 
 /** Resets the daily counters when the date has changed. */
@@ -324,12 +325,12 @@ function accountById(id: number): AccountRow | undefined {
 /**
  * Schedules the next step with random jitter (deliverability). Steps of another
  * branch count as passed (current_step set just before the next one), so the due
- * step is always current_step + 1. A step the contact cannot receive is due now:
- * it will be skipped without waiting for its delay.
+ * step is always current_step + 1. A step the contact cannot receive, or played at the same
+ * time as the previous one, is due now (the first is then skipped without waiting for its delay).
  */
 function scheduleNext(row: DueRow, next: StepRow): void {
   const jitterMs = randBetween(0, 4 * 3600 * 1000); // 0 to 4 h
-  const at = unreachable(next, row) ? Date.now() : Date.now() + next.wait_days * 24 * 3600 * 1000 + jitterMs;
+  const at = unreachable(next, row) || next.with_previous ? Date.now() : Date.now() + next.wait_days * 24 * 3600 * 1000 + jitterMs;
   db.prepare(
     "UPDATE campaign_contacts SET status = 'in_progress', current_step = ?, next_send_at = ? WHERE id = ?"
   ).run(next.step_number - 1, Math.round(at), row.cc_id);
@@ -338,7 +339,8 @@ function scheduleNext(row: DueRow, next: StepRow): void {
 /**
  * LinkedIn step (invite / message): queues the action for the executor. The contact
  * goes to 'awaiting_li' (ignored by the email scheduler); on success outreach.ts
- * moves it to the next step.
+ * moves it to the next step. If the next step goes at the same time (email), the action
+ * is detached: the contact moves on to that step right away, without waiting for LinkedIn.
  */
 function dispatchLinkedIn(row: DueRow, step: StepRow, steps: StepRow[]): void {
   if (!row.linkedin) {
@@ -359,7 +361,10 @@ function dispatchLinkedIn(row: DueRow, step: StepRow, steps: StepRow[]): void {
   // An empty invite note is legitimate (invite without a message); an empty message
   // should not happen (validated at creation), null just in case.
   const body = step.body?.trim() ? renderTemplate(step.body, contact, { sender_name: "", signature: "" }) : null;
-  enqueueStep(row.cc_id, step.step_number, row.linkedin, type, body);
+  const next = nextStep(steps, step.step_number, row.li_accepted);
+  const detached = !!next?.with_previous;
+  enqueueStep(row.cc_id, step.step_number, row.linkedin, type, body, detached);
+  if (detached) scheduleNext(row, next!);
   syncAttio(row.attio_record_id, `Étape ${step.step_number}/${totalSteps} — ${type === "invite" ? "invitation" : "message"} LinkedIn en file`);
   console.log(`[linkedin] step ${step.step_number} (${type}) -> ${who(row)} queued`);
 }
@@ -384,7 +389,7 @@ function skipStep(row: DueRow, step: StepRow, steps: StepRow[], reason: string):
     )
     .get(row.cc_id, row.cc_id) as { r: number };
   const at = !next ? null
-    : unreachable(next, row) || !received.r ? Date.now()
+    : unreachable(next, row) || !received.r || next.with_previous ? Date.now()
     : Math.round(Date.now() + next.wait_days * 24 * 3600 * 1000 + randBetween(0, 4 * 3600 * 1000));
   db.prepare(
     `UPDATE campaign_contacts SET current_step = ?, status = ?, next_send_at = ?, error = ? WHERE id = ?`
@@ -395,7 +400,7 @@ function skipStep(row: DueRow, step: StepRow, steps: StepRow[], reason: string):
 
 async function processOne(row: DueRow): Promise<void> {
   const steps = db
-    .prepare("SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch FROM steps WHERE campaign_id = ? ORDER BY step_number")
+    .prepare("SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch, with_previous FROM steps WHERE campaign_id = ? ORDER BY step_number")
     .all(row.campaign_id) as StepRow[];
   const step = nextStep(steps, row.current_step, row.li_accepted);
   if (!step) {

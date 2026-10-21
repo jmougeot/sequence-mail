@@ -178,6 +178,7 @@ export function createServer(): express.Express {
     channel?: string;
     li_action?: string;
     branch?: string;
+    with_previous?: boolean | number;
   };
 
   /** Validates a sequence; returns an error message, or null if valid. */
@@ -199,6 +200,14 @@ export function createServer(): express.Express {
     for (const s of steps) {
       const isInvite = s.channel === "linkedin" && (s.li_action ?? "invite") === "invite";
       if (!isInvite && !s.body?.trim()) return "Chaque étape doit avoir un contenu (la note d'invitation seule est facultative)";
+    }
+    // Same time as the previous step: one email and one LinkedIn action, in the same path.
+    for (let i = 0; i < steps.length; i++) {
+      if (!steps[i].with_previous) continue;
+      const prev = steps[i - 1];
+      if (!prev) return "La première étape ne peut pas partir « en même temps » qu'une étape précédente";
+      if (isEmail(prev) === isEmail(steps[i])) return `Étape ${i + 1} : « en même temps » associe un email et une action LinkedIn`;
+      if ((prev.branch || null) !== (steps[i].branch || null)) return `Étape ${i + 1} : « en même temps » demande la même branche que l'étape précédente`;
     }
     if (hasBranches) {
       if (steps.some((s) => s.branch && !BRANCHES.includes(s.branch as Branch))) return `branch : valeurs possibles ${BRANCHES.join(", ")}`;
@@ -242,21 +251,23 @@ export function createServer(): express.Express {
   /** Inserts a campaign's steps (email or LinkedIn). */
   function insertSteps(campaignId: number | bigint, steps: StepInput[]): void {
     const insert = db.prepare(
-      "INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days, channel, li_action, branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days, channel, li_action, branch, with_previous) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
     steps.forEach((s, i) => {
       const channel = s.channel === "linkedin" ? "linkedin" : "email";
       const li = channel === "linkedin" ? (s.li_action === "message" ? "message" : "invite") : null;
+      const same = i > 0 && !!s.with_previous;
       insert.run(
         campaignId,
         i + 1,
         channel === "linkedin" ? "" : (s.subject ?? ""),
         i === 0 && channel === "email" ? s.subject_b?.trim() || null : null, // A/B test: email step 1 only
         s.body ?? "",
-        i === 0 ? 0 : (s.wait_days ?? 3),
+        i === 0 || same ? 0 : (s.wait_days ?? 3),
         channel,
         li,
-        BRANCHES.includes(s.branch as Branch) ? s.branch : null
+        BRANCHES.includes(s.branch as Branch) ? s.branch : null,
+        same ? 1 : 0
       );
     });
   }
@@ -374,7 +385,7 @@ export function createServer(): express.Express {
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
     const steps = db
       .prepare(
-        "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch FROM steps WHERE campaign_id = ? ORDER BY step_number"
+        "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch, with_previous FROM steps WHERE campaign_id = ? ORDER BY step_number"
       )
       .all(req.params.id);
     // The sequence's personalization variables (excluding built-ins), with their instruction: to
@@ -489,7 +500,7 @@ export function createServer(): express.Express {
       | undefined;
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
     const selectSteps = db.prepare(
-      "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch FROM steps WHERE campaign_id = ? ORDER BY step_number"
+      "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch, with_previous FROM steps WHERE campaign_id = ? ORDER BY step_number"
     );
     const steps = selectSteps.all(campaign.id) as Array<{ step_number: number } & Record<string, unknown>>;
     const n = Number(req.params.n);
@@ -508,6 +519,10 @@ export function createServer(): express.Express {
         return res.status(400).json({ error: "wait_days must be a non-negative integer" });
       }
       patch.wait_days = body.wait_days;
+    }
+    if (body.with_previous !== undefined) {
+      if (typeof body.with_previous !== "boolean") return res.status(400).json({ error: "with_previous must be a boolean" });
+      patch.with_previous = body.with_previous;
     }
     if (!Object.keys(patch).length) return res.status(400).json({ error: "No field to update" });
 

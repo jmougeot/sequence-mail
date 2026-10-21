@@ -123,6 +123,8 @@ textarea { min-height:90px; }
 .step-delay .wait { width:30px; margin:0; padding:1px 0; text-align:center; font-size:13px; font-weight:600; color:var(--text); background:transparent; border:none; border-bottom:1px solid var(--border); border-radius:0; -moz-appearance:textfield; }
 .step-delay .wait::-webkit-inner-spin-button, .step-delay .wait::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
 .step-delay .wait:focus { box-shadow:none; border-bottom-color:var(--accent); }
+.step-delay .timing { width:auto; margin:0; padding:1px 2px; font-size:12.5px; color:var(--muted); background:transparent; border:none; border-bottom:1px solid var(--border); border-radius:0; }
+.step-delay .timing:focus { box-shadow:none; border-bottom-color:var(--accent); }
 .step-box { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:8px 14px 10px; }
 .step-box:focus-within { border-color:var(--accent); }
 .step-head { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:12.5px; min-height:26px; }

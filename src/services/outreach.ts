@@ -522,13 +522,15 @@ function watchedCount(accountId: number): number {
  * ('awaiting_li': ignored by the email scheduler). The action inherits the account
  * already bound to the contact (otherwise it stays free, see `nextAction`).
  * Deduplicated: never two live actions for the same step of the same contact.
+ * `detached`: played at the same time as the next step (email), the contact is not held.
  */
 export function enqueueStep(
   ccId: number,
   stepNumber: number,
   linkedin: string,
   type: LiActionType,
-  body: string | null
+  body: string | null,
+  detached = false
 ): void {
   const dup = db
     .prepare(
@@ -538,10 +540,12 @@ export function enqueueStep(
   if (dup) return;
   db.transaction(() => {
     db.prepare(
-      `INSERT INTO li_actions (campaign_contact_id, step_number, linkedin, type, body, li_account_id)
-       VALUES (?, ?, ?, ?, ?, (SELECT li_account_id FROM campaign_contacts WHERE id = ?))`
-    ).run(ccId, stepNumber, linkedin, type, body, ccId);
-    db.prepare(`UPDATE campaign_contacts SET status = 'awaiting_li', next_send_at = NULL, error = NULL WHERE id = ?`).run(ccId);
+      `INSERT INTO li_actions (campaign_contact_id, step_number, linkedin, type, body, li_account_id, detached)
+       VALUES (?, ?, ?, ?, ?, (SELECT li_account_id FROM campaign_contacts WHERE id = ?), ?)`
+    ).run(ccId, stepNumber, linkedin, type, body, ccId, detached ? 1 : 0);
+    if (!detached) {
+      db.prepare(`UPDATE campaign_contacts SET status = 'awaiting_li', next_send_at = NULL, error = NULL WHERE id = ?`).run(ccId);
+    }
   })();
 }
 
@@ -742,13 +746,15 @@ function inviteUnanswered(account: LiAccount, row: ActionRow, now: number): bool
 
 // Actions an account may take: its own, or free ones (contact not bound yet) of a campaign
 // that allows it. Only for active campaigns and contacts still waiting (not stopped, no
-// reply meanwhile), and ALWAYS of the same owner as the account.
+// reply meanwhile; a detached action, for a contact still in the sequence), and ALWAYS
+// of the same owner as the account.
 const ELIGIBLE = `
   FROM li_actions la
   JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
   JOIN campaigns cp ON cp.id = cc.campaign_id
   WHERE la.status = 'pending'
-    AND cc.status = 'awaiting_li' AND cp.status = 'active'
+    AND (cc.status = 'awaiting_li' OR (la.detached = 1 AND cc.status IN ('in_progress', 'completed')))
+    AND cp.status = 'active'
     AND cp.owner_ref IS @owner
     AND (la.li_account_id = @acc
          OR (la.li_account_id IS NULL AND cc.li_account_id IS NULL
@@ -935,11 +941,13 @@ function requeue(id: number, error: string): void {
  *   action was not replayed;
  * - failure → contact marked failed and account safety pause: long on a LinkedIn
  *   checkpoint, none on a profile not found (404).
+ * A detached action (played at the same time as an email) moves the contact nowhere: on
+ * success, past the deadline or on failure, only the action and the account are updated.
  * Returns false if the action does not belong to this account.
  */
 export function recordResult(account: LiAccount, id: number, v: LiVerdict): boolean {
   const row = db
-    .prepare(`SELECT id, type, status, campaign_contact_id, step_number, li_account_id, created_at, ui_failures FROM li_actions WHERE id = ?`)
+    .prepare(`SELECT id, type, status, campaign_contact_id, step_number, li_account_id, created_at, ui_failures, detached FROM li_actions WHERE id = ?`)
     .get(id) as
     | {
         id: number;
@@ -950,6 +958,7 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
         li_account_id: number | null;
         created_at: number;
         ui_failures: number;
+        detached: number;
       }
     | undefined;
   if (!row || row.li_account_id !== account.id) return false;
@@ -994,6 +1003,12 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
         `invitation non acceptée après ${deadline.days} j`,
         id
       );
+      if (row.detached) {
+        if (deadline.branch) {
+          db.prepare(`UPDATE campaign_contacts SET li_accepted = 0 WHERE id = ? AND li_accepted IS NULL`).run(row.campaign_contact_id);
+        }
+        return true;
+      }
       if (deadline.branch) {
         // Switch to the "not accepted" steps (all after this message), without further wait.
         db.prepare(`UPDATE campaign_contacts SET li_accepted = 0 WHERE id = ?`).run(row.campaign_contact_id);
@@ -1030,7 +1045,7 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
     );
     // A message only reaches a connection: the invite is accepted.
     if (row.type === "message") db.prepare(`UPDATE campaign_contacts SET li_accepted = 1 WHERE id = ?`).run(row.campaign_contact_id);
-    advanceContact(row.campaign_contact_id, row.step_number);
+    if (!row.detached) advanceContact(row.campaign_contact_id, row.step_number);
     return true;
   }
 
@@ -1045,10 +1060,13 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
     return true;
   }
   db.prepare(`UPDATE li_actions SET status = 'failed', lease_at = NULL, error = ? WHERE id = ?`).run(msg, id);
-  db.prepare(`UPDATE campaign_contacts SET status = 'failed', error = ?, next_send_at = NULL WHERE id = ?`).run(
-    `LinkedIn (${account.name}) : ${msg}`,
-    row.campaign_contact_id
-  );
+  // A detached action's failure does not stop the emails that went alongside.
+  if (!row.detached) {
+    db.prepare(`UPDATE campaign_contacts SET status = 'failed', error = ?, next_send_at = NULL WHERE id = ?`).run(
+      `LinkedIn (${account.name}) : ${msg}`,
+      row.campaign_contact_id
+    );
+  }
   if (CHECKPOINT.test(msg)) {
     pauseForCheckpoint(account, msg);
   } else if (!NOT_FOUND.test(msg)) {

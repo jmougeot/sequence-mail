@@ -156,7 +156,7 @@ async function loadList() {
 const firstCampaign = campaigns => campaigns.find(c => c.status !== "archived") ?? campaigns[0];
 
 // ---------------------------------------------------------------------------
-// Éditeur de séquence. Une étape = { channel, li_action, subject, subject_b, body, wait_days, branch } ;
+// Éditeur de séquence. Une étape = { channel, li_action, subject, subject_b, body, wait_days, branch, with_previous } ;
 // son type est encodé en une valeur : email | invite | message. Après l'invitation
 // LinkedIn, la séquence se sépare en deux chemins : contacts qui l'ont acceptée
 // (branch « accepted ») et les autres (« not_accepted »). Ordre des étapes : tronc
@@ -189,6 +189,7 @@ const LANE_TYPES = { accepted: ["message", "email"], not_accepted: ["email"] };
 function stepChannel(s) {
   return s.channel === "linkedin" ? (s.li_action === "message" ? "message" : "invite") : "email";
 }
+const isEmailStep = s => stepChannel(s) === "email";
 
 function bodyPlaceholder(chan) {
   return chan === "invite" ? "Connection note (optional, 200 characters max once personalized) — Hi {{first_name}}…"
@@ -208,8 +209,9 @@ const subjectRow = (cls, label, placeholder, value) =>
 // n = numéro (1..), firstEmail = cette étape est le premier email de la séquence
 // ou d'un chemin (objet obligatoire), abTest = premier email de la séquence (A/B test
 // possible), single = seule étape (non supprimable), types = types proposés,
-// deadline = première étape « non acceptée » : son délai court depuis l'invitation.
-function stepHtml(n, s, { firstEmail, abTest, single, types, deadline }) {
+// deadline = première étape « non acceptée » : son délai court depuis l'invitation,
+// canSame = peut partir en même temps que l'étape précédente (email + LinkedIn).
+function stepHtml(n, s, { firstEmail, abTest, single, types, deadline, canSame }) {
   const chan = stepChannel(s);
   const t = STEP_TYPES[chan];
   const isEmail = chan === "email";
@@ -217,7 +219,10 @@ function stepHtml(n, s, { firstEmail, abTest, single, types, deadline }) {
   return `<div class="step" data-chan="${chan}" data-branch="${s.branch || ""}" data-first="${firstEmail ? 1 : ""}">
     ${n > 1 ? `<div class="step-delay">
       <span class="menu"><button class="ins" title="Insert a step here" onclick="insertMenu(event)">${ico("plus")}</button><span class="menu-list ins-list" hidden></span></span>
-      <span class="delay-txt">${deadline ? "If not accepted after" : "Wait"} <input class="wait" type="number" value="${s.wait_days || 3}" min="1"> days</span>
+      ${canSame ? `<select class="timing" title="When this step goes" onchange="setTiming(this)">
+        <option value="wait">Wait</option><option value="same" ${s.with_previous ? "selected" : ""}>At the same time</option>
+      </select>` : ""}
+      <span class="delay-txt" ${s.with_previous ? "hidden" : ""}>${deadline ? "If not accepted after" : canSame ? "" : "Wait"} <input class="wait" type="number" value="${s.wait_days || 3}" min="1"> days</span>
     </div>` : ""}
     <div class="step-box">
       <div class="step-head">
@@ -279,28 +284,35 @@ $$("textarea.desc").forEach(el => {
 });
 
 /**
- * Range les étapes : tronc commun jusqu'à la première invitation, puis chemin
- * « acceptée » (étapes sans chemin comprises), puis chemin « non acceptée ».
- * Sans invitation, aucun chemin. Un type interdit dans son chemin (invitation,
- * message LinkedIn côté « non acceptée ») devient un email.
+ * Range les étapes : tronc commun jusqu'à la première invitation (et l'email parti en
+ * même temps qu'elle), puis chemin « acceptée » (étapes sans chemin comprises), puis
+ * chemin « non acceptée ». Sans invitation, aucun chemin. Un type interdit dans son
+ * chemin (invitation, message LinkedIn côté « non acceptée ») devient un email.
  */
 function arrangeSteps(list) {
-  const inviteIdx = list.findIndex(s => stepChannel(s) === "invite");
+  let inviteIdx = list.findIndex(s => stepChannel(s) === "invite");
   if (inviteIdx < 0) return list.map(s => ({ ...s, branch: undefined }));
+  if (list[inviteIdx + 1]?.with_previous && isEmailStep(list[inviteIdx + 1])) inviteIdx++;
   const lane = branch => list.slice(inviteIdx + 1)
     .filter(s => (s.branch === "not_accepted") === (branch === "not_accepted"))
     .map(s => LANE_TYPES[branch].includes(stepChannel(s)) ? { ...s, branch } : { ...s, branch, channel: "email", li_action: undefined });
   return [...list.slice(0, inviteIdx + 1).map(s => ({ ...s, branch: undefined })), ...lane("accepted"), ...lane("not_accepted")];
 }
 
+// « En même temps » : un email et une action LinkedIn qui se suivent, dans le même chemin.
+// Le premier email après l'invitation peut partir avec elle : il quitte alors les chemins.
+const canGoWithPrevious = (list, i) => i > 0 && isEmailStep(list[i]) !== isEmailStep(list[i - 1])
+  && ((list[i].branch || "") === (list[i - 1].branch || "") || (stepChannel(list[i - 1]) === "invite" && list[i].branch === "accepted"));
+
 // Rend toute la séquence à partir d'une liste d'étapes : seule source de vérité du DOM.
 function setSteps(list) {
   list = arrangeSteps(list);
+  const deadlineIdx = list.findIndex(s => s.branch === "not_accepted");
+  list = list.map((s, i) => s.with_previous && (!canGoWithPrevious(list, i) || i === deadlineIdx) ? { ...s, with_previous: false } : s);
   const inviteIdx = list.findIndex(s => stepChannel(s) === "invite");
   // Premier email de chaque chemin (tronc commun compris) : objet obligatoire
   const firstEmails = new Set(["accepted", "not_accepted"].map(b =>
     list.findIndex(s => stepChannel(s) === "email" && (!s.branch || s.branch === b))));
-  const deadlineIdx = list.findIndex(s => s.branch === "not_accepted");
   const html = (s, i) => stepHtml(i + 1, s, {
     firstEmail: firstEmails.has(i),
     abTest: i === list.findIndex(x => stepChannel(x) === "email"),
@@ -308,6 +320,7 @@ function setSteps(list) {
     // une seule invitation : elle ouvre les deux chemins
     types: s.branch ? LANE_TYPES[s.branch] : Object.keys(STEP_TYPES).filter(k => k !== "invite" || inviteIdx < 0 || i === inviteIdx),
     deadline: i === deadlineIdx,
+    canSame: i !== deadlineIdx && canGoWithPrevious(list, i),
   });
   const trunk = list.map((s, i) => s.branch ? "" : html(s, i)).join("");
   const lanes = inviteIdx < 0 ? "" : `<div class="split">${Object.entries(BRANCH_LABELS).map(([b, label]) => `
@@ -334,6 +347,7 @@ function readSteps() {
       body: div.querySelector(".body")?.value ?? "",
       wait_days: +(div.querySelector(".wait")?.value ?? 0),
       branch: div.dataset.branch || undefined,
+      with_previous: div.querySelector(".timing")?.value === "same",
     };
   });
 }
@@ -399,6 +413,13 @@ async function saveVarInstructions() {
 }
 
 const stepIndex = el => $$("#steps .step").indexOf(el.closest(".step"));
+
+// Délai ou « en même temps » : l'étape peut changer de place (tronc commun / chemin), on redessine.
+function setTiming(sel) {
+  const i = stepIndex(sel);
+  setSteps(readSteps());
+  $$("#steps .step")[i]?.querySelector(".timing")?.focus();
+}
 
 const newStep = (chan, extra = {}) => chan === "email" ? { channel: "email", ...extra } : { channel: "linkedin", li_action: chan, ...extra };
 
@@ -892,7 +913,8 @@ async function runPreview() {
     contactPreviewMsgs = renders.map(x => x.r.body || "");
     body.innerHTML = renders.map(({ r, html, skipped }, i) => {
       const waitDays = steps[i].querySelector(".wait")?.value;
-      return `${i ? `<div class="pv-wait">↓ +${waitDays || "?"} days</div>` : ""}
+      const same = steps[i].querySelector(".timing")?.value === "same";
+      return `${i ? `<div class="pv-wait">${same ? "↓ at the same time" : `↓ +${waitDays || "?"} days`}</div>` : ""}
         <div class="preview ${i === current ? "current" : ""} ${skipped ? "skipped" : ""}">
           <div class="pv-head">
             <span>Step ${i + 1}/${total}${i === current && contact.current_step < total ? " · next" : ""}</span>
