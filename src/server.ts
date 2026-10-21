@@ -2,7 +2,7 @@ import express from "express";
 import { fileURLToPath } from "node:url";
 import { config, googleRedirectUri } from "./config.js";
 import { db } from "./db.js";
-import { authUrl, googleCredentialsSource, handleOAuthCallback, saveGoogleCredentials } from "./services/google.js";
+import { OAUTH_STATE_AZERIT, authUrl, googleCredentialsSource, handleOAuthCallback, saveGoogleCredentials } from "./services/google.js";
 import { BUILT_IN_VARIABLES, importContacts, KNOWN_COLUMNS, MERGED_EXTRA, normalizeColumn, parseCsv, renderTemplate, templateVariables } from "./services/contacts.js";
 import { syncFromAttio } from "./services/attio.js";
 import { effectiveDailyLimit, nextEmailEstimate, sendWindowState } from "./services/scheduler.js";
@@ -61,6 +61,10 @@ export function createServer(): express.Express {
   app.get("/auth/google/callback", async (req, res) => {
     try {
       const email = await handleOAuthCallback(String(req.query.code ?? ""));
+      // Started from Azerit (dashboard owner): back to Azerit, the dashboard is never shown.
+      if (req.query.state === OAUTH_STATE_AZERIT && config.azeritReturnUrl) {
+        return res.redirect(`${config.azeritReturnUrl}${config.azeritReturnUrl.includes("?") ? "&" : "?"}gmail=${encodeURIComponent(email)}`);
+      }
       res.redirect(`/settings.html?connected=${encodeURIComponent(email)}`);
     } catch (err) {
       res.status(500).send(`OAuth error: ${err instanceof Error ? err.message : err}`);

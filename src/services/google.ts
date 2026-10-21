@@ -54,11 +54,15 @@ function newOAuthClient(): OAuth2Client {
   );
 }
 
-export function authUrl(): string {
+/** OAuth `state` of a connection started from Azerit: the callback sends the person back there. */
+export const OAUTH_STATE_AZERIT = "azerit";
+
+export function authUrl(state?: string): string {
   return newOAuthClient().generateAuthUrl({
     access_type: "offline",
     prompt: "consent", // forces a refresh_token on every connection
     scope: SCOPES,
+    ...(state ? { state } : {}),
   });
 }
 

@@ -84,6 +84,8 @@ export const config = {
       .map((s) => s.trim())
       .filter(Boolean),
   },
+  // Where a Gmail connection started from Azerit returns (e.g. https://app.azerit.tech/settings).
+  azeritReturnUrl: process.env.AZERIT_RETURN_URL ?? "",
   // Key of the service API (/api/svc) called by Azerit on the VPS internal network. Empty = API
   // disabled.
   serviceApiKey: process.env.SERVICE_API_KEY ?? "",

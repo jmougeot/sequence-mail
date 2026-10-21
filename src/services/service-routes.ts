@@ -10,6 +10,9 @@
  * Owners listed in LI_DASHBOARD_OWNERS are the exception: their campaigns are ordinary dashboard
  * campaigns (owner_ref NULL, svc_owner = them), sent from the dashboard's LinkedIn accounts — as
  * many as wanted, chosen by the client at creation (`li_account_ids`), which share the invitations.
+ * They may also mix in emails (Gmail accounts of the dashboard, `account_ids`), typically on the
+ * "invitation not accepted" branch, add their own LinkedIn accounts to the dashboard and connect
+ * Gmail accounts — so the client never has to open the dashboard.
  * Azerit users never see Sequence Mail: Azerit relays.
  */
 import { timingSafeEqual } from "node:crypto";
@@ -17,6 +20,7 @@ import type express from "express";
 import { config } from "../config.js";
 import { db } from "../db.js";
 import { MERGED_EXTRA, importContacts, renderTemplate } from "./contacts.js";
+import { OAUTH_STATE_AZERIT, authUrl } from "./google.js";
 import { normalizeLinkedin } from "./linkedin-url.js";
 import {
   accountStatus,
@@ -24,6 +28,7 @@ import {
   createAccount,
   getAccount,
   listAccounts,
+  setProxy,
   parseMember,
   rotateToken,
   storeSession,
@@ -74,6 +79,38 @@ function accountUsed(id: number): boolean {
 
 const isDashboardOwner = (owner: string) => config.linkedin.dashboardOwners.includes(owner);
 
+/** Gmail accounts of the dashboard, as a dashboard owner sees them. */
+function emailAccounts() {
+  return (
+    db
+      .prepare("SELECT id, email, from_name, active, daily_limit, sent_today, sent_today_date FROM accounts ORDER BY email")
+      .all() as Array<{ id: number; email: string; from_name: string | null; active: number; daily_limit: number; sent_today: number; sent_today_date: string | null }>
+  ).map((a) => ({
+    id: a.id,
+    email: a.email,
+    from_name: a.from_name,
+    active: Boolean(a.active),
+    sent_today: a.sent_today_date === new Date().toISOString().slice(0, 10) ? a.sent_today : 0,
+  }));
+}
+
+/** Dashboard owner's choice of Gmail accounts: null = all, else existing ids only. */
+function dashboardEmailSenders(ids: unknown): { value: string | null } | { error: string } {
+  if (ids == null) return { value: null };
+  if (!Array.isArray(ids) || !ids.length || !ids.every((x) => Number.isInteger(x))) {
+    return { error: "account_ids : liste d'identifiants de comptes Gmail, au moins un" };
+  }
+  const known = new Set(emailAccounts().map((a) => a.id));
+  if (!ids.every((id) => known.has(id as number))) return { error: "account_ids : compte Gmail inconnu" };
+  return { value: JSON.stringify([...new Set(ids as number[])]) };
+}
+
+/** A LinkedIn account of the dashboard (owner_ref NULL), the only ones a dashboard owner may touch. */
+function dashboardLiAccount(id: unknown): LiAccount | undefined {
+  const a = getAccount(Number(id));
+  return a && a.owner_ref == null ? a : undefined;
+}
+
 /** Dashboard owner's choice of sending accounts: null = all the dashboard's, else dashboard ids only. */
 function dashboardSenders(ids: unknown): { value: string | null } | { error: string } {
   if (ids == null) return { value: null };
@@ -101,34 +138,51 @@ function ownedCampaign(id: unknown, owner: string): OwnedCampaign | undefined {
     .get({ id: Number(id), owner }) as OwnedCampaign | undefined;
 }
 
-type SvcStep = { action?: string; body?: string; wait_days?: number };
+type SvcStep = { action?: string; body?: string; subject?: string; wait_days?: number; branch?: string };
+type CleanStep = { action: "invite" | "message" | "email"; body: string; subject: string; wait_days: number; branch: string | null };
 
-/** LinkedIn steps only (invite / message): client email isn't wired here. */
-function validateSteps(steps: unknown): { steps: Required<SvcStep>[] } | { error: string } {
+/**
+ * Steps: LinkedIn (invite / message) and, for dashboard owners only, email (subject + body; an empty
+ * subject on a later email = reply in the same thread). `branch`: "accepted" / "not_accepted" (see
+ * branches.ts) — the first "accepted" step must be a LinkedIn message (it tests the acceptance).
+ */
+function validateSteps(steps: unknown, allowEmail = false): { steps: CleanStep[] } | { error: string } {
   if (!Array.isArray(steps) || !steps.length || steps.length > 10) return { error: "steps[] : 1 à 10 étapes" };
-  const out: Required<SvcStep>[] = [];
+  const out: CleanStep[] = [];
   for (const [i, raw] of (steps as SvcStep[]).entries()) {
-    const action = raw?.action === "message" ? "message" : raw?.action === "invite" ? "invite" : null;
-    if (!action) return { error: `étape ${i + 1} : action attendue « invite » ou « message »` };
+    const action =
+      raw?.action === "message" ? "message" : raw?.action === "invite" ? "invite" : raw?.action === "email" && allowEmail ? "email" : null;
+    if (!action) return { error: `étape ${i + 1} : action attendue « invite » ou « message »${allowEmail ? " ou « email »" : ""}` };
     const body = typeof raw.body === "string" ? raw.body.trim() : "";
-    if (action === "message" && !body) return { error: `étape ${i + 1} : message vide` };
-    if (action === "message" && body.length > MESSAGE_MAX) return { error: `étape ${i + 1} : message trop long` };
+    const subject = action === "email" && typeof raw.subject === "string" ? raw.subject.trim().slice(0, 300) : "";
+    if (action !== "invite" && !body) return { error: `étape ${i + 1} : message vide` };
+    if (action !== "invite" && body.length > MESSAGE_MAX) return { error: `étape ${i + 1} : message trop long` };
     if (action === "invite" && body.length > INVITE_NOTE_MAX) {
       return { error: `étape ${i + 1} : note d'invitation limitée à ${INVITE_NOTE_MAX} caractères par LinkedIn` };
     }
+    if (action === "email" && !subject && !out.some((s) => s.action === "email")) {
+      return { error: `étape ${i + 1} : objet requis pour le premier email` };
+    }
+    const branch = raw.branch === "accepted" || raw.branch === "not_accepted" ? raw.branch : null;
+    if (branch === "accepted" && !out.some((s) => s.branch === "accepted") && action !== "message") {
+      return { error: `étape ${i + 1} : la première étape « acceptée » doit être un message LinkedIn` };
+    }
     const wait = Number(raw.wait_days ?? (i === 0 ? 0 : 2));
-    out.push({ action, body, wait_days: i === 0 ? 0 : Math.max(0, Math.min(60, Math.round(Number.isFinite(wait) ? wait : 2))) });
+    out.push({ action, body, subject, branch, wait_days: i === 0 ? 0 : Math.max(0, Math.min(60, Math.round(Number.isFinite(wait) ? wait : 2))) });
   }
   return { steps: out };
 }
 
-function replaceSteps(campaignId: number, steps: Required<SvcStep>[]): void {
+function replaceSteps(campaignId: number, steps: CleanStep[]): void {
   db.prepare("DELETE FROM steps WHERE campaign_id = ?").run(campaignId);
   const insert = db.prepare(
-    `INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days, channel, li_action)
-     VALUES (?, ?, '', NULL, ?, ?, 'linkedin', ?)`
+    `INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days, channel, li_action, branch)
+     VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`
   );
-  steps.forEach((s, i) => insert.run(campaignId, i + 1, s.body, s.wait_days, s.action));
+  steps.forEach((s, i) =>
+    insert.run(campaignId, i + 1, s.subject, s.body, s.wait_days, s.action === "email" ? "email" : "linkedin",
+      s.action === "email" ? null : s.action, s.branch)
+  );
 }
 
 /** Enrollment variables: simple keys, text values. */
@@ -157,8 +211,9 @@ export function registerServiceRoutes(app: express.Express): void {
     const owner = ownerOf(req)!;
     // Dashboard owner: what sends is the dashboard's active LinkedIn accounts, not a linked one.
     if (isDashboardOwner(owner)) {
-      const accounts = listAccounts().filter((a) => a.owner_ref == null && a.active);
-      return res.json({ account: null, dashboard: { accounts: accounts.map(accountStatus) } });
+      // All of them, paused ones too: the client resumes them from Azerit.
+      const accounts = listAccounts().filter((a) => a.owner_ref == null);
+      return res.json({ account: null, dashboard: { accounts: accounts.map(accountStatus), email_accounts: emailAccounts() } });
     }
     const account = ownerAccount(owner);
     res.json({ account: account ? accountStatus(account) : null });
@@ -176,6 +231,17 @@ export function registerServiceRoutes(app: express.Express): void {
     const member = parseMember(b.member);
     if (!member) return res.status(400).json({ error: "Profil LinkedIn connecté illisible : ouvrez LinkedIn dans ce navigateur puis réessayez." });
     const name = (typeof b.owner_name === "string" && b.owner_name.trim()) || member.name || member.slug;
+
+    // Dashboard owner: the profile logged in this browser becomes (or refreshes) a dashboard
+    // account — one per LinkedIn profile, as many profiles as wanted. Its proxy is set from Azerit.
+    if (isDashboardOwner(owner)) {
+      let account = listAccounts().find((a) => a.owner_ref == null && a.member_slug === member.slug);
+      if (!account) account = createAccount(member.name || member.slug).account;
+      const r = storeSession(account.id, b.cookies, b.user_agent, member, "server");
+      if ("error" in r) return res.status(r.code === "other_member" ? 409 : 400).json(r);
+      console.log(`[svc] LinkedIn session received from ${owner} for dashboard account #${account.id} (profile ${member.slug})`);
+      return res.json({ account: accountStatus(getAccount(account.id)!), dashboard: true });
+    }
 
     let account = ownerAccount(owner);
     if (account?.member_slug && account.member_slug !== member.slug) {
@@ -208,6 +274,27 @@ export function registerServiceRoutes(app: express.Express): void {
     });
   });
 
+  /** Dashboard owner: pauses / resumes a dashboard LinkedIn account, sets its proxy (null = none). */
+  app.patch("/api/svc/li/dashboard-accounts/:id", (req, res) => {
+    if (!isDashboardOwner(ownerOf(req)!)) return res.status(404).json({ error: "Compte introuvable" });
+    const account = dashboardLiAccount(req.params.id);
+    if (!account) return res.status(404).json({ error: "Compte introuvable" });
+    const b = req.body as { active?: unknown; proxy?: unknown };
+    if ("proxy" in b) {
+      const r = setProxy(account.id, typeof b.proxy === "string" ? b.proxy : null);
+      if ("error" in r) return res.status(400).json(r);
+    }
+    if (typeof b.active === "boolean") updateAccount(account.id, { active: b.active });
+    res.json({ account: accountStatus(getAccount(account.id)!) });
+  });
+
+  /** Dashboard owner: Google consent link to connect a Gmail account; back to Azerit afterwards. */
+  app.get("/api/svc/google/auth-url", (req, res) => {
+    if (!isDashboardOwner(ownerOf(req)!)) return res.status(404).json({ error: "Introuvable" });
+    if (!config.google.clientId) return res.status(503).json({ error: "Connexion Google non configurée sur Sequence Mail" });
+    res.json({ url: authUrl(OAUTH_STATE_AZERIT) });
+  });
+
   app.patch("/api/svc/li/account", (req, res) => {
     const account = ownerAccount(ownerOf(req)!);
     if (!account) return res.status(404).json({ error: "Aucun compte LinkedIn relié" });
@@ -221,15 +308,17 @@ export function registerServiceRoutes(app: express.Express): void {
   /** Creates or updates campaign `external_ref` (steps replaced, contacts' progress kept). */
   app.post("/api/svc/campaigns", (req, res) => {
     const owner = ownerOf(req)!;
-    const b = req.body as { external_ref?: unknown; name?: unknown; steps?: unknown; li_account_ids?: unknown };
+    const b = req.body as { external_ref?: unknown; name?: unknown; steps?: unknown; li_account_ids?: unknown; account_ids?: unknown };
     const ref = typeof b.external_ref === "string" ? b.external_ref.trim().slice(0, 200) : "";
     const name = typeof b.name === "string" ? b.name.trim().slice(0, 200) : "";
     if (!ref || !name) return res.status(400).json({ error: "external_ref et name requis" });
-    const v = validateSteps(b.steps);
-    if ("error" in v) return res.status(400).json(v);
     const dashboard = isDashboardOwner(owner);
+    const v = validateSteps(b.steps, dashboard);
+    if ("error" in v) return res.status(400).json(v);
     const senders = dashboard && "li_account_ids" in b ? dashboardSenders(b.li_account_ids) : null;
     if (senders && "error" in senders) return res.status(400).json(senders);
+    const emailSenders = dashboard && "account_ids" in b ? dashboardEmailSenders(b.account_ids) : null;
+    if (emailSenders && "error" in emailSenders) return res.status(400).json(emailSenders);
     const id = db.transaction(() => {
       const found = (
         dashboard
@@ -250,6 +339,7 @@ export function registerServiceRoutes(app: express.Express): void {
         );
       db.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run(name, cid);
       if (senders) db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(senders.value, cid);
+      if (emailSenders) db.prepare("UPDATE campaigns SET account_ids = ? WHERE id = ?").run(emailSenders.value, cid);
       replaceSteps(cid, v.steps);
       return cid;
     })();
@@ -268,6 +358,9 @@ export function registerServiceRoutes(app: express.Express): void {
     const list = (req.body as { contacts?: unknown }).contacts;
     if (!Array.isArray(list) || !list.length || list.length > 500) return res.status(400).json({ error: "contacts[] : 1 à 500" });
 
+    const hasEmail = Boolean(
+      db.prepare("SELECT 1 FROM steps WHERE campaign_id = ? AND channel = 'email' LIMIT 1").get(campaign.id)
+    );
     const results: Array<{ key: string; cc_id?: number; status: string; error?: string }> = [];
     const rows: Array<Record<string, string>> = [];
     const meta: Array<{ key: string; vars: Record<string, string> | null }> = [];
@@ -277,14 +370,17 @@ export function registerServiceRoutes(app: express.Express): void {
         results.push({ key: "", status: "rejected", error: "key manquante" });
         continue;
       }
-      const linkedin = normalizeLinkedin(typeof raw.linkedin === "string" ? raw.linkedin : "");
-      if (!linkedin || !/\/in\//.test(linkedin)) {
-        results.push({ key, status: "rejected", error: "profil LinkedIn manquant" });
+      const str = (x: unknown) => (typeof x === "string" ? x.trim().slice(0, 300) : "");
+      const normalized = normalizeLinkedin(typeof raw.linkedin === "string" ? raw.linkedin : "");
+      const linkedin = normalized && /\/in\//.test(normalized) ? normalized : "";
+      const email = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(str(raw.email)) ? str(raw.email) : "";
+      // Without email steps, a LinkedIn profile is required (the email is only kept on the contact).
+      if (!linkedin && !(hasEmail && email)) {
+        results.push({ key, status: "rejected", error: hasEmail ? "ni profil LinkedIn ni email" : "profil LinkedIn manquant" });
         continue;
       }
-      const str = (x: unknown) => (typeof x === "string" ? x.trim().slice(0, 300) : "");
       rows.push({
-        email: str(raw.email),
+        email,
         first_name: str(raw.first_name),
         last_name: str(raw.last_name),
         company: str(raw.company),
@@ -399,10 +495,20 @@ export function registerServiceRoutes(app: express.Express): void {
       .all(campaign.id) as Array<Record<string, unknown> & { cc_id: number }>;
     const byCc = new Map<number, Array<Record<string, unknown>>>();
     for (const { cc_id, ...a } of actions) byCc.set(cc_id, [...(byCc.get(cc_id) ?? []), a]);
+    const emails = db
+      .prepare(
+        `SELECT m.campaign_contact_id AS cc_id, m.step_number, m.sent_at, a.email AS sent_from
+         FROM messages m JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
+         JOIN accounts a ON a.id = m.account_id
+         WHERE cc.campaign_id = ? ORDER BY m.id`
+      )
+      .all(campaign.id) as Array<Record<string, unknown> & { cc_id: number }>;
+    const emailsByCc = new Map<number, Array<Record<string, unknown>>>();
+    for (const { cc_id, ...m } of emails) emailsByCc.set(cc_id, [...(emailsByCc.get(cc_id) ?? []), m]);
     const steps = (db.prepare("SELECT COUNT(*) AS n FROM steps WHERE campaign_id = ?").get(campaign.id) as { n: number }).n;
     res.json({
       campaign: { id: campaign.id, status: campaign.status, steps },
-      contacts: contacts.map((c) => ({ ...c, actions: byCc.get(c.cc_id) ?? [] })),
+      contacts: contacts.map((c) => ({ ...c, actions: byCc.get(c.cc_id) ?? [], emails: emailsByCc.get(c.cc_id) ?? [] })),
     });
   });
 
