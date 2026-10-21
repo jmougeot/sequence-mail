@@ -221,8 +221,9 @@ async function postVerdict(url, auth, body) {
 const WORK_TAB = "workTab";
 // Taille d'un écran d'ordinateur : sans elle Chrome crée la fenêtre en 500×677, et
 // à cette largeur LinkedIn ouvre « Message » en page entière (/messaging/compose/)
-// au lieu de la bulle, page dont la zone de saisie ne s'affiche pas fenêtre réduite.
-// `v` : une fenêtre notée par une version plus ancienne (500 px) est recréée.
+// au lieu de la bulle. Réduite entre deux actions ; montrée le temps d'un message
+// (cf. showForMessage). `v` : une fenêtre notée par une version plus ancienne
+// (500 px) est recréée.
 const WORK_WINDOW = { width: 1280, height: 900, v: 2 };
 
 async function ensureTab() {
@@ -249,6 +250,46 @@ async function ensureTab() {
   await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
   if ((await chrome.tabs.get(tab.id)).status !== "complete") await waitForLoad(tab.id);
   return tab;
+}
+
+/**
+ * Messages seulement : LinkedIn dessine sa messagerie (bulle ou page) via
+ * requestAnimationFrame, que Chrome gèle dans un onglet caché (fenêtre réduite
+ * ou entièrement recouverte) — la zone de saisie n'apparaît alors jamais, quel
+ * que soit le délai (vérifié : 0 image en 21 s). Les invitations, elles, n'en
+ * dépendent pas. La fenêtre est donc montrée le temps du message, sans prendre
+ * le focus, avec seulement un coin à l'écran (en bas à droite — un écran entier
+ * gênerait et pourrait être cliqué par erreur), puis réduite à nouveau. Rend la
+ * fonction qui la réduit.
+ */
+const MESSAGE_CORNER = { width: 320, height: 260 };
+
+async function showForMessage(tab) {
+  const win = await chrome.windows.get(tab.windowId).catch(() => null);
+  if (!win) return async () => {};
+  const area = await screenArea(tab.id);
+  const left = Math.max(area.left, area.left + area.width - MESSAGE_CORNER.width);
+  const top = Math.max(area.top, area.top + area.height - MESSAGE_CORNER.height);
+  // L'état d'abord (une fenêtre réduite ignore les coordonnées), puis la position.
+  await chrome.windows.update(win.id, { state: "normal" }).catch(() => {});
+  await chrome.windows.update(win.id, { left, top, width: WORK_WINDOW.width, height: WORK_WINDOW.height }).catch(() => {});
+  return async () => {
+    await chrome.windows.update(win.id, { state: "minimized" }).catch(() => {});
+  };
+}
+
+/** Zone utile de l'écran, lue dans l'onglet de travail (le service worker n'a pas `screen`). */
+async function screenArea(tabId) {
+  try {
+    const [r] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => ({ left: screen.availLeft, top: screen.availTop, width: screen.availWidth, height: screen.availHeight }),
+    });
+    if (r && r.result && r.result.width > 0) return r.result;
+  } catch {
+    // onglet sans page scriptable : valeurs d'un écran courant
+  }
+  return { left: 0, top: 0, width: 1440, height: 900 };
 }
 
 /** Attend que l'onglet ait fini de charger l'URL demandée. */
@@ -286,8 +327,10 @@ async function sendToTab(tabId, payload, tries = 6) {
  * script y joue le geste humain (clic Se connecter / Message, saisie, envoi).
  */
 async function runAction(action) {
+  let hide = async () => {};
   try {
     const tab = await ensureTab();
+    if (action.type === "message") hide = await showForMessage(tab);
     await chrome.tabs.update(tab.id, { url: profileUrl(action.linkedin) });
     await waitForLoad(tab.id);
     await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500)); // laisse l'UI se stabiliser
@@ -301,6 +344,8 @@ async function runAction(action) {
     return await sendToTab(tab.id, { type: "li-action", action }, 10);
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
+  } finally {
+    await hide();
   }
 }
 

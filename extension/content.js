@@ -32,6 +32,23 @@ async function waitFor(find, timeout = 8000) {
   return find() || null;
 }
 
+/** La page se dessine encore : requestAnimationFrame tourne. Chrome le gèle dans un
+ *  onglet caché (fenêtre réduite ou recouverte) ; la messagerie LinkedIn, qui en
+ *  dépend, n'y apparaît alors jamais — autant le dire tout de suite. */
+function rendering(timeout = 1500) {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(false), timeout);
+    requestAnimationFrame(() => { clearTimeout(t); resolve(true); });
+  });
+}
+
+/** Élément actif, descendu dans les shadow roots (document.activeElement s'arrête à l'hôte). */
+function activeDeep() {
+  let el = document.activeElement;
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  return el;
+}
+
 /** Racines de recherche : le document d'abord, puis les shadow roots ouverts
  *  (le nouveau design LinkedIn y rend la fenêtre d'invitation, invisible pour
  *  document.querySelectorAll). Le document en premier : ce qu'on y trouvait
@@ -269,7 +286,8 @@ async function findMessageButton(timeout = 6000) {
 function findEditor() {
   const editors = deepQueryAll('.msg-form__contenteditable[contenteditable="true"], .msg-form__contenteditable [contenteditable="true"], div[role="textbox"][contenteditable="true"]')
     .filter(isShown);
-  const active = editors.find((e) => e === document.activeElement || e.contains(document.activeElement));
+  const focused = activeDeep();
+  const active = editors.find((e) => e === focused || e.contains(focused));
   return active || editors[editors.length - 1] || null;
 }
 
@@ -282,7 +300,7 @@ function messageDiagnostic(clicked) {
     : "aucun (fil déjà ouvert)";
   return [
     `clic sur ${what}`,
-    `onglet ${document.visibilityState}${document.hasFocus() ? "" : " sans focus"} ${innerWidth}×${innerHeight}`,
+    `onglet ${document.visibilityState}${document.hasFocus() ? "" : " sans focus"} ${innerWidth}×${innerHeight} en ${screenX},${screenY}`,
     `page ${location.pathname}`,
     `${all.length} champ(s) éditable(s) dont ${all.filter(isShown).length} affiché(s)`,
     `${bubbles.length} bulle(s) de messagerie`,
@@ -547,15 +565,19 @@ async function doMessage(text, inThread, guard, meName) {
     // reporte le message de quelques heures, sans pause punitive.
     if (pending) return { ok: false, retry: true, error: "pas encore en relation (invitation non acceptée)" };
     if (!msgBtn) return { ok: false, error: "bouton « Message » du profil introuvable" };
+    // « non rendue » : le serveur y voit un échec passager et réessaie plus tard.
+    if (!(await rendering())) {
+      return { ok: false, error: `messagerie non rendue : onglet caché (fenêtre de travail réduite ou recouverte) — rien envoyé ; ${messageDiagnostic(null)}` };
+    }
     msgClicked = msgBtn;
     await clickHuman(msgBtn);
     await human();
   }
   // Dans un fil, le champ de saisie est déjà présent — pas de bouton à cliquer.
 
-  // 12 s : sur la page /messaging/compose/, le champ arrive ~3 s après le clic
-  // dans un onglet visible, plus tard dans une fenêtre réduite.
-  const editor = await waitFor(findEditor, 12000);
+  // 25 s : la bulle ouverte par « Message » met jusqu'à ~9 s à afficher son champ
+  // sur un profil fraîchement chargé (mesuré en onglet visible).
+  const editor = await waitFor(findEditor, 25000);
   if (!editor) return { ok: false, error: `zone de saisie du message introuvable — ${messageDiagnostic(msgClicked)}` };
 
   if (guard) {
