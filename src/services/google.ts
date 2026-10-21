@@ -159,7 +159,7 @@ export async function handleOAuthCallback(code: string, owner: string | null = n
     | { id: number; oauth_tokens: string; owner_ref: string | null }
     | undefined;
   if (existing && existing.owner_ref !== owner) {
-    throw new GmailOwnedElsewhere(`${email} est déjà relié à un autre compte`);
+    throw new GmailOwnedElsewhere(`${email} is already connected to another account.`);
   }
   if (existing) {
     // Keep the old refresh_token if Google doesn't return a new one

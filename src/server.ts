@@ -69,8 +69,12 @@ export function createServer(): express.Express {
     // Started from Azerit for one of its users (signed state): the Gmail is that user's, and the
     // person goes back to Azerit — the dashboard is never shown.
     const owner = verifyOwnerState(req.query.state);
-    const back = (param: string, value: string) =>
-      res.redirect(`${config.azeritReturnUrl}${config.azeritReturnUrl.includes("?") ? "&" : "?"}${param}=${encodeURIComponent(value)}`);
+    // The parameter goes before the #fragment (Azerit routes on it: #/settings).
+    const back = (param: string, value: string) => {
+      const [base, fragment] = config.azeritReturnUrl.split("#", 2);
+      const sep = base.includes("?") ? "&" : "?";
+      res.redirect(`${base}${sep}${param}=${encodeURIComponent(value)}${fragment != null ? `#${fragment}` : ""}`);
+    };
     try {
       const email = await handleOAuthCallback(String(req.query.code ?? ""), owner);
       if (owner && config.azeritReturnUrl) return back("gmail", email);
