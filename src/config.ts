@@ -76,6 +76,14 @@ export const config = {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
+    // Owners (e.g. "azerit:u:1") whose campaigns are created as ordinary dashboard campaigns: served
+    // by the dashboard's LinkedIn accounts (owner_ref NULL, as many as wanted, chosen per campaign),
+    // contacts left "held" until launched from the dashboard. Their own Azerit-linked account is
+    // not used.
+    dashboardOwners: (process.env.LI_DASHBOARD_OWNERS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
   },
   // Key of the service API (/api/svc) called by Azerit on the VPS internal network. Empty = API
   // disabled.

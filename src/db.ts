@@ -352,6 +352,13 @@ db.exec(
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_external ON campaigns (owner_ref, external_ref) WHERE external_ref IS NOT NULL"
 );
 db.exec("CREATE INDEX IF NOT EXISTS idx_li_accounts_owner ON li_accounts (owner_ref)");
+// Dashboard campaign created through the service API (LI_DASHBOARD_OWNERS): owner_ref stays NULL
+// (served by the dashboard's accounts) and svc_owner keeps the client that created it, so it can
+// still follow it (contacts, stop, vars).
+addColumnIfMissing("campaigns", "svc_owner", "svc_owner TEXT");
+db.exec(
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_svc_external ON campaigns (svc_owner, external_ref) WHERE svc_owner IS NOT NULL AND external_ref IS NOT NULL"
+);
 // LinkedIn identity of the account (/in/<slug> actually logged in), read when the session
 // is handed over and rechecked by the executor before each action: a message never
 // leaves from any other profile.

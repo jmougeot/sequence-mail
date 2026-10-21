@@ -26,6 +26,10 @@
       <button class="ghost sender-btn" onclick="toggleMenu(event)" title="Accounts sending this campaign"><span id="senderLabel">Sending accounts</span><span class="chev">▾</span></button>
       <span class="menu-list sender-list" id="senderList" hidden></span>
     </span>
+    <span class="menu" id="liSenderMenu" hidden>
+      <button class="ghost sender-btn" onclick="toggleMenu(event)" title="LinkedIn accounts sending this campaign: each one takes the next invitation when it is free, then keeps that contact"><span id="liSenderLabel">LinkedIn accounts</span><span class="chev">▾</span></button>
+      <span class="menu-list sender-list" id="liSenderList" hidden></span>
+    </span>
     <span id="statusZone" class="inline"></span>
   </div>
 
@@ -501,6 +505,43 @@ function senderLabel() {
     : `${on} of ${all.length} sending accounts`;
 }
 
+// --- Comptes LinkedIn de la campagne (même principe, null = tous) : chaque compte coché prend la
+// prochaine invitation quand il est libre, puis garde ce contact (seule une relation peut recevoir
+// le message). Seulement les comptes du tableau de bord : ceux des clients Azerit ne servent que
+// leurs propres campagnes.
+let liAccounts = [];
+async function renderLiSenders(c) {
+  const hasLi = (c.steps || []).some(s => s.channel === "linkedin");
+  try { liAccounts = (await api("/api/li/accounts")).filter(a => !a.owner_ref); } catch { liAccounts = []; }
+  $("#liSenderMenu").hidden = !hasLi || !liAccounts.length;
+  const ids = c.li_account_ids;
+  $("#liSenderList").innerHTML = liAccounts.map(a => `
+    <label class="sender-row ${a.active ? "" : "inactive"}">
+      <input type="checkbox" class="liSenderChk" value="${a.id}" ${!ids || ids.includes(a.id) ? "checked" : ""} onchange="liSenderChanged()">
+      <span>${esc(a.member?.name || a.name)}${a.member ? ` <span class="muted">in/${esc(a.member.slug)}</span>` : ""}</span>${a.active ? "" : `<span class="muted">inactive</span>`}
+    </label>`).join("");
+  liSenderLabel();
+}
+function readLiSenderIds() {
+  const checks = $$(".liSenderChk");
+  const sel = checks.filter(c => c.checked).map(c => +c.value);
+  return sel.length === checks.length ? null : sel;
+}
+function liSenderLabel() {
+  const all = $$(".liSenderChk"), on = all.filter(c => c.checked).length;
+  $("#liSenderLabel").textContent = on === all.length ? `All LinkedIn accounts (${all.length})`
+    : on === 0 ? "No LinkedIn account selected"
+    : `${on} of ${all.length} LinkedIn accounts`;
+}
+async function liSenderChanged() {
+  liSenderLabel();
+  const ids = readLiSenderIds();
+  if (!selectedId || (ids && !ids.length)) return; // aucun coché : rien n'est enregistré
+  try {
+    await api(`/api/campaigns/${selectedId}`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ li_account_ids: ids }) });
+  } catch (e) { notify(e.message, false); }
+}
+
 // null = tous cochés (la campagne suivra aussi les comptes connectés plus tard)
 function readSenderIds() {
   const checks = $$(".senderChk");
@@ -524,6 +565,7 @@ function refreshPreviewAccounts() {
 function newCampaign() {
   selectedId = null;
   location.hash = "new";
+  $("#liSenderMenu").hidden = true;
   $("#saveBtn").textContent = "Create campaign";
   $("#statusZone").innerHTML = "";
   $("#campDot").className = "dot-st";
@@ -667,6 +709,7 @@ async function selectCampaign(id, tab = "seq") {
   $("#descMsg").textContent = "";
   $("#campMsg").textContent = "";
   renderSenders(c.account_ids);
+  renderLiSenders(c);
   refreshPreviewAccounts();
   setSteps(c.steps.length ? c.steps : [{ channel: "email" }]);
   $("#campTabs").hidden = false;
