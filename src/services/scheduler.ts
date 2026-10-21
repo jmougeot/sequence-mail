@@ -267,6 +267,7 @@ interface DueRow {
   variant: string | null;
   li_accepted: number | null;
   campaign_account_ids: string | null;
+  campaign_owner: string | null;
 }
 
 interface StepRow {
@@ -298,16 +299,19 @@ export function parseAccountIds(json: string | null): number[] | null {
   }
 }
 
-/** Least loaded account, under its effective quota (warm-up) and not resting. */
-function pickAccount(now: number, allowedIds: number[] | null): AccountRow | undefined {
+/**
+ * Least loaded account, under its effective quota (warm-up) and not resting — ALWAYS of the
+ * campaign's owner (an Azerit user's Gmail never sends another's campaign, nor the dashboard's).
+ */
+function pickAccount(now: number, allowedIds: number[] | null, owner: string | null): AccountRow | undefined {
   const candidates = db
     .prepare(
       `SELECT * FROM accounts
-       WHERE active = 1
+       WHERE active = 1 AND owner_ref IS ?
          AND (next_allowed_at IS NULL OR next_allowed_at <= ?)
        ORDER BY sent_today ASC, COALESCE(last_sent_at, 0) ASC`
     )
-    .all(now) as AccountRow[];
+    .all(owner, now) as AccountRow[];
   return candidates.find(
     (a) => (!allowedIds || allowedIds.includes(a.id)) && a.sent_today < effectiveDailyLimit(a)
   );
@@ -414,7 +418,7 @@ async function processOne(row: DueRow): Promise<void> {
   // since); the 1st send follows the campaign's selection.
   const account = row.account_id
     ? accountById(row.account_id)
-    : pickAccount(now, parseAccountIds(row.campaign_account_ids));
+    : pickAccount(now, parseAccountIds(row.campaign_account_ids), row.campaign_owner);
   if (!account || account.active !== 1) return; // no account available, retry next tick
   if (account.sent_today >= effectiveDailyLimit(account)) return;
   if (account.next_allowed_at && account.next_allowed_at > now) return;
@@ -523,7 +527,7 @@ async function processOne(row: DueRow): Promise<void> {
 const DUE_SELECT = `
   SELECT cc.id AS cc_id, cc.campaign_id, cc.contact_id, cc.status, cc.current_step,
          cc.account_id, cc.thread_id, cc.last_gmail_message_id, cc.variant, cc.li_accepted,
-         cp.account_ids AS campaign_account_ids,
+         cp.account_ids AS campaign_account_ids, cp.owner_ref AS campaign_owner,
          c.email, c.first_name, c.last_name, c.company, c.linkedin, c.attio_record_id,
          -- enrollment variables (message written for this candidate on this job) take precedence
          CASE WHEN cc.vars IS NULL THEN c.extra WHEN c.extra IS NULL THEN cc.vars

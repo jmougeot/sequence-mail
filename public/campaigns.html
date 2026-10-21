@@ -480,8 +480,11 @@ function removeStep(btn) {
 }
 
 // --- Comptes d'envoi de la campagne : un bouton qui résume la sélection, un menu à cocher ; tous cochés par défaut (null = tous) ---
+// Seulement ceux du propriétaire de la campagne : le tableau de bord (null) ou un client Azerit.
+let campaignOwner = null;
+const ownedBy = (a) => (a.owner_ref ?? null) === campaignOwner;
 function renderSenders(selectedIds) {
-  $("#senderList").innerHTML = accounts.map(a => `
+  $("#senderList").innerHTML = accounts.filter(ownedBy).map(a => `
     <label class="sender-row ${a.active ? "" : "inactive"}">
       <input type="checkbox" class="senderChk" value="${a.id}" ${!selectedIds || selectedIds.includes(a.id) ? "checked" : ""} onchange="senderChanged()">
       <span>${esc(a.email)}</span>${a.active ? "" : `<span class="muted">inactive</span>`}
@@ -507,12 +510,11 @@ function senderLabel() {
 
 // --- Comptes LinkedIn de la campagne (même principe, null = tous) : chaque compte coché prend la
 // prochaine invitation quand il est libre, puis garde ce contact (seule une relation peut recevoir
-// le message). Seulement les comptes du tableau de bord : ceux des clients Azerit ne servent que
-// leurs propres campagnes.
+// le message). Seulement ceux du propriétaire de la campagne (cf. ownedBy).
 let liAccounts = [];
 async function renderLiSenders(c) {
   const hasLi = (c.steps || []).some(s => s.channel === "linkedin");
-  try { liAccounts = (await api("/api/li/accounts")).filter(a => !a.owner_ref); } catch { liAccounts = []; }
+  try { liAccounts = (await api("/api/li/accounts")).filter(ownedBy); } catch { liAccounts = []; }
   $("#liSenderMenu").hidden = !hasLi || !liAccounts.length;
   const ids = c.li_account_ids;
   $("#liSenderList").innerHTML = liAccounts.map(a => `
@@ -554,7 +556,7 @@ function readSenderIds() {
 // campagne. Conserve la sélection si toujours valide.
 function refreshPreviewAccounts() {
   const ids = readSenderIds();                 // null = tous
-  const pool = ids ? accounts.filter(a => ids.includes(a.id)) : accounts;
+  const pool = ids ? accounts.filter(a => ids.includes(a.id)) : accounts.filter(ownedBy);
   const el = $("#previewAccount");
   const prev = el.value;
   el.innerHTML = `<option value="">(first active account)</option>` +
@@ -566,6 +568,7 @@ function newCampaign() {
   selectedId = null;
   location.hash = "new";
   $("#liSenderMenu").hidden = true;
+  campaignOwner = null;
   $("#saveBtn").textContent = "Create campaign";
   $("#statusZone").innerHTML = "";
   $("#campDot").className = "dot-st";
@@ -708,6 +711,7 @@ async function selectCampaign(id, tab = "seq") {
   autosize($("#infoDesc"));
   $("#descMsg").textContent = "";
   $("#campMsg").textContent = "";
+  campaignOwner = c.owner_ref ?? null;
   renderSenders(c.account_ids);
   renderLiSenders(c);
   refreshPreviewAccounts();

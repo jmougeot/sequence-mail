@@ -1,18 +1,15 @@
 /**
- * Service API: Azerit (the recruiting app) drives here, for its users, each one's LinkedIn account
- * and campaigns. Called on the VPS internal network (http://sequence-app:3000), authenticated by
- * the shared key SERVICE_API_KEY (X-Service-Key header).
+ * Service API: Azerit (the recruiting app) drives here, for its users, their sending accounts and
+ * campaigns. Called on the VPS internal network (http://sequence-app:3000), authenticated by the
+ * shared key SERVICE_API_KEY (X-Service-Key header).
  * Everything is scoped by owner (`owner`, e.g. "azerit:u:12"):
- * - an owner has one current LinkedIn account (the latest active one);
- * - its campaigns (key `external_ref`, e.g. the job) are served only to its accounts — the rule
- *   lives in outreach.ts (ELIGIBLE), not here;
- * - another owner's campaign returns 404, as if it didn't exist.
- * Owners listed in LI_DASHBOARD_OWNERS are the exception: their campaigns are ordinary dashboard
- * campaigns (owner_ref NULL, svc_owner = them), sent from the dashboard's LinkedIn accounts — as
- * many as wanted, chosen by the client at creation (`li_account_ids`), which share the invitations.
- * They may also mix in emails (Gmail accounts of the dashboard, `account_ids`), typically on the
- * "invitation not accepted" branch, add their own LinkedIn accounts to the dashboard and connect
- * Gmail accounts — so the client never has to open the dashboard.
+ * - an owner has its own pool of sending accounts — LinkedIn (li_accounts.owner_ref), one per
+ *   LinkedIn profile, as many as wanted, and Gmail (accounts.owner_ref) — that nobody else sees or
+ *   uses;
+ * - its campaigns (key `external_ref`, e.g. the job) are served only by its accounts — the rules live
+ *   in outreach.ts (ELIGIBLE) and scheduler.ts (pickAccount), not here — among them, those it ticked
+ *   (li_account_ids, account_ids; null = all of them);
+ * - another owner's campaign or account returns 404, as if it didn't exist.
  * Azerit users never see Sequence Mail: Azerit relays.
  */
 import { timingSafeEqual } from "node:crypto";
@@ -20,12 +17,13 @@ import type express from "express";
 import { config } from "../config.js";
 import { db } from "../db.js";
 import { MERGED_EXTRA, importContacts, renderTemplate } from "./contacts.js";
-import { OAUTH_STATE_AZERIT, authUrl } from "./google.js";
+import { authUrl, signOwnerState } from "./google.js";
 import { normalizeLinkedin } from "./linkedin-url.js";
 import {
   accountStatus,
   cancelLinkedInActions,
   createAccount,
+  deleteAccount,
   getAccount,
   listAccounts,
   setProxy,
@@ -55,15 +53,15 @@ function ownerOf(req: express.Request): string | null {
   return OWNER.test(owner) ? owner : null;
 }
 
-/** "Léa Martin (in/lea-martin-42)": the name alone can't tell namesakes apart. */
-const label = (name: string | null, slug: string) => (name ? `${name} (in/${slug})` : `in/${slug}`);
+/** The owner's LinkedIn accounts, oldest first. */
+function ownerLiAccounts(owner: string): LiAccount[] {
+  return listAccounts().filter((a) => a.owner_ref === owner);
+}
 
-/** An owner's current account: the latest active one, else the latest. */
-function ownerAccount(owner: string): LiAccount | undefined {
-  const row = db
-    .prepare("SELECT id FROM li_accounts WHERE owner_ref = ? ORDER BY active DESC, id DESC LIMIT 1")
-    .get(owner) as { id: number } | undefined;
-  return row ? getAccount(row.id) : undefined;
+/** One of the owner's LinkedIn accounts, or nothing (another owner's = unknown). */
+function ownerLiAccount(owner: string, id: unknown): LiAccount | undefined {
+  const a = getAccount(Number(id));
+  return a && a.owner_ref === owner ? a : undefined;
 }
 
 function accountUsed(id: number): boolean {
@@ -77,82 +75,58 @@ function accountUsed(id: number): boolean {
   );
 }
 
-const isDashboardOwner = (owner: string) => config.linkedin.dashboardOwners.includes(owner);
-
-/** Gmail accounts of the dashboard, as a dashboard owner sees them. */
-function emailAccounts() {
+/** The owner's Gmail accounts, as Azerit shows them. */
+function ownerEmailAccounts(owner: string) {
+  const today = new Date().toISOString().slice(0, 10);
   return (
     db
-      .prepare("SELECT id, email, from_name, active, daily_limit, sent_today, sent_today_date FROM accounts ORDER BY email")
-      .all() as Array<{ id: number; email: string; from_name: string | null; active: number; daily_limit: number; sent_today: number; sent_today_date: string | null }>
+      .prepare("SELECT id, email, from_name, active, sent_today, sent_today_date FROM accounts WHERE owner_ref = ? ORDER BY id")
+      .all(owner) as Array<{ id: number; email: string; from_name: string | null; active: number; sent_today: number; sent_today_date: string | null }>
   ).map((a) => ({
     id: a.id,
     email: a.email,
     from_name: a.from_name,
     active: Boolean(a.active),
-    sent_today: a.sent_today_date === new Date().toISOString().slice(0, 10) ? a.sent_today : 0,
+    sent_today: a.sent_today_date === today ? a.sent_today : 0,
   }));
 }
 
-/** Dashboard owner's choice of Gmail accounts: null = all, else existing ids only. */
-function dashboardEmailSenders(ids: unknown): { value: string | null } | { error: string } {
+/** Choice of sending accounts among the owner's own: null = all of them. */
+function ownedIds(ids: unknown, owned: number[], field: string): { value: string | null } | { error: string } {
   if (ids == null) return { value: null };
   if (!Array.isArray(ids) || !ids.length || !ids.every((x) => Number.isInteger(x))) {
-    return { error: "account_ids : liste d'identifiants de comptes Gmail, au moins un" };
+    return { error: `${field} : liste d'identifiants de comptes, au moins un` };
   }
-  const known = new Set(emailAccounts().map((a) => a.id));
-  if (!ids.every((id) => known.has(id as number))) return { error: "account_ids : compte Gmail inconnu" };
-  return { value: JSON.stringify([...new Set(ids as number[])]) };
-}
-
-/** A LinkedIn account of the dashboard (owner_ref NULL), the only ones a dashboard owner may touch. */
-function dashboardLiAccount(id: unknown): LiAccount | undefined {
-  const a = getAccount(Number(id));
-  return a && a.owner_ref == null ? a : undefined;
-}
-
-/** Dashboard owner's choice of sending accounts: null = all the dashboard's, else dashboard ids only. */
-function dashboardSenders(ids: unknown): { value: string | null } | { error: string } {
-  if (ids == null) return { value: null };
-  if (!Array.isArray(ids) || !ids.length || !ids.every((x) => Number.isInteger(x))) {
-    return { error: "li_account_ids : liste d'identifiants de comptes LinkedIn, au moins un" };
-  }
-  const dashboardIds = new Set(listAccounts().filter((a) => a.owner_ref == null).map((a) => a.id));
-  if (!ids.every((id) => dashboardIds.has(id as number))) return { error: "li_account_ids : compte LinkedIn inconnu" };
+  if (!ids.every((id) => owned.includes(id as number))) return { error: `${field} : compte inconnu` };
   return { value: JSON.stringify([...new Set(ids as number[])]) };
 }
 
 interface OwnedCampaign {
   id: number;
   status: string;
-  dashboard: number;
 }
 
-/** The owner's campaign: its own, or the dashboard campaign it created (LI_DASHBOARD_OWNERS). */
 function ownedCampaign(id: unknown, owner: string): OwnedCampaign | undefined {
-  return db
-    .prepare(
-      `SELECT id, status, owner_ref IS NULL AS dashboard FROM campaigns
-       WHERE id = @id AND (owner_ref = @owner OR (owner_ref IS NULL AND svc_owner = @owner))`
-    )
-    .get({ id: Number(id), owner }) as OwnedCampaign | undefined;
+  return db.prepare("SELECT id, status FROM campaigns WHERE id = ? AND owner_ref = ?").get(Number(id), owner) as
+    | OwnedCampaign
+    | undefined;
 }
 
 type SvcStep = { action?: string; body?: string; subject?: string; wait_days?: number; branch?: string };
 type CleanStep = { action: "invite" | "message" | "email"; body: string; subject: string; wait_days: number; branch: string | null };
 
 /**
- * Steps: LinkedIn (invite / message) and, for dashboard owners only, email (subject + body; an empty
- * subject on a later email = reply in the same thread). `branch`: "accepted" / "not_accepted" (see
+ * Steps: LinkedIn (invite / message) and email (subject + body; an empty subject on a later email =
+ * reply in the same thread). `branch`: "accepted" / "not_accepted" (see
  * branches.ts) — the first "accepted" step must be a LinkedIn message (it tests the acceptance).
  */
-function validateSteps(steps: unknown, allowEmail = false): { steps: CleanStep[] } | { error: string } {
+function validateSteps(steps: unknown): { steps: CleanStep[] } | { error: string } {
   if (!Array.isArray(steps) || !steps.length || steps.length > 10) return { error: "steps[] : 1 à 10 étapes" };
   const out: CleanStep[] = [];
   for (const [i, raw] of (steps as SvcStep[]).entries()) {
     const action =
-      raw?.action === "message" ? "message" : raw?.action === "invite" ? "invite" : raw?.action === "email" && allowEmail ? "email" : null;
-    if (!action) return { error: `étape ${i + 1} : action attendue « invite » ou « message »${allowEmail ? " ou « email »" : ""}` };
+      raw?.action === "message" ? "message" : raw?.action === "invite" ? "invite" : raw?.action === "email" ? "email" : null;
+    if (!action) return { error: `étape ${i + 1} : action attendue « invite », « message » ou « email »` };
     const body = typeof raw.body === "string" ? raw.body.trim() : "";
     const subject = action === "email" && typeof raw.subject === "string" ? raw.subject.trim().slice(0, 300) : "";
     if (action !== "invite" && !body) return { error: `étape ${i + 1} : message vide` };
@@ -205,68 +179,47 @@ export function registerServiceRoutes(app: express.Express): void {
     next();
   });
 
-  // --- Owner's LinkedIn account ---
+  // --- Owner's sending accounts ---
 
+  /**
+   * The owner's accounts: `accounts` (LinkedIn, paused ones too — the owner resumes them),
+   * `email_accounts` (Gmail). `account` = the latest active LinkedIn one, for callers that only know
+   * a single account.
+   */
   app.get("/api/svc/li/account", (req, res) => {
     const owner = ownerOf(req)!;
-    // Dashboard owner: what sends is the dashboard's active LinkedIn accounts, not a linked one.
-    if (isDashboardOwner(owner)) {
-      // All of them, paused ones too: the client resumes them from Azerit.
-      const accounts = listAccounts().filter((a) => a.owner_ref == null);
-      return res.json({ account: null, dashboard: { accounts: accounts.map(accountStatus), email_accounts: emailAccounts() } });
-    }
-    const account = ownerAccount(owner);
-    res.json({ account: account ? accountStatus(account) : null });
+    const accounts = ownerLiAccounts(owner);
+    const current = [...accounts].reverse().find((a) => a.active) ?? accounts.at(-1);
+    res.json({
+      account: current ? accountStatus(current) : null,
+      accounts: accounts.map(accountStatus),
+      email_accounts: ownerEmailAccounts(owner),
+    });
   });
 
   /**
    * Session handoff from the extension (via Azerit). The identity read in the browser is required.
-   * A profile other than the account's is refused (409), unless `replace` — the explicit "switch
-   * LinkedIn account" action. An account that already has contacts is then not overwritten: it is
-   * disabled (its contacts stay tied to the old profile) and a new account replaces it.
+   * The profile logged in becomes one of the owner's accounts — or refreshes it, if the owner already
+   * has it: one account per LinkedIn profile, as many profiles as wanted. A paused account stays
+   * paused (the owner resumes it).
    */
   app.post("/api/svc/li/session", (req, res) => {
     const owner = ownerOf(req)!;
-    const b = req.body as { cookies?: unknown; user_agent?: unknown; member?: unknown; owner_name?: unknown; replace?: unknown };
+    const b = req.body as { cookies?: unknown; user_agent?: unknown; member?: unknown };
     const member = parseMember(b.member);
     if (!member) return res.status(400).json({ error: "Profil LinkedIn connecté illisible : ouvrez LinkedIn dans ce navigateur puis réessayez." });
-    const name = (typeof b.owner_name === "string" && b.owner_name.trim()) || member.name || member.slug;
 
-    // Dashboard owner: the profile logged in this browser becomes (or refreshes) a dashboard
-    // account — one per LinkedIn profile, as many profiles as wanted. Its proxy is set from Azerit.
-    if (isDashboardOwner(owner)) {
-      let account = listAccounts().find((a) => a.owner_ref == null && a.member_slug === member.slug);
-      if (!account) account = createAccount(member.name || member.slug).account;
-      const r = storeSession(account.id, b.cookies, b.user_agent, member, "server");
-      if ("error" in r) return res.status(r.code === "other_member" ? 409 : 400).json(r);
-      console.log(`[svc] LinkedIn session received from ${owner} for dashboard account #${account.id} (profile ${member.slug})`);
-      return res.json({ account: accountStatus(getAccount(account.id)!), dashboard: true });
-    }
-
-    let account = ownerAccount(owner);
-    if (account?.member_slug && account.member_slug !== member.slug) {
-      if (!b.replace) {
-        return res.status(409).json({
-          code: "other_member",
-          error: `Ce navigateur est connecté à LinkedIn en tant que « ${label(member.name, member.slug)} », pas « ${label(account.member_name, account.member_slug!)} » (votre compte relié).`,
-          current: accountStatus(account).member,
-          got: member,
-        });
-      }
-      if (accountUsed(account.id)) {
-        updateAccount(account.id, { active: false });
-        account = undefined;
-      } else {
-        db.prepare("UPDATE li_accounts SET member_slug = NULL, member_name = NULL, member_avatar = NULL WHERE id = ?").run(account.id);
-      }
-    }
-    if (!account) account = createAccount(name, owner).account;
+    // An account of this owner whose identity was never read (created before identities): adopted.
+    const accounts = ownerLiAccounts(owner);
+    const account =
+      accounts.find((a) => a.member_slug === member.slug) ??
+      accounts.find((a) => !a.member_slug && !accountUsed(a.id)) ??
+      createAccount(member.name || member.slug, owner).account;
     // Owner whose extension performs the sends itself: the account stays in extension mode, and the
     // extension gets a fresh token for it (the old one stops working) to connect on its own.
     const byExtension = config.linkedin.extensionOwners.includes(owner);
     const r = storeSession(account.id, b.cookies, b.user_agent, member, byExtension ? "extension" : "server");
     if ("error" in r) return res.status(r.code === "other_member" ? 409 : 400).json(r);
-    if (!account.active) updateAccount(account.id, { active: true });
     console.log(`[svc] LinkedIn session received for ${owner} (profile ${member.slug}, account #${account.id})`);
     res.json({
       account: accountStatus(getAccount(account.id)!),
@@ -274,10 +227,9 @@ export function registerServiceRoutes(app: express.Express): void {
     });
   });
 
-  /** Dashboard owner: pauses / resumes a dashboard LinkedIn account, sets its proxy (null = none). */
-  app.patch("/api/svc/li/dashboard-accounts/:id", (req, res) => {
-    if (!isDashboardOwner(ownerOf(req)!)) return res.status(404).json({ error: "Compte introuvable" });
-    const account = dashboardLiAccount(req.params.id);
+  /** Pauses / resumes one of the owner's LinkedIn accounts, sets its proxy (null = none). */
+  app.patch("/api/svc/li/accounts/:id", (req, res) => {
+    const account = ownerLiAccount(ownerOf(req)!, req.params.id);
     if (!account) return res.status(404).json({ error: "Compte introuvable" });
     const b = req.body as { active?: unknown; proxy?: unknown };
     if ("proxy" in b) {
@@ -288,19 +240,41 @@ export function registerServiceRoutes(app: express.Express): void {
     res.json({ account: accountStatus(getAccount(account.id)!) });
   });
 
-  /** Dashboard owner: Google consent link to connect a Gmail account; back to Azerit afterwards. */
-  app.get("/api/svc/google/auth-url", (req, res) => {
-    if (!isDashboardOwner(ownerOf(req)!)) return res.status(404).json({ error: "Introuvable" });
-    if (!config.google.clientId) return res.status(503).json({ error: "Connexion Google non configurée sur Sequence Mail" });
-    res.json({ url: authUrl(OAUTH_STATE_AZERIT) });
+  /** Removes one of the owner's LinkedIn accounts — refused (409) once it has contacts: pause it. */
+  app.delete("/api/svc/li/accounts/:id", (req, res) => {
+    const account = ownerLiAccount(ownerOf(req)!, req.params.id);
+    if (!account) return res.status(404).json({ error: "Compte introuvable" });
+    const r = deleteAccount(account.id);
+    if ("error" in r) return res.status(409).json(r);
+    res.json({ ok: true });
   });
 
+  /** Pauses / resumes all of the owner's LinkedIn accounts. */
   app.patch("/api/svc/li/account", (req, res) => {
-    const account = ownerAccount(ownerOf(req)!);
-    if (!account) return res.status(404).json({ error: "Aucun compte LinkedIn relié" });
+    const accounts = ownerLiAccounts(ownerOf(req)!);
+    if (!accounts.length) return res.status(404).json({ error: "Aucun compte LinkedIn relié" });
     const b = req.body as { active?: unknown };
-    if (typeof b.active === "boolean") updateAccount(account.id, { active: b.active });
-    res.json({ account: accountStatus(getAccount(account.id)!) });
+    if (typeof b.active === "boolean") for (const a of accounts) updateAccount(a.id, { active: b.active });
+    res.json({ accounts: accounts.map((a) => accountStatus(getAccount(a.id)!)) });
+  });
+
+  /** Pauses / resumes one of the owner's Gmail accounts. */
+  app.patch("/api/svc/email-accounts/:id", (req, res) => {
+    const owner = ownerOf(req)!;
+    const found = db.prepare("SELECT id FROM accounts WHERE id = ? AND owner_ref = ?").get(Number(req.params.id), owner);
+    if (!found) return res.status(404).json({ error: "Compte introuvable" });
+    const b = req.body as { active?: unknown };
+    if (typeof b.active === "boolean") db.prepare("UPDATE accounts SET active = ? WHERE id = ?").run(b.active ? 1 : 0, Number(req.params.id));
+    res.json({ email_accounts: ownerEmailAccounts(owner) });
+  });
+
+  /**
+   * Google consent link to connect a Gmail account to this owner: the owner rides in the OAuth
+   * `state`, signed and short-lived (the callback is public), and the person comes back to Azerit.
+   */
+  app.get("/api/svc/google/auth-url", (req, res) => {
+    if (!config.google.clientId) return res.status(503).json({ error: "Connexion Google non configurée sur Sequence Mail" });
+    res.json({ url: authUrl(signOwnerState(ownerOf(req)!)) });
   });
 
   // --- Owner's campaigns ---
@@ -312,38 +286,34 @@ export function registerServiceRoutes(app: express.Express): void {
     const ref = typeof b.external_ref === "string" ? b.external_ref.trim().slice(0, 200) : "";
     const name = typeof b.name === "string" ? b.name.trim().slice(0, 200) : "";
     if (!ref || !name) return res.status(400).json({ error: "external_ref et name requis" });
-    const dashboard = isDashboardOwner(owner);
-    const v = validateSteps(b.steps, dashboard);
+    const v = validateSteps(b.steps);
     if ("error" in v) return res.status(400).json(v);
-    const senders = dashboard && "li_account_ids" in b ? dashboardSenders(b.li_account_ids) : null;
-    if (senders && "error" in senders) return res.status(400).json(senders);
-    const emailSenders = dashboard && "account_ids" in b ? dashboardEmailSenders(b.account_ids) : null;
+    const liSenders = "li_account_ids" in b
+      ? ownedIds(b.li_account_ids, ownerLiAccounts(owner).map((a) => a.id), "li_account_ids")
+      : null;
+    if (liSenders && "error" in liSenders) return res.status(400).json(liSenders);
+    const emailSenders = "account_ids" in b
+      ? ownedIds(b.account_ids, ownerEmailAccounts(owner).map((a) => a.id), "account_ids")
+      : null;
     if (emailSenders && "error" in emailSenders) return res.status(400).json(emailSenders);
     const id = db.transaction(() => {
-      const found = (
-        dashboard
-          ? db.prepare("SELECT id FROM campaigns WHERE owner_ref IS NULL AND svc_owner = ? AND external_ref = ?")
-          : db.prepare("SELECT id FROM campaigns WHERE owner_ref = ? AND external_ref = ?")
-      ).get(owner, ref) as { id: number } | undefined;
+      const found = db.prepare("SELECT id FROM campaigns WHERE owner_ref = ? AND external_ref = ?").get(owner, ref) as
+        | { id: number }
+        | undefined;
       const cid =
         found?.id ??
         Number(
-          (dashboard
-            ? db
-                .prepare("INSERT INTO campaigns (name, status, svc_owner, external_ref) VALUES (?, 'paused', ?, ?)")
-                .run(name, owner, ref)
-            : db
-                .prepare("INSERT INTO campaigns (name, status, owner_ref, external_ref) VALUES (?, 'paused', ?, ?)")
-                .run(name, owner, ref)
-          ).lastInsertRowid
+          db
+            .prepare("INSERT INTO campaigns (name, status, owner_ref, external_ref) VALUES (?, 'paused', ?, ?)")
+            .run(name, owner, ref).lastInsertRowid
         );
       db.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run(name, cid);
-      if (senders) db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(senders.value, cid);
+      if (liSenders) db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(liSenders.value, cid);
       if (emailSenders) db.prepare("UPDATE campaigns SET account_ids = ? WHERE id = ?").run(emailSenders.value, cid);
       replaceSteps(cid, v.steps);
       return cid;
     })();
-    res.json({ id, ...(dashboard ? { dashboard: true } : {}) });
+    res.json({ id });
   });
 
   /**

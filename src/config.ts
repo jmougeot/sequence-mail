@@ -76,15 +76,9 @@ export const config = {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
-    // Owners (e.g. "azerit:u:1") whose campaigns are created as ordinary dashboard campaigns: served
-    // by the dashboard's LinkedIn accounts (owner_ref NULL, as many as wanted, chosen by the client
-    // per campaign). Their own Azerit-linked account is not used.
-    dashboardOwners: (process.env.LI_DASHBOARD_OWNERS ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
   },
-  // Where a Gmail connection started from Azerit returns (e.g. https://app.azerit.tech/settings).
+  // Where a Gmail connection started from Azerit returns (its settings page, e.g.
+  // https://app.azerit.tech/#/settings). Empty: the dashboard's settings page.
   azeritReturnUrl: process.env.AZERIT_RETURN_URL ?? "",
   // Key of the service API (/api/svc) called by Azerit on the VPS internal network. Empty = API
   // disabled.

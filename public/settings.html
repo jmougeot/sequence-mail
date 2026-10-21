@@ -106,7 +106,7 @@ async function refresh() {
   accounts = await api("/api/accounts");
   const today = new Date().toISOString().slice(0, 10);
   $("#accounts tbody").innerHTML = accounts.map(a => `
-    <tr><td>${esc(a.email)}</td>
+    <tr><td>${esc(a.email)}${a.owner_ref ? `<div class="muted" title="Azerit user account: their campaigns only">client ${esc(a.owner_ref)}</div>` : ""}</td>
     <td><input value="${esc(a.from_name)}" placeholder="Jacques M." style="width:150px" onchange="updateAccount(${a.id}, {from_name: this.value})"></td>
     <td><textarea style="min-height:40px; width:240px" placeholder="Best regards,&#10;Jacques" onchange="updateAccount(${a.id}, {signature: this.value})">${esc(a.signature)}</textarea></td>
     <td style="white-space:nowrap">${a.sent_today_date === today ? a.sent_today : 0} / <input type="number" min="0" value="${a.daily_limit}" style="width:70px" onchange="updateAccount(${a.id}, {daily_limit: +this.value})">

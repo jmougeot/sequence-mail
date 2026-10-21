@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { google } from "googleapis";
 import type { Credentials, OAuth2Client } from "google-auth-library";
 import { config, googleRedirectUri } from "../config.js";
@@ -54,8 +55,36 @@ function newOAuthClient(): OAuth2Client {
   );
 }
 
-/** OAuth `state` of a connection started from Azerit: the callback sends the person back there. */
-export const OAUTH_STATE_AZERIT = "azerit";
+/**
+ * OAuth `state` of a connection started from Azerit for one of its users: the owner, an expiry and
+ * an HMAC (key SERVICE_API_KEY) — the callback is public, so the owner must not be forgeable.
+ */
+const STATE_TTL_MS = 30 * 60 * 1000;
+
+function stateMac(payload: string): string {
+  return createHmac("sha256", config.serviceApiKey).update(payload).digest("base64url");
+}
+
+export function signOwnerState(owner: string): string {
+  const payload = Buffer.from(JSON.stringify({ o: owner, e: Date.now() + STATE_TTL_MS })).toString("base64url");
+  return `${payload}.${stateMac(payload)}`;
+}
+
+/** Owner carried by a valid, unexpired state; null otherwise (dashboard connection, forged, stale). */
+export function verifyOwnerState(state: unknown): string | null {
+  if (typeof state !== "string" || !config.serviceApiKey) return null;
+  const [payload, mac] = state.split(".");
+  if (!payload || !mac) return null;
+  const want = Buffer.from(stateMac(payload));
+  const got = Buffer.from(mac);
+  if (want.length !== got.length || !timingSafeEqual(want, got)) return null;
+  try {
+    const { o, e } = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { o?: unknown; e?: unknown };
+    return typeof o === "string" && typeof e === "number" && e > Date.now() ? o : null;
+  } catch {
+    return null;
+  }
+}
 
 export function authUrl(state?: string): string {
   return newOAuthClient().generateAuthUrl({
@@ -111,16 +140,27 @@ async function fetchUserEmail(accessToken: string): Promise<string | undefined> 
   return data.email;
 }
 
-export async function handleOAuthCallback(code: string): Promise<string> {
+/** Thrown when the Gmail already belongs to another owner (or to the dashboard). */
+export class GmailOwnedElsewhere extends Error {}
+
+/**
+ * Stores the Gmail account that just consented, for `owner` (null = the dashboard). An address can
+ * only belong to one owner: reconnecting it from another one is refused rather than moving it (its
+ * threads and quotas would follow).
+ */
+export async function handleOAuthCallback(code: string, owner: string | null = null): Promise<string> {
   const client = newOAuthClient();
   const tokens = await exchangeCodeForTokens(code);
   client.setCredentials(tokens);
   const email = await fetchUserEmail(tokens.access_token!);
   if (!email) throw new Error("Could not read the Google account's email address");
 
-  const existing = db.prepare("SELECT id, oauth_tokens FROM accounts WHERE email = ?").get(email) as
-    | { id: number; oauth_tokens: string }
+  const existing = db.prepare("SELECT id, oauth_tokens, owner_ref FROM accounts WHERE email = ?").get(email) as
+    | { id: number; oauth_tokens: string; owner_ref: string | null }
     | undefined;
+  if (existing && existing.owner_ref !== owner) {
+    throw new GmailOwnedElsewhere(`${email} est déjà relié à un autre compte`);
+  }
   if (existing) {
     // Keep the old refresh_token if Google doesn't return a new one
     const old = JSON.parse(existing.oauth_tokens) as Credentials;
@@ -130,10 +170,11 @@ export async function handleOAuthCallback(code: string): Promise<string> {
       existing.id
     );
   } else {
-    db.prepare("INSERT INTO accounts (email, oauth_tokens, daily_limit) VALUES (?, ?, ?)").run(
+    db.prepare("INSERT INTO accounts (email, oauth_tokens, daily_limit, owner_ref) VALUES (?, ?, ?, ?)").run(
       email,
       JSON.stringify(tokens),
-      config.deliverability.defaultDailyLimit
+      config.deliverability.defaultDailyLimit,
+      owner
     );
   }
   return email;

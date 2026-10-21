@@ -2,7 +2,14 @@ import express from "express";
 import { fileURLToPath } from "node:url";
 import { config, googleRedirectUri } from "./config.js";
 import { db } from "./db.js";
-import { OAUTH_STATE_AZERIT, authUrl, googleCredentialsSource, handleOAuthCallback, saveGoogleCredentials } from "./services/google.js";
+import {
+  GmailOwnedElsewhere,
+  authUrl,
+  googleCredentialsSource,
+  handleOAuthCallback,
+  saveGoogleCredentials,
+  verifyOwnerState,
+} from "./services/google.js";
 import { BUILT_IN_VARIABLES, importContacts, KNOWN_COLUMNS, MERGED_EXTRA, normalizeColumn, parseCsv, renderTemplate, templateVariables } from "./services/contacts.js";
 import { syncFromAttio } from "./services/attio.js";
 import { effectiveDailyLimit, nextEmailEstimate, sendWindowState } from "./services/scheduler.js";
@@ -59,14 +66,17 @@ export function createServer(): express.Express {
   });
 
   app.get("/auth/google/callback", async (req, res) => {
+    // Started from Azerit for one of its users (signed state): the Gmail is that user's, and the
+    // person goes back to Azerit — the dashboard is never shown.
+    const owner = verifyOwnerState(req.query.state);
+    const back = (param: string, value: string) =>
+      res.redirect(`${config.azeritReturnUrl}${config.azeritReturnUrl.includes("?") ? "&" : "?"}${param}=${encodeURIComponent(value)}`);
     try {
-      const email = await handleOAuthCallback(String(req.query.code ?? ""));
-      // Started from Azerit (dashboard owner): back to Azerit, the dashboard is never shown.
-      if (req.query.state === OAUTH_STATE_AZERIT && config.azeritReturnUrl) {
-        return res.redirect(`${config.azeritReturnUrl}${config.azeritReturnUrl.includes("?") ? "&" : "?"}gmail=${encodeURIComponent(email)}`);
-      }
+      const email = await handleOAuthCallback(String(req.query.code ?? ""), owner);
+      if (owner && config.azeritReturnUrl) return back("gmail", email);
       res.redirect(`/settings.html?connected=${encodeURIComponent(email)}`);
     } catch (err) {
+      if (err instanceof GmailOwnedElsewhere && owner && config.azeritReturnUrl) return back("gmail_error", err.message);
       res.status(500).send(`OAuth error: ${err instanceof Error ? err.message : err}`);
     }
   });
@@ -74,7 +84,7 @@ export function createServer(): express.Express {
   app.get("/api/accounts", (_req, res) => {
     const rows = db
       .prepare(
-        "SELECT id, email, from_name, signature, daily_limit, sent_today, sent_today_date, active, warmup, warmup_started_at, created_at FROM accounts ORDER BY email"
+        "SELECT id, email, from_name, signature, daily_limit, sent_today, sent_today_date, active, warmup, warmup_started_at, created_at, owner_ref FROM accounts ORDER BY email"
       )
       .all() as Array<{ daily_limit: number; warmup: number; warmup_started_at: number | null; created_at: number }>;
     res.json(rows.map((r) => ({ ...r, effective_limit: effectiveDailyLimit(r) })));
@@ -355,7 +365,7 @@ export function createServer(): express.Express {
   // Campaign detail with its steps (for editing)
   app.get("/api/campaigns/:id", (req, res) => {
     const campaign = db
-      .prepare("SELECT id, name, description, status, account_ids, li_account_ids FROM campaigns WHERE id = ?")
+      .prepare("SELECT id, name, description, status, account_ids, li_account_ids, owner_ref FROM campaigns WHERE id = ?")
       .get(req.params.id) as { account_ids: string | null; li_account_ids: string | null } | undefined;
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
     const steps = db
