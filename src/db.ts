@@ -364,6 +364,21 @@ addColumnIfMissing("li_accounts", "member_avatar", "member_avatar TEXT");
 addColumnIfMissing("li_accounts", "member_checked_at", "member_checked_at INTEGER");
 // Profile that actually performed the action ("sent from ...").
 addColumnIfMissing("li_actions", "member_slug", "member_slug TEXT");
+// Passing interface failures already retried (button not found, field not recognized...).
+addColumnIfMissing("li_actions", "ui_failures", "ui_failures INTEGER NOT NULL DEFAULT 0");
+// Recent connections read from the account's "Connections" page (sorted by date added): a
+// message whose invite is still unanswered is postponed without opening the profile.
+db.exec(`
+CREATE TABLE IF NOT EXISTS li_connections (
+  li_account_id INTEGER NOT NULL REFERENCES li_accounts(id) ON DELETE CASCADE,
+  slug TEXT NOT NULL,
+  connected_on INTEGER,                  -- day shown by LinkedIn (« Connected on … »)
+  seen_at INTEGER NOT NULL,
+  PRIMARY KEY (li_account_id, slug)
+);
+`);
+addColumnIfMissing("li_accounts", "connections_at", "connections_at INTEGER"); // last read of the list
+addColumnIfMissing("li_accounts", "connections_from", "connections_from INTEGER"); // oldest day that read covered
 // Per-enrollment variables (message written for THIS candidate on THIS job): take
 // precedence over contacts.extra, which is shared across campaigns.
 addColumnIfMissing("campaign_contacts", "vars", "vars TEXT");

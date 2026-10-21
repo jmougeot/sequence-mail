@@ -155,6 +155,8 @@ async function serve(SERVER, tokens) {
         error: r.error,
         member: r.member,
         wrong_account: r.wrong_account,
+        connections: r.connections && r.connections.connections,
+        connections_from: r.connections ? r.connections.connections_from : undefined,
       }),
     });
     return r.ok
@@ -176,9 +178,10 @@ async function serve(SERVER, tokens) {
       replied: verdict.replied,
       reply_text: verdict.reply_text,
     });
-    return verdict.ok
-      ? { kind: "ok", text: "Dernière action : réussie" }
-      : { kind: "err", text: `Échec : ${verdict.error || "inconnu"}` };
+    if (verdict.ok) return { kind: "ok", text: "Dernière action : réussie" };
+    // Invitation pas encore acceptée : le serveur reporte le message, ce n'est pas un échec.
+    if (verdict.retry) return { kind: "wait", text: "Message reporté : invitation pas encore acceptée" };
+    return { kind: "err", text: `Échec : ${verdict.error || "inconnu"}` };
   }
   if (res.wait != null) return { kind: "wait", text: `${res.reason} — reprise dans ~${Math.ceil(res.wait / 60)} min` };
   return { kind: "idle", text: res.reason || "File vide" };
@@ -216,6 +219,11 @@ async function postVerdict(url, auth, body) {
  * déchargerait entre deux actions.
  */
 const WORK_TAB = "workTab";
+// Taille d'un écran d'ordinateur : sans elle Chrome crée la fenêtre en 500×677, et
+// à cette largeur LinkedIn ouvre « Message » en page entière (/messaging/compose/)
+// au lieu de la bulle, page dont la zone de saisie ne s'affiche pas fenêtre réduite.
+// `v` : une fenêtre notée par une version plus ancienne (500 px) est recréée.
+const WORK_WINDOW = { width: 1280, height: 900, v: 2 };
 
 async function ensureTab() {
   // En storage.local (survit au rechargement de l'extension). Après un redémarrage
@@ -224,13 +232,20 @@ async function ensureTab() {
   const { [WORK_TAB]: saved } = await chrome.storage.local.get(WORK_TAB);
   if (saved) {
     const tab = await chrome.tabs.get(saved.tabId).catch(() => null);
-    if (tab && tab.windowId === saved.windowId && (await chrome.tabs.query({ windowId: tab.windowId })).length === 1) return tab;
+    const alone = tab && tab.windowId === saved.windowId && (await chrome.tabs.query({ windowId: tab.windowId })).length === 1;
+    if (alone && saved.v === WORK_WINDOW.v) return tab;
+    if (alone) await chrome.windows.remove(tab.windowId).catch(() => {});
   }
-  const win = await chrome.windows.create({ url: "https://www.linkedin.com/feed/", focused: false });
+  const win = await chrome.windows.create({
+    url: "https://www.linkedin.com/feed/",
+    focused: false,
+    width: WORK_WINDOW.width,
+    height: WORK_WINDOW.height,
+  });
   // macOS ignore state: "minimized" à la création ; la réduction passe par update
   await chrome.windows.update(win.id, { state: "minimized" }).catch(() => {});
   const tab = win.tabs[0];
-  await chrome.storage.local.set({ [WORK_TAB]: { tabId: tab.id, windowId: win.id } });
+  await chrome.storage.local.set({ [WORK_TAB]: { tabId: tab.id, windowId: win.id, v: WORK_WINDOW.v } });
   await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
   if ((await chrome.tabs.get(tab.id)).status !== "complete") await waitForLoad(tab.id);
   return tab;
@@ -296,10 +311,23 @@ async function runInbox(action) {
     await chrome.tabs.update(tab.id, { url: "https://www.linkedin.com/messaging/" });
     await waitForLoad(tab.id);
     await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500));
-    return await sendToTab(tab.id, {
+    const r = await sendToTab(tab.id, {
       type: "li-action",
       action: { type: "list_conversations", limit: action.limit || 40, expect_member: action.expect_member ?? null },
     });
+    // Relations nouées depuis les invitations en attente : le serveur y voit qui a accepté
+    // sans ouvrir chaque profil. Un échec ici ne gâche pas la lecture de la messagerie.
+    if (r.ok && action.connections_since) {
+      await chrome.tabs.update(tab.id, { url: "https://www.linkedin.com/mynetwork/invite-connect/connections/" });
+      await waitForLoad(tab.id);
+      await new Promise((res) => setTimeout(res, 2500 + Math.random() * 2500));
+      const c = await sendToTab(tab.id, {
+        type: "li-action",
+        action: { type: "list_connections", since: action.connections_since, expect_member: action.expect_member ?? null },
+      }).catch(() => null);
+      if (c && c.ok && c.data) r.connections = c.data;
+    }
+    return r;
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   }

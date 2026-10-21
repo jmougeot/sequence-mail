@@ -553,7 +553,9 @@ async function doMessage(text, inThread, guard, meName) {
   }
   // Dans un fil, le champ de saisie est déjà présent — pas de bouton à cliquer.
 
-  const editor = await waitFor(findEditor, 6000);
+  // 12 s : sur la page /messaging/compose/, le champ arrive ~3 s après le clic
+  // dans un onglet visible, plus tard dans une fenêtre réduite.
+  const editor = await waitFor(findEditor, 12000);
   if (!editor) return { ok: false, error: `zone de saisie du message introuvable — ${messageDiagnostic(msgClicked)}` };
 
   if (guard) {
@@ -574,7 +576,23 @@ async function doMessage(text, inThread, guard, meName) {
     send = await waitFor(() => findSendButton(editor), 4000);
   }
   if (!send) return { ok: false, error: "le champ n'a pas été reconnu par LinkedIn (bouton Envoyer resté désactivé après collage et saisie)" };
+  // Le champ doit contenir exactement le message (ni tronqué, ni en double) avant d'envoyer.
+  if (normWords(editor.innerText) !== normWords(text)) {
+    await typeInto(editor, text.trim());
+    send = await waitFor(() => findSendButton(editor), 4000);
+    if (!send || normWords(editor.innerText) !== normWords(text)) {
+      try { document.execCommand("selectAll", false, null); document.execCommand("delete", false, null); } catch {}
+      return { ok: false, error: "texte mal saisi dans le champ (différent du message) — rien envoyé" };
+    }
+  }
   await clickHuman(send);
+  // Parti = LinkedIn vide le champ (ou le retire) et le message apparaît dans le fil.
+  const root = threadRoot(editor);
+  const gone = await waitFor(() => {
+    if (!editor.isConnected || !normWords(editor.innerText)) return true;
+    return threadMessages(root, meName).some((m) => textKey(m.text) === textKey(text));
+  }, 10000);
+  if (!gone) return { ok: false, error: `« Envoyer » cliqué mais le message est resté dans le champ — ${messageDiagnostic(msgClicked)}` };
   await human();
   return { ok: true };
 }
@@ -602,9 +620,11 @@ async function doReadMessages(limit = 25, inThread) {
 
   // Les messages consécutifs d'un même expéditeur sont groupés : le nom
   // n'apparaît que sur le premier — on le propage aux suivants.
-  // Sélecteur unique (les deux ci-dessous matchaient la même ligne = doublons).
-  let events = [...document.querySelectorAll("li.msg-s-event-listitem")];
-  if (!events.length) events = [...document.querySelectorAll(".msg-s-event-listitem, li.msg-s-message-list__event")];
+  // Sélecteur unique : un message matché deux fois sort en double. La classe
+  // était sur le <li> ; depuis octobre 2026 elle est sur un <div> dans
+  // li.msg-s-message-list__event (nom, heure et texte y sont tous).
+  let events = [...document.querySelectorAll(".msg-s-event-listitem")];
+  if (!events.length) events = [...document.querySelectorAll("li.msg-s-message-list__event")];
   const out = [];
   let lastSender = null;
   let lastTime = null;
@@ -671,6 +691,132 @@ async function doListConversations(limit = 15) {
   const trimmed = out.slice(0, limit);
   if (!trimmed.length) return { ok: false, error: "aucune conversation trouvée (sélecteurs à mettre à jour ?)" };
   return { ok: true, data: { conversations: trimmed } };
+}
+
+const MONTHS = {
+  january: 0, february: 1, march: 2, april: 3, may: 4, june: 5, july: 6, august: 7, september: 8, october: 9, november: 10, december: 11,
+  janvier: 0, fevrier: 1, mars: 2, avril: 3, mai: 4, juin: 5, juillet: 6, aout: 7, septembre: 8, octobre: 9, novembre: 10, decembre: 11,
+};
+
+/** « Connected on October 20, 2026 » / « … 20 octobre 2026 » → minuit local (ms), sinon null. */
+function parseConnectedOn(line) {
+  const t = normWords(line);
+  let m = t.match(/([a-z]+) (\d{1,2}), (\d{4})/);
+  if (m && m[1] in MONTHS) return new Date(+m[3], MONTHS[m[1]], +m[2]).getTime();
+  m = t.match(/(\d{1,2})(?:er)? ([a-z]+) (\d{4})/);
+  if (m && m[2] in MONTHS) return new Date(+m[3], MONTHS[m[2]], +m[1]).getTime();
+  return null;
+}
+
+/** Relations affichées : slug → jour de mise en relation (null si la date n'est pas lue).
+ *  La date est la seule ligne « connect… / relation… + année » de la carte : on remonte
+ *  depuis le lien du profil tant que la zone n'en contient pas deux (sinon : carte voisine). */
+function connectionCards() {
+  const main = document.querySelector("main") || document.body;
+  const out = new Map();
+  for (const a of main.querySelectorAll('a[href*="/in/"]')) {
+    const slug = normSlug(a.pathname.split("/")[2] || "");
+    if (!slug || out.has(slug)) continue;
+    let on = null;
+    let n = a;
+    for (let i = 0; i < 8 && n && n !== main; i++, n = n.parentElement) {
+      const lines = (n.innerText || "").split("\n").filter((l) => /connect|relation/i.test(l) && /\d{4}/.test(l));
+      if (lines.length > 1) break;
+      if (lines.length === 1) {
+        on = parseConnectedOn(lines[0]);
+        break;
+      }
+    }
+    out.set(slug, on);
+  }
+  return out;
+}
+
+/** Relations par l'API interne que la page « Relations » appelle elle-même : pages de 40
+ *  triées par ajout récent, heure exacte. Ne dépend ni du défilement ni de l'affichage, qui
+ *  ne se font pas dans une fenêtre réduite (seules les 10 premières cartes y sortaient).
+ *  null si l'API ne répond pas comme prévu : on se rabat alors sur la page. */
+async function connectionsFromApi(since) {
+  const m = document.cookie.match(/(?:^|;\s*)JSESSIONID="?([^";]+)"?/);
+  if (!m) return null;
+  const out = [];
+  for (let start = 0; start < 400; start += 40) {
+    let j;
+    try {
+      const r = await fetch(
+        `${location.origin}/voyager/api/relationships/dash/connections?decorationId=com.linkedin.voyager.dash.deco.web.mynetwork.ConnectionListWithProfile-16&count=40&q=search&sortType=RECENTLY_ADDED&start=${start}`,
+        {
+          credentials: "include",
+          headers: { "csrf-token": m[1], accept: "application/vnd.linkedin.normalized+json+2.1", "x-restli-protocol-version": "2.0.0" },
+        }
+      );
+      if (!r.ok) return null;
+      j = await r.json();
+    } catch {
+      return null;
+    }
+    const inc = j.included || [];
+    const profiles = new Map(inc.filter((x) => x.publicIdentifier).map((p) => [p.entityUrn, p]));
+    const conns = new Map(inc.filter((x) => "createdAt" in x).map((c) => [c.entityUrn, c]));
+    const urns = (j.data && j.data["*elements"]) || [];
+    for (const u of urns) {
+      const c = conns.get(u);
+      const p = c && profiles.get(c.connectedMember || c["*connectedMemberResolutionResult"]);
+      if (!p || typeof c.createdAt !== "number") return null; // format inattendu : on ne s'y fie pas
+      out.push({ slug: normSlug(p.publicIdentifier), connected_on: c.createdAt });
+    }
+    const oldest = out.length ? Math.min(...out.map((c) => c.connected_on)) : null;
+    if (urns.length < 40) return { connections: out, connections_from: 0 }; // liste entière lue
+    if (oldest < since) return { connections: out, connections_from: oldest };
+    await sleep(rand(600, 1400));
+  }
+  return { connections: out, connections_from: out.length ? Math.min(...out.map((c) => c.connected_on)) : null };
+}
+
+/**
+ * Lit la page « Relations » (triée par ajout récent) en descendant jusqu'à `since` (ms) :
+ * le serveur n'a besoin que des relations nouées depuis ses invitations en attente.
+ * `connections_from` = jour le plus ancien que la lecture garantit (0 = liste entière,
+ * null = dates illisibles : le serveur ne s'y fie pas).
+ * ⚠️ ZONE À MAINTENIR : libellés « Connected on … » et défilement de la liste.
+ */
+async function doListConnections(since) {
+  const api = await connectionsFromApi(since);
+  if (api) return { ok: true, data: { ...api, source: "api" } };
+  const ready = await waitFor(() => connectionCards().size > 0, 15000);
+  if (!ready) return { ok: false, error: "liste des relations introuvable (page non chargée ?)" };
+  let cards = connectionCards();
+  const oldest = () => {
+    const d = [...cards.values()].filter((x) => x != null);
+    return d.length ? Math.min(...d) : null;
+  };
+  let stale = 0;
+  for (let i = 0; i < 40 && stale < 3; i++) {
+    const o = oldest();
+    if (o != null && o < since) break;
+    // La liste défile par la page ou par <main> selon le design ; chargement de 10 en 10.
+    for (const el of [document.scrollingElement, ...document.querySelectorAll("main")]) if (el) el.scrollTop = el.scrollHeight;
+    const more = findClickable(/^(show more results|load more|afficher plus de résultats|voir plus de résultats)/i);
+    if (more) more.click();
+    await sleep(rand(1200, 2000));
+    const before = cards.size;
+    cards = connectionCards();
+    stale = cards.size === before ? stale + 1 : 0;
+  }
+  const head = readableText(document.querySelector("main") || document.body).slice(0, 400);
+  const tm = /([\d][\d,.\s ]*)\s+(connections|relations)/i.exec(head);
+  const total = tm ? Number(tm[1].replace(/\D/g, "")) : null;
+  const o = oldest();
+  let from = null;
+  if (![...cards.values()].some((d) => d == null)) {
+    if (o != null && o < since) from = o;
+    else if (total && cards.size >= total) from = 0;
+    else from = o;
+  }
+  return {
+    ok: true,
+    data: { connections: [...cards].map(([slug, on]) => ({ slug, connected_on: on })), connections_from: from, total },
+  };
 }
 
 /**
@@ -1297,6 +1443,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           action.type === "message" ? await doMessage(action.body, inThread, action.guard, member && member.name)
           : action.type === "read_messages" ? await doReadMessages(action.limit, inThread)
           : action.type === "list_conversations" ? await doListConversations(action.limit)
+          : action.type === "list_connections" ? await doListConnections(action.since)
           : action.type === "view_profile" ? await doViewProfile()
           : await doInvite(action.body);
         respond(r);

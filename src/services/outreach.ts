@@ -626,7 +626,87 @@ export type NextResult =
   | { idle: true; reason: string }
   | { wait: number; reason: string };
 
-type ActionRow = { id: number; campaign_contact_id: number; linkedin: string; type: LiActionType; body: string | null };
+type ActionRow = {
+  id: number;
+  campaign_contact_id: number;
+  linkedin: string;
+  type: LiActionType;
+  body: string | null;
+  created_at: number;
+};
+
+// --- Connections list -----------------------------------------------------------
+// A message to a contact who hasn't accepted the invite yet used to cost a profile visit
+// every LI_MESSAGE_RETRY_HOURS just to find out. The executor now reads the account's
+// "Connections" page (sorted by date added) back to the oldest unanswered invite; a contact
+// absent from a fresh read that covers its invite is postponed without opening anything.
+const CONNECTIONS_EVERY_MIN = 90; // the list is re-read at most this often
+const CONNECTIONS_FRESH_MIN = 180; // an older read is not trusted
+
+/** Oldest invite still unanswered among the account's queued messages (ms), else null. */
+function connectionsSince(account: LiAccount): number | null {
+  const r = db
+    .prepare(
+      `SELECT MIN(inv.sent_at) AS t
+       FROM li_actions m
+       JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
+       JOIN li_actions inv ON inv.campaign_contact_id = m.campaign_contact_id AND inv.type = 'invite' AND inv.status = 'sent'
+       WHERE m.type = 'message' AND m.status = 'pending' AND cc.li_accepted IS NULL
+         AND (m.li_account_id = ? OR (m.li_account_id IS NULL AND cc.li_account_id = ?))`
+    )
+    .get(account.id, account.id) as { t: number | null };
+  return r.t;
+}
+
+/** Stores a read of the Connections page. `from` = oldest day the read covered (0 = whole list). */
+export function recordConnections(account: LiAccount, list: unknown, from: unknown): number {
+  if (!Array.isArray(list) || typeof from !== "number" || !Number.isFinite(from)) return 0;
+  const now = Date.now();
+  const upsert = db.prepare(
+    `INSERT INTO li_connections (li_account_id, slug, connected_on, seen_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT (li_account_id, slug) DO UPDATE SET connected_on = excluded.connected_on, seen_at = excluded.seen_at`
+  );
+  let n = 0;
+  db.transaction(() => {
+    for (const c of list.slice(0, 2000) as Array<{ slug?: unknown; connected_on?: unknown }>) {
+      const slug = linkedinSlug(`https://www.linkedin.com/in/${String(c?.slug ?? "")}`);
+      if (!slug) continue;
+      upsert.run(account.id, slug, typeof c.connected_on === "number" ? c.connected_on : null, now);
+      n++;
+    }
+    db.prepare(`UPDATE li_accounts SET connections_at = ?, connections_from = ? WHERE id = ?`).run(now, from, account.id);
+  })();
+  return n;
+}
+
+/** Message whose invite is still unanswered according to a fresh read of the Connections page.
+ *  Any doubt (no fresh read, read not reaching back to the invite, acceptance deadline due)
+ *  → false: the executor goes and checks on the profile as before. */
+function inviteUnanswered(account: LiAccount, row: ActionRow, now: number): boolean {
+  if (row.type !== "message") return false;
+  const acc = db.prepare(`SELECT connections_at, connections_from FROM li_accounts WHERE id = ?`).get(account.id) as {
+    connections_at: number | null;
+    connections_from: number | null;
+  };
+  if (!acc.connections_at || acc.connections_from == null || now - acc.connections_at > CONNECTIONS_FRESH_MIN * 60_000) return false;
+  const cc = db.prepare(`SELECT li_accepted FROM campaign_contacts WHERE id = ?`).get(row.campaign_contact_id) as
+    | { li_accepted: number | null }
+    | undefined;
+  if (!cc || cc.li_accepted != null) return false;
+  const invite = db
+    .prepare(`SELECT MAX(sent_at) AS t FROM li_actions WHERE campaign_contact_id = ? AND type = 'invite' AND status = 'sent'`)
+    .get(row.campaign_contact_id) as { t: number | null };
+  // Days shown by LinkedIn: one day of margin so the read surely predates the invite.
+  if (!invite.t || acc.connections_from > invite.t - DAY_MS) return false;
+  const slug = linkedinSlug(row.linkedin);
+  if (!slug) return false;
+  const ids = sameProfile(account).map((a) => a.id);
+  const listed = db
+    .prepare(`SELECT 1 FROM li_connections WHERE slug = ? AND li_account_id IN (${ids.map(() => "?").join(",")}) LIMIT 1`)
+    .get(slug, ...ids);
+  if (listed) return false;
+  return now < acceptanceDeadline(row.campaign_contact_id, row.created_at).at;
+}
 
 // Actions an account may take: its own, or free ones (contact not bound yet) of a campaign
 // that allows it. Only for active campaigns and contacts still waiting (not stopped, no
@@ -677,7 +757,21 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
       Math.round(now + rand(20, 60) * 1000),
       account.id
     );
-    return { action: { id: 0, linkedin: null, type: "sync_inbox", body: null, limit: 40, expect_member: account.member_slug } };
+    // Connections page too, back to the oldest unanswered invite (minus a day of margin).
+    const since = connectionsSince(account);
+    const seen = db.prepare(`SELECT connections_at FROM li_accounts WHERE id = ?`).get(account.id) as { connections_at: number | null };
+    const readConnections = since != null && now - (seen.connections_at ?? 0) >= CONNECTIONS_EVERY_MIN * 60_000;
+    return {
+      action: {
+        id: 0,
+        linkedin: null,
+        type: "sync_inbox",
+        body: null,
+        limit: 40,
+        expect_member: account.member_slug,
+        ...(readConnections ? { connections_since: since - DAY_MS } : {}),
+      },
+    };
   }
 
   if (!withinWindow(now)) return { wait: Math.ceil((nextWindowOpen(now) - now) / 1000), reason: "Hors plage horaire d'envoi" };
@@ -692,14 +786,24 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   if (!allowed.length) return { wait: untilTomorrow, reason: "Quota du jour atteint" };
 
   // Its own actions first (contacts already engaged), then free ones.
-  const row = db
-    .prepare(
-      `SELECT la.id, la.campaign_contact_id, la.linkedin, la.type, la.body ${ELIGIBLE}
-         AND la.type IN (${allowed.map((t) => `'${t}'`).join(",")})
-         AND (la.not_before IS NULL OR la.not_before <= @now)
-       ORDER BY (la.li_account_id IS NULL), la.id ASC LIMIT 1`
-    )
-    .get({ acc: account.id, owner: account.owner_ref, now }) as ActionRow | undefined;
+  const pick = db.prepare(
+    `SELECT la.id, la.campaign_contact_id, la.linkedin, la.type, la.body, la.created_at ${ELIGIBLE}
+       AND la.type IN (${allowed.map((t) => `'${t}'`).join(",")})
+       AND (la.not_before IS NULL OR la.not_before <= @now)
+     ORDER BY (la.li_account_id IS NULL), la.id ASC LIMIT 1`
+  );
+  let row: ActionRow | undefined;
+  for (let i = 0; i < 50; i++) {
+    row = pick.get({ acc: account.id, owner: account.owner_ref, now }) as ActionRow | undefined;
+    if (!row || !inviteUnanswered(account, row, now)) break;
+    // Not in the account's connections yet: postponed until after the next read, no profile opened.
+    db.prepare(`UPDATE li_actions SET not_before = ?, error = ? WHERE id = ?`).run(
+      Math.round(now + rand(2, 3) * 3600 * 1000),
+      "invitation pas encore acceptée (absent des relations LinkedIn lues) — profil non ouvert",
+      row.id
+    );
+    row = undefined;
+  }
 
   if (!row) {
     const blocked = db.prepare(`SELECT 1 ${ELIGIBLE} LIMIT 1`).get({ acc: account.id, owner: account.owner_ref });
@@ -761,6 +865,10 @@ export function nextForAccounts(accounts: LiAccount[], via: LiMode): NextResult 
 
 const NOT_FOUND = /\(404\)/;
 const CHECKPOINT = /contrôle de sécurité|checkpoint|captcha|challenge/i;
+// Interface failures that a later attempt usually clears (page rendered late, window closed,
+// content script reloaded…): the action is retried instead of failing the contact.
+const TRANSIENT = /introuvable|injoignable|n'a pas été reconnu|mal saisi|resté dans le champ|non rendu|No current window|verdict non transmis/i;
+const MAX_UI_RETRIES = 2;
 
 /** An executor's verdict on a served action. */
 export interface LiVerdict {
@@ -796,7 +904,7 @@ function requeue(id: number, error: string): void {
  */
 export function recordResult(account: LiAccount, id: number, v: LiVerdict): boolean {
   const row = db
-    .prepare(`SELECT id, type, status, campaign_contact_id, step_number, li_account_id, created_at FROM li_actions WHERE id = ?`)
+    .prepare(`SELECT id, type, status, campaign_contact_id, step_number, li_account_id, created_at, ui_failures FROM li_actions WHERE id = ?`)
     .get(id) as
     | {
         id: number;
@@ -806,6 +914,7 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
         step_number: number;
         li_account_id: number | null;
         created_at: number;
+        ui_failures: number;
       }
     | undefined;
   if (!row || row.li_account_id !== account.id) return false;
@@ -891,6 +1000,15 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
   }
 
   const msg = v.error ?? "échec";
+  // Passing interface failure: retried 1-3 h later (the account still pauses), up to
+  // MAX_UI_RETRIES times before the contact is marked failed.
+  if (TRANSIENT.test(msg) && !NOT_FOUND.test(msg) && !CHECKPOINT.test(msg) && row.ui_failures < MAX_UI_RETRIES) {
+    db.prepare(
+      `UPDATE li_actions SET status = 'pending', lease_at = NULL, ui_failures = ui_failures + 1, not_before = ?, error = ? WHERE id = ?`
+    ).run(Math.round(now + (row.ui_failures + 1) * rand(1, 1.5) * 3600 * 1000), `${msg} — nouvel essai prévu`, id);
+    db.prepare(`UPDATE li_accounts SET paused_until = ? WHERE id = ?`).run(now + L.pauseAfterErrorMin * 60_000, account.id);
+    return true;
+  }
   db.prepare(`UPDATE li_actions SET status = 'failed', lease_at = NULL, error = ? WHERE id = ?`).run(msg, id);
   db.prepare(`UPDATE campaign_contacts SET status = 'failed', error = ?, next_send_at = NULL WHERE id = ?`).run(
     `LinkedIn (${account.name}) : ${msg}`,

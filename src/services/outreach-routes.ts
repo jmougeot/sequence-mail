@@ -24,6 +24,7 @@ import {
   outreachStatus,
   parseMember,
   pauseForCheckpoint,
+  recordConnections,
   recordResult,
   resolveAccount,
   rotateToken,
@@ -152,17 +153,21 @@ export function registerOutreachRoutes(app: express.Express): void {
       error?: string;
       member?: unknown;
       wrong_account?: boolean;
+      connections?: unknown; // [{ slug, connected_on }] read from the Connections page
+      connections_from?: unknown; // oldest day that read covered (0 = whole list)
     };
     if (!checkInboxMember(c.account, parseMember(b.member), Boolean(b.wrong_account))) {
       return res.json({ ok: true, processed: false, wrong_account: true });
     }
+    // Independent of the conversation read: kept even if the inbox could not be read.
+    const connections = recordConnections(c.account, b.connections, b.connections_from);
     if (!b.ok || !Array.isArray(b.conversations)) {
       // Failed read: no pause (it isn't a send), unless it's a security check.
       if (/contrôle de sécurité|checkpoint|captcha/i.test(b.error ?? "")) pauseForCheckpoint(c.account, b.error!);
       console.warn(`[linkedin] cannot read the inbox (${c.account.name}): ${b.error ?? "?"}`);
-      return res.json({ ok: true, processed: false });
+      return res.json({ ok: true, processed: false, connections });
     }
-    res.json({ ok: true, ...processInbox(c.account, b.conversations.slice(0, 200)) });
+    res.json({ ok: true, connections, ...processInbox(c.account, b.conversations.slice(0, 200)) });
   });
 
   // The extension hands over its browser's LinkedIn session: the account switches to server mode
