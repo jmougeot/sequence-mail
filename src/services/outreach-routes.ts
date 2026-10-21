@@ -24,6 +24,7 @@ import {
   outreachStatus,
   parseMember,
   pauseForCheckpoint,
+  profileStatus,
   recordConnections,
   recordResult,
   resolveAccount,
@@ -186,7 +187,7 @@ export function registerOutreachRoutes(app: express.Express): void {
   app.get("/api/li/status", (req, res) => {
     if (!req.get(ACCOUNT_HEADER) && !req.get(RUNNER_HEADER)) return res.json(outreachStatus());
     const c = caller(req, res);
-    if (c) res.json(accountStatus(c.account));
+    if (c) res.json(profileStatus(c.account));
   });
 
   // With a token: (de)activates this account. Without: master switch.

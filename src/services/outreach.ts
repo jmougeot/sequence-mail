@@ -1151,6 +1151,28 @@ export function accountStatus(a: LiAccount) {
 }
 
 /**
+ * Extension popup: the account's status with today's counts, caps and queue of its whole
+ * LinkedIn profile (Sequence Mail and Azerit accounts sharing it), as the caps apply to it.
+ */
+export function profileStatus(a: LiAccount) {
+  const profile = sameProfile(a);
+  const ids = profile.map((p) => p.id);
+  const inIds = ids.map(() => "?").join(",");
+  const today = (t: LiActionType) => ({ sent: sentToday(ids, t), cap: Math.min(...profile.map((p) => dailyCap(p, t))) });
+  const invite = today("invite");
+  const message = today("message");
+  return {
+    ...accountStatus(a),
+    today: { invite, message },
+    queue: {
+      pending: count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id IN (${inIds}) AND status = 'pending'`, ...ids),
+      sent: invite.sent + message.sent,
+      failed: count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id IN (${inIds}) AND status = 'failed'`, ...ids),
+    },
+  };
+}
+
+/**
  * Global status (dashboard): totals across accounts + per-account detail. Top-level
  * fields keep their pre-multi-account shape (popup, MCP).
  */
