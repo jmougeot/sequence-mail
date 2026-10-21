@@ -442,6 +442,38 @@ function withinWindow(ts: number): boolean {
   return d.getHours() >= L.hourStart && d.getHours() < L.hourEnd;
 }
 
+// Invites: no start hour, until L.inviteUntil in the email window's time zone.
+const inviteZone = new Intl.DateTimeFormat("en-US", {
+  timeZone: config.deliverability.sendWindowTimezone, hourCycle: "h23", weekday: "short", hour: "numeric", minute: "numeric",
+});
+const INVITE_UNTIL_MIN = (([h, m]) => h * 60 + (m || 0))(L.inviteUntil.split(":").map(Number));
+
+function withinInviteWindow(ts: number): boolean {
+  const p: Record<string, string> = {};
+  for (const part of inviteZone.formatToParts(ts)) p[part.type] = part.value;
+  if (L.workdaysOnly && (p.weekday === "Sat" || p.weekday === "Sun")) return false;
+  return Number(p.hour) * 60 + Number(p.minute) < INVITE_UNTIL_MIN;
+}
+
+/** Next instant the invite window opens (midnight of an allowed day, in its time zone). */
+function nextInviteOpen(ts: number): number {
+  // Every UTC offset in use is a multiple of 15 min: midnight falls on a quarter hour.
+  const step = 15 * 60_000;
+  for (let t = Math.ceil((ts + 1) / step) * step; t < ts + 8 * DAY_MS; t += step) {
+    if (withinInviteWindow(t)) return t;
+  }
+  return ts + DAY_MS;
+}
+
+/** Action types whose hours allow them at `ts`: messages in LI_HOUR_*, invites until LI_INVITE_UNTIL. */
+function openTypes(ts: number): LiActionType[] {
+  return (["invite", "message"] as LiActionType[]).filter((t) => (t === "invite" ? withinInviteWindow(ts) : withinWindow(ts)));
+}
+
+function nextOpen(type: LiActionType, ts: number): number {
+  return type === "invite" ? nextInviteOpen(ts) : nextWindowOpen(ts);
+}
+
 /** Inbox reads: wider hours, weekends included (reading is not sending). */
 function withinInboxWindow(ts: number): boolean {
   const w = runnerWindow();
@@ -774,16 +806,19 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
     };
   }
 
-  if (!withinWindow(now)) return { wait: Math.ceil((nextWindowOpen(now) - now) / 1000), reason: "Hors plage horaire d'envoi" };
+  const types: LiActionType[] = ["invite", "message"];
+  const open = openTypes(now);
+  const untilOpen = (ts: LiActionType[]) => Math.ceil((Math.min(...ts.map((t) => nextOpen(t, now))) - now) / 1000);
+  if (!open.length) return { wait: untilOpen(types), reason: "Hors plage horaire d'envoi" };
   const nextAllowed = Math.max(...profile.map((a) => a.next_allowed_at ?? 0));
   if (nextAllowed > now) return { wait: Math.ceil((nextAllowed - now) / 1000), reason: "Délai entre deux actions" };
 
   const ids = profile.map((a) => a.id);
-  const allowed = (["invite", "message"] as LiActionType[]).filter(
-    (t) => sentToday(ids, t) < Math.min(...profile.map((a) => dailyCap(a, t)))
-  );
+  const underCap = types.filter((t) => sentToday(ids, t) < Math.min(...profile.map((a) => dailyCap(a, t))));
   const untilTomorrow = Math.ceil((startOfLocalDay(now) + DAY_MS - now) / 1000);
-  if (!allowed.length) return { wait: untilTomorrow, reason: "Quota du jour atteint" };
+  if (!underCap.length) return { wait: untilTomorrow, reason: "Quota du jour atteint" };
+  const allowed = underCap.filter((t) => open.includes(t));
+  if (!allowed.length) return { wait: untilOpen(underCap), reason: "Hors plage horaire d'envoi" };
 
   // Its own actions first (contacts already engaged), then free ones.
   const pick = db.prepare(
@@ -1079,7 +1114,7 @@ export function accountStatus(a: LiAccount) {
     has_proxy: Boolean(a.has_proxy),
     last_inbox_at: a.last_inbox_at,
     watching: watchedCount(a.id),
-    within_window: withinWindow(now),
+    within_window: openTypes(now).length > 0,
     paused_until: (a.paused_until ?? 0) > now ? a.paused_until : null,
     next_allowed_at: (a.next_allowed_at ?? 0) > now ? a.next_allowed_at : null,
     invites_per_day: a.invites_per_day ?? L.invitesPerDay,
@@ -1113,7 +1148,7 @@ export function outreachStatus() {
     enabled,
     connected: accounts.some((a) => a.connected),
     last_seen_at: lastSeen || null,
-    within_window: withinWindow(now),
+    within_window: openTypes(now).length > 0,
     server_mode_ready: Boolean(L.secretKey && L.runnerSecret),
     today: {
       invite: { sent: sum((a) => a.today.invite.sent), cap: sum((a) => (a.active ? a.today.invite.cap : 0)) },
