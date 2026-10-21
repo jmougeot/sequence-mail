@@ -9,8 +9,7 @@
  * - another owner's campaign returns 404, as if it didn't exist.
  * Owners listed in LI_DASHBOARD_OWNERS are the exception: their campaigns are ordinary dashboard
  * campaigns (owner_ref NULL, svc_owner = them), sent from the dashboard's LinkedIn accounts — as
- * many as wanted, chosen per campaign — and their candidates wait ("held") until launched from the
- * dashboard.
+ * many as wanted, chosen by the client at creation (`li_account_ids`), which share the invitations.
  * Azerit users never see Sequence Mail: Azerit relays.
  */
 import { timingSafeEqual } from "node:crypto";
@@ -75,8 +74,16 @@ function accountUsed(id: number): boolean {
 
 const isDashboardOwner = (owner: string) => config.linkedin.dashboardOwners.includes(owner);
 
-/** Where the campaign is launched and its LinkedIn accounts chosen (dashboard owners). */
-const campaignUrl = (id: number) => `${config.baseUrl.replace(/\/+$/, "")}/campaigns.html#${id}`;
+/** Dashboard owner's choice of sending accounts: null = all the dashboard's, else dashboard ids only. */
+function dashboardSenders(ids: unknown): { value: string | null } | { error: string } {
+  if (ids == null) return { value: null };
+  if (!Array.isArray(ids) || !ids.length || !ids.every((x) => Number.isInteger(x))) {
+    return { error: "li_account_ids : liste d'identifiants de comptes LinkedIn, au moins un" };
+  }
+  const dashboardIds = new Set(listAccounts().filter((a) => a.owner_ref == null).map((a) => a.id));
+  if (!ids.every((id) => dashboardIds.has(id as number))) return { error: "li_account_ids : compte LinkedIn inconnu" };
+  return { value: JSON.stringify([...new Set(ids as number[])]) };
+}
 
 interface OwnedCampaign {
   id: number;
@@ -151,7 +158,7 @@ export function registerServiceRoutes(app: express.Express): void {
     // Dashboard owner: what sends is the dashboard's active LinkedIn accounts, not a linked one.
     if (isDashboardOwner(owner)) {
       const accounts = listAccounts().filter((a) => a.owner_ref == null && a.active);
-      return res.json({ account: null, dashboard: { accounts: accounts.map(accountStatus), url: config.baseUrl } });
+      return res.json({ account: null, dashboard: { accounts: accounts.map(accountStatus) } });
     }
     const account = ownerAccount(owner);
     res.json({ account: account ? accountStatus(account) : null });
@@ -214,13 +221,15 @@ export function registerServiceRoutes(app: express.Express): void {
   /** Creates or updates campaign `external_ref` (steps replaced, contacts' progress kept). */
   app.post("/api/svc/campaigns", (req, res) => {
     const owner = ownerOf(req)!;
-    const b = req.body as { external_ref?: unknown; name?: unknown; steps?: unknown };
+    const b = req.body as { external_ref?: unknown; name?: unknown; steps?: unknown; li_account_ids?: unknown };
     const ref = typeof b.external_ref === "string" ? b.external_ref.trim().slice(0, 200) : "";
     const name = typeof b.name === "string" ? b.name.trim().slice(0, 200) : "";
     if (!ref || !name) return res.status(400).json({ error: "external_ref et name requis" });
     const v = validateSteps(b.steps);
     if ("error" in v) return res.status(400).json(v);
     const dashboard = isDashboardOwner(owner);
+    const senders = dashboard && "li_account_ids" in b ? dashboardSenders(b.li_account_ids) : null;
+    if (senders && "error" in senders) return res.status(400).json(senders);
     const id = db.transaction(() => {
       const found = (
         dashboard
@@ -240,17 +249,17 @@ export function registerServiceRoutes(app: express.Express): void {
           ).lastInsertRowid
         );
       db.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run(name, cid);
+      if (senders) db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(senders.value, cid);
       replaceSteps(cid, v.steps);
       return cid;
     })();
-    res.json({ id, ...(dashboard ? { dashboard: true, url: campaignUrl(id) } : {}) });
+    res.json({ id, ...(dashboard ? { dashboard: true } : {}) });
   });
 
   /**
    * Enrolls and launches candidates: [{ key, first_name, last_name, company, linkedin, email?,
    * vars? }]. `vars` (e.g. the message written for this candidate) stays specific to this
-   * enrollment. An already launched candidate isn't relaunched. Dashboard campaign: candidates are
-   * only added ("held"), launched later from the dashboard.
+   * enrollment. An already launched candidate isn't relaunched.
    */
   app.post("/api/svc/campaigns/:id/enroll", async (req, res) => {
     const owner = ownerOf(req)!;
@@ -303,10 +312,6 @@ export function registerServiceRoutes(app: express.Express): void {
           }
           if (cc.status === "held") {
             setMeta.run(vars ? JSON.stringify(vars) : null, key, cc.id);
-            if (campaign.dashboard) {
-              results.push({ key, cc_id: cc.id, status: "held" });
-              return;
-            }
             launch.run(cc.id);
             results.push({ key, cc_id: cc.id, status: "pending" });
           } else {
@@ -396,7 +401,7 @@ export function registerServiceRoutes(app: express.Express): void {
     for (const { cc_id, ...a } of actions) byCc.set(cc_id, [...(byCc.get(cc_id) ?? []), a]);
     const steps = (db.prepare("SELECT COUNT(*) AS n FROM steps WHERE campaign_id = ?").get(campaign.id) as { n: number }).n;
     res.json({
-      campaign: { id: campaign.id, status: campaign.status, steps, ...(campaign.dashboard ? { url: campaignUrl(campaign.id) } : {}) },
+      campaign: { id: campaign.id, status: campaign.status, steps },
       contacts: contacts.map((c) => ({ ...c, actions: byCc.get(c.cc_id) ?? [] })),
     });
   });
