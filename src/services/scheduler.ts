@@ -607,13 +607,13 @@ export async function sendTick(): Promise<void> {
   const now = Date.now();
 
   const linkedinDue = db
-    .prepare(`${DUE_SELECT} AND ${NOT_EMAIL_WORK} ORDER BY COALESCE(cc.next_send_at, 0) ASC, cc.id ASC LIMIT 200`)
+    .prepare(`${DUE_SELECT} AND ${NOT_EMAIL_WORK} ORDER BY cp.priority DESC, COALESCE(cc.next_send_at, 0) ASC, cc.id ASC LIMIT 200`)
     .all({ now }) as DueRow[];
   for (const row of linkedinDue) await processOne(row);
 
   if (!inSendWindow()) return;
   const due = db
-    .prepare(`${DUE_SELECT} AND NOT ${NOT_EMAIL_WORK} ORDER BY COALESCE(cc.next_send_at, 0) ASC LIMIT 5`)
+    .prepare(`${DUE_SELECT} AND NOT ${NOT_EMAIL_WORK} ORDER BY cp.priority DESC, COALESCE(cc.next_send_at, 0) ASC LIMIT 5`)
     .all({ now }) as DueRow[];
 
   for (const row of due) {

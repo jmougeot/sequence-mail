@@ -907,7 +907,7 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   const allowed = underCap.filter((t) => open.includes(t));
   if (!allowed.length) return { wait: untilOpen(underCap), reason: "Hors plage horaire d'envoi" };
 
-  // Its own actions first (contacts already engaged), then free ones.
+  // Priority campaigns first; then its own actions (contacts already engaged), then free ones.
   const pick = db.prepare(
     `SELECT la.id, la.campaign_contact_id, la.linkedin, la.type, la.body, la.created_at ${ELIGIBLE}
        AND la.type IN (${allowed.map((t) => `'${t}'`).join(",")})
@@ -915,7 +915,7 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
        AND NOT (la.type = 'message' AND EXISTS (
          SELECT 1 FROM li_actions inv WHERE inv.campaign_contact_id = la.campaign_contact_id AND inv.type = 'invite'
            AND (inv.status IN ('pending', 'sending') OR (inv.status = 'sent' AND inv.sent_at > @now - ${ACCEPT_CHECK_MS}))))
-     ORDER BY (la.li_account_id IS NULL), la.id ASC LIMIT 1`
+     ORDER BY cp.priority DESC, (la.li_account_id IS NULL), la.id ASC LIMIT 1`
   );
   let row: ActionRow | undefined;
   for (let i = 0; i < 50; i++) {

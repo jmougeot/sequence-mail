@@ -161,6 +161,9 @@ textarea { min-height:90px; }
 @media (max-width: 760px) { .split { grid-template-columns:1fr; } }
 .icon-btn { display:inline-flex; align-items:center; justify-content:center; background:transparent; border:none; color:var(--muted); cursor:pointer; font-size:14px; padding:4px 9px; border-radius:6px; }
 .icon-btn:hover { background:var(--hover); color:var(--text); }
+.icon-btn.prio.on, .icon-btn.prio.on:hover { color:var(--accent); }
+.icon-btn.prio.on svg, .prio-ic svg { fill:currentColor; }
+.prio-ic { display:inline-flex; margin-left:auto; color:var(--accent); }
 button.icon-btn.danger { border:none; background:transparent; color:var(--muted); }
 button.icon-btn.danger:hover { color:var(--bad); background:var(--bad-bg); }
 

@@ -133,6 +133,10 @@ const updateShape = {
   campaign_id: z.number().int().describe("Campaign id."),
   name: z.string().min(1).optional().describe("New name. Omitted = unchanged."),
   description: z.string().optional().describe(`${DESCRIPTION} Replaces the current one; empty string = clear it; omitted = unchanged.`),
+  priority: z
+    .boolean()
+    .optional()
+    .describe("true = priority campaign: its LinkedIn actions and due emails go before other campaigns' in the send queues (daily quotas). Omitted = unchanged."),
   steps: z
     .array(stepSchema)
     .min(1)
@@ -353,7 +357,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Update a campaign",
       description:
-        "Updates a campaign, even while running: only provided fields change (name, description, sending accounts, LinkedIn accounts, sequence). steps, if given, replaces the WHOLE sequence; to change one step's text, delay or channel, prefer update_step. Contacts keep their progress; upcoming sends use the new content. A step with with_previous goes NOW for contacts already past the previous step (sent_now = how many): approval first, as for a launch.",
+        "Updates a campaign, even while running: only provided fields change (name, description, priority, sending accounts, LinkedIn accounts, sequence). steps, if given, replaces the WHOLE sequence; to change one step's text, delay or channel, prefer update_step. Contacts keep their progress; upcoming sends use the new content. A step with with_previous goes NOW for contacts already past the previous step (sent_now = how many): approval first, as for a launch.",
       inputSchema: updateShape,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },

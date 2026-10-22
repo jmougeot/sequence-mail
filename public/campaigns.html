@@ -147,7 +147,7 @@ async function loadList() {
   $("#campTitle").textContent = current ? current.name : "New campaign";
   $("#campList").innerHTML =
     campaigns.filter(c => c.status !== "archived" || c.id === selectedId)
-      .map(c => `<button type="button" class="${c.id === selectedId ? "cur" : ""}" onclick="$('#campList').hidden = true; selectCampaign(${c.id})"><i class="dot-st ${esc(c.status)}"></i>${esc(c.name)}</button>`).join("") +
+      .map(c => `<button type="button" class="${c.id === selectedId ? "cur" : ""}" onclick="$('#campList').hidden = true; selectCampaign(${c.id})"><i class="dot-st ${esc(c.status)}"></i>${esc(c.name)}${c.priority ? `<span class="prio-ic" title="Priority">${ico("flag")}</span>` : ""}</button>`).join("") +
     `<button type="button" class="new" onclick="$('#campList').hidden = true; newCampaign()">+ New campaign</button>`;
   return campaigns;
 }
@@ -170,6 +170,7 @@ const ICONS = {
   eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
   x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
+  flag: '<path d="M4 22V4a1 1 0 0 1 .4-.8A6 6 0 0 1 8 2c3 0 5 2 7.333 2q2 0 3.067-.8A1 1 0 0 1 20 4v10a1 1 0 0 1-.4.8A6 6 0 0 1 16 16c-3 0-5-2-8-2a6 6 0 0 0-4 1.528"/>',
 };
 const ico = name => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
 
@@ -706,7 +707,8 @@ function renderStatusZone(c) {
       : `<button onclick="toggleStatus(${c.id}, '${c.status}')">Launch</button>`;
   $("#campDot").className = `dot-st ${c.status}`;
   $("#campDot").title = STATUS_LABELS[c.status] || c.status;
-  $("#statusZone").innerHTML = `${main}
+  $("#statusZone").innerHTML = `<button class="icon-btn prio ${c.priority ? "on" : ""}" title="${c.priority ? "Priority: sent before other campaigns. Click to remove" : "Make priority: sent before other campaigns"}" onclick="setPriority(${c.id}, ${!c.priority})">${ico("flag")}</button>
+    ${main}
     <span class="menu">
       <button class="icon-btn" title="More actions" onclick="toggleMenu(event)">⋯</button>
       <span class="menu-list" hidden>
@@ -767,6 +769,13 @@ async function selectCampaign(id, tab = "seq") {
 
 async function toggleStatus(id, status) {
   await api(`/api/campaigns/${id}/${status === "active" ? "pause" : "resume"}`, { method: "POST" });
+  const c = await api(`/api/campaigns/${id}`);
+  renderStatusZone(c);
+  loadList();
+}
+
+async function setPriority(id, priority) {
+  await api(`/api/campaigns/${id}`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ priority }) });
   const c = await api(`/api/campaigns/${id}`);
   renderStatusZone(c);
   loadList();

@@ -326,7 +326,7 @@ export function createServer(): express.Express {
   app.get("/api/campaigns", (_req, res) => {
     const campaigns = db
       .prepare(
-        `SELECT cp.id, cp.name, cp.description, cp.status, cp.created_at,
+        `SELECT cp.id, cp.name, cp.description, cp.status, cp.priority, cp.created_at,
            (SELECT COUNT(*) FROM steps s WHERE s.campaign_id = cp.id) AS steps,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id) AS contacts,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'held') AS held,
@@ -385,7 +385,7 @@ export function createServer(): express.Express {
   // Campaign detail with its steps (for editing)
   app.get("/api/campaigns/:id", (req, res) => {
     const campaign = db
-      .prepare("SELECT id, name, description, status, account_ids, li_account_ids, owner_ref FROM campaigns WHERE id = ?")
+      .prepare("SELECT id, name, description, status, priority, account_ids, li_account_ids, owner_ref FROM campaigns WHERE id = ?")
       .get(req.params.id) as { account_ids: string | null; li_account_ids: string | null } | undefined;
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
     const steps = db
@@ -463,10 +463,14 @@ export function createServer(): express.Express {
     const body = (req.body ?? {}) as {
       name?: unknown;
       description?: unknown;
+      priority?: unknown;
       steps?: StepInput[];
       account_ids?: number[] | null;
       li_account_ids?: number[] | null;
     };
+    if (body.priority !== undefined && typeof body.priority !== "boolean") {
+      return res.status(400).json({ error: "priority must be a boolean" });
+    }
     if (body.name !== undefined && (typeof body.name !== "string" || !body.name.trim())) {
       return res.status(400).json({ error: "name cannot be empty" });
     }
@@ -481,12 +485,13 @@ export function createServer(): express.Express {
     if (liSenders && "error" in liSenders) return res.status(400).json({ error: liSenders.error });
     const desc = "description" in body ? normalizeDescription(body.description) : null;
     if (desc && "error" in desc) return res.status(400).json({ error: desc.error });
-    if (body.name === undefined && body.steps === undefined && !senders && !liSenders && !desc) {
+    if (body.name === undefined && body.steps === undefined && body.priority === undefined && !senders && !liSenders && !desc) {
       return res.status(400).json({ error: "No field to update" });
     }
     db.transaction(() => {
       db.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run(name, campaign.id);
       if (desc) db.prepare("UPDATE campaigns SET description = ? WHERE id = ?").run(desc.value, campaign.id);
+      if (body.priority !== undefined) db.prepare("UPDATE campaigns SET priority = ? WHERE id = ?").run(body.priority ? 1 : 0, campaign.id);
       if (senders) db.prepare("UPDATE campaigns SET account_ids = ? WHERE id = ?").run(senders.value, campaign.id);
       if (liSenders) db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(liSenders.value, campaign.id);
       if (body.steps !== undefined) {

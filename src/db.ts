@@ -411,6 +411,9 @@ addColumnIfMissing("li_actions", "detached", "detached INTEGER NOT NULL DEFAULT 
 // agents (MCP) before adding contacts or editing the sequence.
 addColumnIfMissing("campaigns", "description", "description TEXT");
 
+// Priority campaign: its contacts go first in the send queues (LinkedIn actions, due emails).
+addColumnIfMissing("campaigns", "priority", "priority INTEGER NOT NULL DEFAULT 0");
+
 // Instruction for a personalization variable ({{personnalisation}}…): meaning, content, length, tone.
 // One per variable name, shared by all campaigns; read by the agent (MCP) that fills it for contacts.
 db.exec("CREATE TABLE IF NOT EXISTS variable_instructions (name TEXT PRIMARY KEY, instruction TEXT NOT NULL)");
