@@ -939,14 +939,23 @@ async function copyStepMsg(i) {
 }
 
 // --- Champs du contact (standards + colonnes CSV personnalisées) ---
+// Puis les variables propres à CETTE campagne (campaign_contacts.vars, ex. {{perso}} écrit par
+// Azerit) : elles priment sur les champs du contact à l'envoi, et ne valent que pour elle.
 function renderContactFields(contact) {
-  let extra = {};
+  let extra = {}, vars = {};
   try { extra = contact.extra ? JSON.parse(contact.extra) : {}; } catch {}
+  try { vars = contact.vars ? JSON.parse(contact.vars) : {}; } catch {}
   const row = (attr, key, val) => `
     <div class="field-row">
       <span class="muted" title="{{${esc(key)}}}">${esc(key)}</span>
       <input ${attr}="${esc(key)}" value="${esc(val ?? "")}">
     </div>`;
+  const varRow = (key, val) => `
+    <div class="field-row field-row--var">
+      <span class="muted" title="{{${esc(key)}}}">${esc(key)}</span>
+      <textarea data-var="${esc(key)}" rows="${String(val ?? "").length > 60 ? 3 : 1}">${esc(val ?? "")}</textarea>
+    </div>`;
+  const varEntries = Object.entries(vars);
   $("#contactFieldsBody").innerHTML =
     row("data-field", "first_name", contact.first_name) +
     row("data-field", "last_name", contact.last_name) +
@@ -956,7 +965,10 @@ function renderContactFields(contact) {
     <div class="field-row">
       <input id="newFieldName" placeholder="new_field" style="flex:0 0 110px">
       <input id="newFieldValue" placeholder="value">
-    </div>
+    </div>` +
+    (varEntries.length ? `
+    <div class="muted fields-sub">This campaign only — overrides the contact's fields</div>` +
+      varEntries.map(([k, v]) => varRow(k, v)).join("") : "") + `
     <button class="ghost" onclick="saveContactFields()" style="width:100%;margin-top:4px">Save fields</button>`;
 }
 
@@ -968,8 +980,18 @@ async function saveContactFields() {
   $$("#contactFieldsBody [data-extra]").forEach(i => body.extra[i.getAttribute("data-extra")] = i.value);
   const nk = $("#newFieldName").value.trim(), nv = $("#newFieldValue").value;
   if (nk) body.extra[nk] = nv;
+  // variables de campagne : seulement celles qui ont changé
+  let before = {};
+  try { before = c.vars ? JSON.parse(c.vars) : {}; } catch {}
+  const vars = {};
+  $$("#contactFieldsBody [data-var]").forEach(i => {
+    const k = i.getAttribute("data-var");
+    if (i.value !== (before[k] ?? "")) vars[k] = i.value;
+  });
   try {
     await api(`/api/contacts/${c.contact_id}`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    if (Object.keys(vars).length)
+      await api(`/api/campaign-contacts/${c.cc_id}/vars`, { method: "PATCH", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ vars }) });
     notify("Fields saved — preview updated");
     await loadContacts();
     const updated = contactRows.find(r => r.contact_id === c.contact_id);

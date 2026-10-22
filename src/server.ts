@@ -14,7 +14,7 @@ import { BUILT_IN_VARIABLES, importContacts, KNOWN_COLUMNS, MERGED_EXTRA, normal
 import { syncFromAttio } from "./services/attio.js";
 import { effectiveDailyLimit, nextEmailEstimate, sendWindowState } from "./services/scheduler.js";
 import { registerOutreachRoutes } from "./services/outreach-routes.js";
-import { registerServiceRoutes } from "./services/service-routes.js";
+import { registerServiceRoutes, setEnrollmentVars } from "./services/service-routes.js";
 import { BRANCHES, type Branch } from "./services/branches.js";
 import { cancelLinkedInActions } from "./services/outreach.js";
 import { optOutFromCampaignOf } from "./services/opt-out.js";
@@ -779,6 +779,28 @@ export function createServer(): express.Express {
       req.params.id
     );
     res.json({ ok: true });
+  });
+
+  // --- Update one enrollment's campaign variables (campaign_contacts.vars) ---
+  // The values this campaign gives a contact, e.g. the personal line Azerit writes ({{perso}}):
+  // merged, an empty value removes the variable, a queued LinkedIn message is re-rendered.
+  app.patch("/api/campaign-contacts/:ccId/vars", (req, res) => {
+    const cc = db.prepare("SELECT id, campaign_id FROM campaign_contacts WHERE id = ?").get(req.params.ccId) as
+      | { id: number; campaign_id: number }
+      | undefined;
+    if (!cc) return res.status(404).json({ error: "Enrollment not found" });
+    const vars = (req.body as { vars?: unknown }).vars;
+    if (!vars || typeof vars !== "object") return res.status(400).json({ error: "vars required" });
+    const patch: Record<string, string | null> = {};
+    for (const [k, v] of Object.entries(vars as Record<string, unknown>)) {
+      const key = k.trim();
+      if (!/^[\p{L}\p{N}_]{1,40}$/u.test(key)) {
+        return res.status(400).json({ error: `Invalid variable name: "${k}" (letters, digits and _ only)` });
+      }
+      patch[key] = String(v ?? "").trim() === "" ? null : String(v).slice(0, 8000);
+    }
+    if (!Object.keys(patch).length) return res.json({ ok: true, requeued: 0 });
+    res.json({ ok: true, requeued: setEnrollmentVars(cc.campaign_id, cc.id, patch) });
   });
 
   // --- Delete a campaign (steps, enrollments and history cascade) ---

@@ -176,6 +176,9 @@ button.icon-btn.danger:hover { color:var(--bad); background:var(--bad-bg); }
 .field-row { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
 .field-row > .muted { flex:0 0 110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace, monospace; }
 .field-row input { margin:0; }
+.field-row--var { align-items:flex-start; }
+.field-row textarea { margin:0; width:100%; resize:vertical; font:inherit; }
+.fields-sub { margin:10px 0 4px; font-size:12px; }
 .pv-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
 .pv-head button { font-size:11px; padding:2px 9px; margin:0; }
 .pv-wait { text-align:center; padding:6px 0; font-size:12px; color:var(--muted); }

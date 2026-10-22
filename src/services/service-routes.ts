@@ -171,6 +171,45 @@ function cleanVars(vars: unknown): Record<string, string> | null {
   return Object.keys(out).length ? out : null;
 }
 
+/**
+ * Merges variables into one enrollment (campaign_contacts.vars); a null value removes the variable.
+ * A LinkedIn action already queued but not yet sent, whose step uses one of these variables, is
+ * re-rendered with them; what has gone out stays as it was (emails render at send time). Returns
+ * the number of queued actions rewritten. Shared by the service API (Azerit) and the dashboard.
+ */
+export function setEnrollmentVars(campaignId: number, ccId: number, vars: Record<string, string | null>): number {
+  const keys = Object.keys(vars);
+  const uses = (template: string) =>
+    keys.some((k) => new RegExp(`\\{\\{\\s*(?:(?:if|si)\\s+)?${k}\\s*[}:]`, "iu").test(template));
+  return db.transaction(() => {
+    db.prepare("UPDATE campaign_contacts SET vars = NULLIF(json_patch(COALESCE(vars, '{}'), ?), '{}') WHERE id = ?").run(
+      JSON.stringify(vars),
+      ccId
+    );
+    const contact = db
+      .prepare(
+        `SELECT c.email, c.first_name, c.last_name, c.company, ${MERGED_EXTRA} AS extra
+         FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id WHERE cc.id = ?`
+      )
+      .get(ccId) as Parameters<typeof renderTemplate>[1];
+    const queued = db
+      .prepare(
+        `SELECT la.id, s.body FROM li_actions la
+         JOIN steps s ON s.campaign_id = ? AND s.step_number = la.step_number
+         WHERE la.campaign_contact_id = ? AND la.status = 'pending'`
+      )
+      .all(campaignId, ccId) as Array<{ id: number; body: string | null }>;
+    // 'pending' only: an action the executor has already taken ('sending') is not touched
+    const rewrite = db.prepare("UPDATE li_actions SET body = ? WHERE id = ? AND status = 'pending'");
+    let n = 0;
+    for (const a of queued) {
+      if (!a.body?.trim() || !uses(a.body)) continue;
+      n += rewrite.run(renderTemplate(a.body, contact, { sender_name: "", signature: "" }), a.id).changes;
+    }
+    return n;
+  })();
+}
+
 export function registerServiceRoutes(app: express.Express): void {
   app.use("/api/svc", (req, res, next) => {
     if (!config.serviceApiKey) return res.status(503).json({ error: "API de service désactivée (SERVICE_API_KEY absente)" });
@@ -408,35 +447,7 @@ export function registerServiceRoutes(app: express.Express): void {
       .get(campaign.id, key) as { id: number } | undefined;
     if (!cc) return res.status(404).json({ error: "Candidat introuvable dans cette campagne" });
 
-    const uses = (template: string) =>
-      Object.keys(vars).some((k) => new RegExp(`\\{\\{\\s*(?:(?:if|si)\\s+)?${k}\\s*[}:]`, "iu").test(template));
-    const requeued = db.transaction(() => {
-      db.prepare("UPDATE campaign_contacts SET vars = NULLIF(json_patch(COALESCE(vars, '{}'), ?), '{}') WHERE id = ?").run(
-        JSON.stringify(vars),
-        cc.id
-      );
-      const contact = db
-        .prepare(
-          `SELECT c.email, c.first_name, c.last_name, c.company, ${MERGED_EXTRA} AS extra
-           FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id WHERE cc.id = ?`
-        )
-        .get(cc.id) as Parameters<typeof renderTemplate>[1];
-      const queued = db
-        .prepare(
-          `SELECT la.id, s.body FROM li_actions la
-           JOIN steps s ON s.campaign_id = ? AND s.step_number = la.step_number
-           WHERE la.campaign_contact_id = ? AND la.status = 'pending'`
-        )
-        .all(campaign.id, cc.id) as Array<{ id: number; body: string | null }>;
-      // 'pending' only: an action the executor has already taken ('sending') is not touched
-      const rewrite = db.prepare("UPDATE li_actions SET body = ? WHERE id = ? AND status = 'pending'");
-      let n = 0;
-      for (const a of queued) {
-        if (!a.body?.trim() || !uses(a.body)) continue;
-        n += rewrite.run(renderTemplate(a.body, contact, { sender_name: "", signature: "" }), a.id).changes;
-      }
-      return n;
-    })();
+    const requeued = setEnrollmentVars(campaign.id, cc.id, vars);
     res.json({ ok: true, requeued });
   });
 
