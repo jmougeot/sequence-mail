@@ -249,9 +249,9 @@ $("#steps").addEventListener("input", (e) => {
 });
 
 // Le corps grandit tout seul avec le texte (pas de redimensionnement manuel).
-function autosize(el) {
+function autosize(el, min = 44) {
   el.style.height = "auto";
-  el.style.height = Math.max(el.scrollHeight + 2, 44) + "px";
+  el.style.height = Math.max(el.scrollHeight + 2, min) + "px";
 }
 
 // Second objet de l'étape 1 : affiché à la demande, sous l'objet A
@@ -953,7 +953,7 @@ function renderContactFields(contact) {
   const varRow = (key, val) => `
     <div class="field-row field-row--var">
       <span class="muted" title="{{${esc(key)}}}">${esc(key)}</span>
-      <textarea data-var="${esc(key)}" rows="${String(val ?? "").length > 60 ? 3 : 1}">${esc(val ?? "")}</textarea>
+      <textarea data-var="${esc(key)}" rows="1" oninput="autosize(this, 0)">${esc(val ?? "")}</textarea>
     </div>`;
   const varEntries = Object.entries(vars);
   $("#contactFieldsBody").innerHTML =
@@ -970,7 +970,10 @@ function renderContactFields(contact) {
     <div class="muted fields-sub">This campaign only — overrides the contact's fields</div>` +
       varEntries.map(([k, v]) => varRow(k, v)).join("") : "") + `
     <button class="ghost" onclick="saveContactFields()" style="width:100%;margin-top:4px">Save fields</button>`;
+  // hauteur au texte ; le panneau replié n'a pas de hauteur : on recalcule à l'ouverture
+  requestAnimationFrame(() => $$("#contactFieldsBody textarea").forEach(el => autosize(el, 0)));
 }
+$("#contactFields").addEventListener("toggle", () => $$("#contactFieldsBody textarea").forEach(el => autosize(el, 0)));
 
 async function saveContactFields() {
   const c = preview?.contact;
