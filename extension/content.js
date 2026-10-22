@@ -510,6 +510,8 @@ function threadMessages(root, meName) {
  *  - le contact a écrit depuis notre premier envoi → il a répondu (la séquence
  *    s'arrête). Sans repère dans le fil : n'importe quel message de lui après
  *    une relance ou une nouvelle relation, sinon le dernier message du fil ;
+ *  - un message de notre main que la séquence n'a pas écrit (à la main, autre
+ *    campagne) → on lui a déjà écrit : rien envoyé, la séquence s'arrête ;
  *  - fil illisible alors qu'on lui a déjà écrit, ou auteurs indéterminés → on
  *    n'envoie pas, par précaution.
  */
@@ -519,8 +521,8 @@ async function threadGuard(editor, text, guard, meName) {
   const root = threadRoot(editor);
   let msgs = threadMessages(root, meName);
   if (!msgs.length) {
-    // le fil se charge parfois après l'éditeur
-    await waitFor(() => root.querySelector(".msg-s-event-listitem__body"), followup ? 6000 : 2500);
+    // le fil se charge parfois après l'éditeur ; un fil vide doit l'être vraiment
+    await waitFor(() => root.querySelector(".msg-s-event-listitem__body"), 6000);
     msgs = threadMessages(root, meName);
   }
   if (!msgs.length) {
@@ -546,7 +548,15 @@ async function threadGuard(editor, text, guard, meName) {
       error: "le contact a écrit dans la conversation — message non envoyé",
     };
   }
-  if (scope.some((m) => m.mine === null)) {
+  const others = msgs.filter((m) => !anchors.has(textKey(m.text)));
+  if (others.some((m) => m.mine === true)) {
+    return {
+      ok: false,
+      already_messaged: true,
+      error: "déjà un message de notre part dans la conversation, hors séquence — message non envoyé",
+    };
+  }
+  if (others.some((m) => m.mine === null)) {
     return { ok: false, error: "auteur des messages de la conversation illisible — rien envoyé par précaution" };
   }
   return null;

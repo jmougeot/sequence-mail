@@ -3,7 +3,7 @@ import { db } from "../db.js";
 import { pushSequenceStatus } from "./attio.js";
 import { renderTemplate } from "./contacts.js";
 import { getForeignMessages, sendEmail, type AccountRow, type ForeignMessage } from "./google.js";
-import { nextStep, unreachable } from "./branches.js";
+import { firstAccepted, nextStep, unreachable } from "./branches.js";
 import { cancelLinkedInActions, enqueueStep } from "./outreach.js";
 import { NOT_OPTED_OUT, optOutFromCampaignOf } from "./opt-out.js";
 import { visitLink } from "./visits.js";
@@ -326,11 +326,12 @@ function accountById(id: number): AccountRow | undefined {
  * Schedules the next step with random jitter (deliverability). Steps of another
  * branch count as passed (current_step set just before the next one), so the due
  * step is always current_step + 1. A step the contact cannot receive, or played at the same
- * time as the previous one, is due now (the first is then skipped without waiting for its delay).
+ * time as the previous one, is due now (the first is then skipped without waiting for its delay);
+ * so is the first "accepted" message, which waits for the acceptance instead of a delay.
  */
-function scheduleNext(row: DueRow, next: StepRow): void {
+function scheduleNext(row: DueRow, next: StepRow, steps: StepRow[]): void {
   const jitterMs = randBetween(0, 4 * 3600 * 1000); // 0 to 4 h
-  const at = unreachable(next, row) || next.with_previous ? Date.now() : Date.now() + next.wait_days * 24 * 3600 * 1000 + jitterMs;
+  const at = unreachable(next, row) || next.with_previous || next === firstAccepted(steps) ? Date.now() : Date.now() + next.wait_days * 24 * 3600 * 1000 + jitterMs;
   db.prepare(
     "UPDATE campaign_contacts SET status = 'in_progress', current_step = ?, next_send_at = ? WHERE id = ?"
   ).run(next.step_number - 1, Math.round(at), row.cc_id);
@@ -364,7 +365,7 @@ function dispatchLinkedIn(row: DueRow, step: StepRow, steps: StepRow[]): void {
   const next = nextStep(steps, step.step_number, row.li_accepted);
   const detached = !!next?.with_previous;
   enqueueStep(row.cc_id, step.step_number, row.linkedin, type, body, detached);
-  if (detached) scheduleNext(row, next!);
+  if (detached) scheduleNext(row, next!, steps);
   syncAttio(row.attio_record_id, `Étape ${step.step_number}/${totalSteps} — ${type === "invite" ? "invitation" : "message"} LinkedIn en file`);
   console.log(`[linkedin] step ${step.step_number} (${type}) -> ${who(row)} queued`);
 }
@@ -389,7 +390,7 @@ function skipStep(row: DueRow, step: StepRow, steps: StepRow[], reason: string):
     )
     .get(row.cc_id, row.cc_id) as { r: number };
   const at = !next ? null
-    : unreachable(next, row) || !received.r || next.with_previous ? Date.now()
+    : unreachable(next, row) || !received.r || next.with_previous || next === firstAccepted(steps) ? Date.now()
     : Math.round(Date.now() + next.wait_days * 24 * 3600 * 1000 + randBetween(0, 4 * 3600 * 1000));
   db.prepare(
     `UPDATE campaign_contacts SET current_step = ?, status = ?, next_send_at = ?, error = ? WHERE id = ?`
@@ -490,7 +491,7 @@ async function processOne(row: DueRow): Promise<void> {
 
     const next = nextStep(steps, step.step_number, row.li_accepted);
     if (next) {
-      scheduleNext(row, next);
+      scheduleNext(row, next, steps);
       syncAttio(row.attio_record_id, `Étape ${step.step_number}/${steps.length} envoyée`);
     } else {
       db.prepare("UPDATE campaign_contacts SET status = 'completed', next_send_at = NULL WHERE id = ?").run(row.cc_id);

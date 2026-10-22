@@ -177,8 +177,8 @@ button.icon-btn.danger:hover { color:var(--bad); background:var(--bad-bg); }
 .field-row > .muted { flex:0 0 110px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:ui-monospace, monospace; }
 .field-row input { margin:0; }
 .field-row--var { align-items:flex-start; }
-.field-row--var > .muted { padding-top:8px; }
-.field-row textarea { margin:0; min-height:0; padding:6px 8px; resize:none; overflow:hidden; line-height:1.45; }
+.field-row--var > .muted { padding-top:9px; }
+.field-row textarea { margin:0; min-height:0; padding:7px 8px; resize:none; overflow:hidden; line-height:1.35; }
 .fields-sub { margin:10px 0 4px; font-size:12px; }
 .pv-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); }
 .pv-head button { font-size:11px; padding:2px 9px; margin:0; }

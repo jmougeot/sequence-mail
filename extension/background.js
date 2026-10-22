@@ -177,6 +177,7 @@ async function serve(SERVER, tokens) {
       identity_unknown: verdict.identity_unknown,
       replied: verdict.replied,
       reply_text: verdict.reply_text,
+      already_messaged: verdict.already_messaged,
     });
     if (verdict.ok) return { kind: "ok", text: "Dernière action : réussie" };
     // Invitation pas encore acceptée : le serveur reporte le message, ce n'est pas un échec.

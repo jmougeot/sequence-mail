@@ -210,19 +210,21 @@ const subjectRow = (cls, label, placeholder, value) =>
 // ou d'un chemin (objet obligatoire), abTest = premier email de la séquence (A/B test
 // possible), single = seule étape (non supprimable), types = types proposés,
 // deadline = première étape « non acceptée » : son délai court depuis l'invitation,
-// canSame = peut partir en même temps que l'étape précédente (email + LinkedIn).
-function stepHtml(n, s, { firstEmail, abTest, single, types, deadline, canSame }) {
+// asap = premier message « acceptée » : part dès l'acceptation, sans délai,
+// canSame = peut partir en même temps que l'étape précédente (email + LinkedIn),
+// pair = type d'étape à ajouter en même temps que celle-ci (invite → email, email → invite).
+function stepHtml(n, s, { firstEmail, abTest, single, types, deadline, asap, canSame, pair }) {
   const chan = stepChannel(s);
   const t = STEP_TYPES[chan];
   const isEmail = chan === "email";
   const ab = isEmail && abTest && s.subject_b;
-  return `<div class="step" data-chan="${chan}" data-branch="${s.branch || ""}" data-first="${firstEmail ? 1 : ""}">
+  return `<div class="step" data-chan="${chan}" data-branch="${s.branch || ""}" data-first="${firstEmail ? 1 : ""}" data-asap="${asap ? 1 : ""}">
     ${n > 1 ? `<div class="step-delay">
       <span class="menu"><button class="ins" title="Insert a step here" onclick="insertMenu(event)">${ico("plus")}</button><span class="menu-list ins-list" hidden></span></span>
       ${canSame ? `<select class="timing" title="When this step goes" onchange="setTiming(this)">
         <option value="wait">Wait</option><option value="same" ${s.with_previous ? "selected" : ""}>At the same time</option>
       </select>` : ""}
-      <span class="delay-txt" ${s.with_previous ? "hidden" : ""}>${deadline ? "If not accepted after" : canSame ? "" : "Wait"} <input class="wait" type="number" value="${s.wait_days || 3}" min="1"> days</span>
+      ${asap ? `<span class="delay-txt">As soon as accepted</span>` : `<span class="delay-txt" ${s.with_previous ? "hidden" : ""}>${deadline ? "If not accepted after" : canSame ? "" : "Wait"} <input class="wait" type="number" value="${s.wait_days || 3}" min="1"> days</span>`}
     </div>` : ""}
     <div class="step-box">
       <div class="step-head">
@@ -232,6 +234,7 @@ function stepHtml(n, s, { firstEmail, abTest, single, types, deadline, canSame }
           ${types.map(k => `<option value="${k}" ${k === chan ? "selected" : ""}>${STEP_TYPES[k].label}</option>`).join("")}
         </select></span>` : `<span class="step-kind-label">${t.label}</span>`}
         <span class="spacer"></span>
+        ${pair ? `<button class="link-btn ab" title="Both go out together, without waiting for each other" onclick="addSameTime(this, '${pair}')">+ ${pair === "email" ? "Email" : "Connection request"} at the same time</button>` : ""}
         ${isEmail && abTest && !s.subject_b ? `<button class="link-btn ab" title="A/B test: half the contacts get subject A, the other half subject B" onclick="addSubjectB(this)">+ Subject B</button>` : ""}
         <button class="icon-btn" title="Preview" onclick="previewStep(this)">${ico("eye")}</button>
         <button class="icon-btn danger" title="Delete step" onclick="removeStep(this)" ${single ? "disabled" : ""}>${ico("x")}</button>
@@ -310,6 +313,8 @@ function setSteps(list) {
   const deadlineIdx = list.findIndex(s => s.branch === "not_accepted");
   list = list.map((s, i) => s.with_previous && (!canGoWithPrevious(list, i) || i === deadlineIdx) ? { ...s, with_previous: false } : s);
   const inviteIdx = list.findIndex(s => stepChannel(s) === "invite");
+  const acceptedIdx = list.findIndex(s => s.branch === "accepted");
+  const asapIdx = acceptedIdx >= 0 && stepChannel(list[acceptedIdx]) === "message" ? acceptedIdx : -1;
   // Premier email de chaque chemin (tronc commun compris) : objet obligatoire
   const firstEmails = new Set(["accepted", "not_accepted"].map(b =>
     list.findIndex(s => stepChannel(s) === "email" && (!s.branch || s.branch === b))));
@@ -320,7 +325,11 @@ function setSteps(list) {
     // une seule invitation : elle ouvre les deux chemins
     types: s.branch ? LANE_TYPES[s.branch] : Object.keys(STEP_TYPES).filter(k => k !== "invite" || inviteIdx < 0 || i === inviteIdx),
     deadline: i === deadlineIdx,
+    asap: i === asapIdx,
     canSame: i !== deadlineIdx && canGoWithPrevious(list, i),
+    pair: list[i + 1]?.with_previous || s.with_previous ? null
+      : stepChannel(s) === "invite" ? "email"
+      : stepChannel(s) === "email" && !s.branch && inviteIdx < 0 ? "invite" : null,
   });
   const trunk = list.map((s, i) => s.branch ? "" : html(s, i)).join("");
   const lanes = inviteIdx < 0 ? "" : `<div class="split">${Object.entries(BRANCH_LABELS).map(([b, label]) => `
@@ -413,6 +422,15 @@ async function saveVarInstructions() {
 }
 
 const stepIndex = el => $$("#steps .step").indexOf(el.closest(".step"));
+
+// Ajoute, juste après l'étape, une étape de l'autre canal qui part en même temps qu'elle.
+function addSameTime(btn, chan) {
+  const i = stepIndex(btn);
+  const list = readSteps();
+  list.splice(i + 1, 0, newStep(chan, { with_previous: true, branch: list[i].branch }));
+  setSteps(openPaths(list));
+  focusStep(i + 1);
+}
 
 // Délai ou « en même temps » : l'étape peut changer de place (tronc commun / chemin), on redessine.
 function setTiming(sel) {
@@ -789,9 +807,11 @@ async function saveCampaign() {
   try {
     await saveVarInstructions();
     if (selectedId) {
-      await api(`/api/campaigns/${selectedId}`, { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+      const { sent_now } = await api(`/api/campaigns/${selectedId}`, { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
       msg.textContent = "Saved ✓";
-      notify("Changes saved — upcoming sends will use the new content");
+      notify(sent_now
+        ? `Changes saved — ${sent_now} contact${sent_now > 1 ? "s" : ""} queued now (same-time step)`
+        : "Changes saved — upcoming sends will use the new content");
       loadList();
     } else {
       const { id } = await api("/api/campaigns", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(payload) });
@@ -914,7 +934,8 @@ async function runPreview() {
     body.innerHTML = renders.map(({ r, html, skipped }, i) => {
       const waitDays = steps[i].querySelector(".wait")?.value;
       const same = steps[i].querySelector(".timing")?.value === "same";
-      return `${i ? `<div class="pv-wait">${same ? "↓ at the same time" : `↓ +${waitDays || "?"} days`}</div>` : ""}
+      const asap = steps[i].dataset.asap;
+      return `${i ? `<div class="pv-wait">${asap ? "↓ as soon as accepted" : same ? "↓ at the same time" : `↓ +${waitDays || "?"} days`}</div>` : ""}
         <div class="preview ${i === current ? "current" : ""} ${skipped ? "skipped" : ""}">
           <div class="pv-head">
             <span>Step ${i + 1}/${total}${i === current && contact.current_step < total ? " · next" : ""}</span>
@@ -1181,7 +1202,7 @@ async function attioSync(btn) {
   await loadVarInstructions();
   refreshPreviewAccounts(); // rempli avec tous les comptes tant qu'aucune campagne n'est sélectionnée
   const campaigns = await loadList();
-  const [hid, htab] = location.hash.slice(1).split("/");
+  const [hid, htab] = location.hash.slice(1).split("index.html");
   const tab = htab === "stats" ? "info" : ["seq","info","contacts","import"].includes(htab) ? htab : "seq"; // #…/stats : anciens liens
   if (hid && hid !== "new" && campaigns.some(c => c.id === +hid)) {
     selectCampaign(+hid, tab);

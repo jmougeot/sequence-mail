@@ -16,7 +16,7 @@ import { effectiveDailyLimit, nextEmailEstimate, sendWindowState } from "./servi
 import { registerOutreachRoutes } from "./services/outreach-routes.js";
 import { registerServiceRoutes, setEnrollmentVars } from "./services/service-routes.js";
 import { BRANCHES, type Branch } from "./services/branches.js";
-import { cancelLinkedInActions } from "./services/outreach.js";
+import { applyWithPrevious, cancelLinkedInActions } from "./services/outreach.js";
 import { optOutFromCampaignOf } from "./services/opt-out.js";
 import { registerVisitRoutes } from "./services/visits.js";
 import { registerUnsubscribeRoutes } from "./services/unsubscribe.js";
@@ -411,7 +411,8 @@ export function createServer(): express.Express {
 
   // Updates a campaign, even while running: steps are replaced. Contacts keep their progress
   // (current_step) and the next sends use the new content; a contact whose current step is past the
-  // new sequence is marked 'completed' on the next tick.
+  // new sequence is marked 'completed' on the next tick. A step set to go "at the same time" goes
+  // now for contacts already past the previous one (sent_now: how many).
   app.put("/api/campaigns/:id", (req, res) => {
     const exists = db.prepare("SELECT id FROM campaigns WHERE id = ?").get(req.params.id);
     if (!exists) return res.status(404).json({ error: "Campaign not found" });
@@ -444,7 +445,7 @@ export function createServer(): express.Express {
       db.prepare("DELETE FROM steps WHERE campaign_id = ?").run(req.params.id);
       insertSteps(Number(req.params.id), steps);
     })();
-    res.json({ ok: true });
+    res.json({ ok: true, sent_now: applyWithPrevious(Number(req.params.id)) });
   });
 
   // Partial update (MCP server): only provided fields change. `steps`, if given, replaces the whole
@@ -488,7 +489,7 @@ export function createServer(): express.Express {
         insertSteps(campaign.id, body.steps);
       }
     })();
-    res.json({ ok: true });
+    res.json({ ok: true, ...(body.steps !== undefined && { sent_now: applyWithPrevious(campaign.id) }) });
   });
 
   // Updates a single step: only provided fields change, then the resulting sequence is validated
@@ -536,7 +537,7 @@ export function createServer(): express.Express {
       db.prepare("DELETE FROM steps WHERE campaign_id = ?").run(campaign.id);
       insertSteps(campaign.id, next);
     })();
-    res.json({ ok: true, step: (selectSteps.all(campaign.id) as Array<{ step_number: number }>)[index] });
+    res.json({ ok: true, step: (selectSteps.all(campaign.id) as Array<{ step_number: number }>)[index], sent_now: applyWithPrevious(campaign.id) });
   });
 
   // Email preview: variables rendered with a real contact of the campaign (the first) or a sample

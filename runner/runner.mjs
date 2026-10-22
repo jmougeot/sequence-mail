@@ -240,6 +240,7 @@ class Worker {
       identity_unknown: r.identity_unknown,
       replied: r.replied,
       reply_text: r.reply_text,
+      already_messaged: r.already_messaged,
     });
     log(this.acc, `${action.type} → ${action.linkedin} : ${r.ok ? `ok (depuis ${r.member && r.member.slug})` : `échec (${r.error})`}`);
     if (r.wrong_account) throw new SessionLost(`mauvais profil LinkedIn connecté (${r.member && r.member.slug})`);

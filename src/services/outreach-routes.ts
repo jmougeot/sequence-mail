@@ -12,7 +12,7 @@
  * how the server ensures the action came from the right account (see outreach.ts, recordResult).
  */
 import type express from "express";
-import { processInbox, processThreadReply, type LiConversation } from "./li-inbox.js";
+import { processAlreadyMessaged, processInbox, processThreadReply, type LiConversation } from "./li-inbox.js";
 import {
   accountStatus,
   checkInboxMember,
@@ -131,6 +131,11 @@ export function registerOutreachRoutes(app: express.Express): void {
       const text = typeof b.reply_text === "string" ? b.reply_text.slice(0, 2000) : "";
       if (!processThreadReply(c.account, id, text)) return res.status(404).json({ error: "Action inconnue pour ce compte" });
       return res.json({ ok: true, replied: true });
+    }
+    // We already wrote to the contact outside the sequence: the executor sent nothing.
+    if (b.already_messaged && !b.ok && !b.wrong_account) {
+      if (!processAlreadyMessaged(c.account, id)) return res.status(404).json({ error: "Action inconnue pour ce compte" });
+      return res.json({ ok: true, already_messaged: true });
     }
     const ok = recordResult(c.account, id, {
       ok: Boolean(b.ok),

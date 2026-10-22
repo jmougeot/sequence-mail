@@ -11,7 +11,7 @@
  */
 import { db } from "../db.js";
 import { linkedinSlug } from "./linkedin-url.js";
-import type { LiAccount } from "./outreach.js";
+import { cancelLinkedInActions, type LiAccount } from "./outreach.js";
 import { isOptOut, terminate } from "./scheduler.js";
 
 const DAY_MS = 24 * 3600 * 1000;
@@ -197,5 +197,37 @@ export function processThreadReply(account: LiAccount, actionId: number, text: s
   db.prepare("UPDATE li_actions SET error = ? WHERE id = ?").run("le contact a écrit dans la conversation — message non envoyé", actionId);
   const name = [row.first_name, row.last_name].filter(Boolean).join(" ") || `contact #${row.contact_id}`;
   console.log(`[linkedin] ${name} wrote in the conversation (${account.name})${optedOut ? " — opted out" : ""} — message held back, sequence stopped`);
+  return true;
+}
+
+/**
+ * Message held back by the executor because the conversation already holds a message of ours that
+ * the sequence did not write (sent by hand, or by another campaign): the contact's sequence stops
+ * on all channels. Returns false if the action isn't this account's.
+ */
+export function processAlreadyMessaged(account: LiAccount, actionId: number): boolean {
+  const row = db
+    .prepare(
+      `SELECT la.li_account_id, la.status, cc.id AS cc_id, c.first_name, c.last_name, c.id AS contact_id
+       FROM li_actions la
+       JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
+       JOIN contacts c ON c.id = cc.contact_id
+       WHERE la.id = ?`
+    )
+    .get(actionId) as
+    | { li_account_id: number | null; status: string; cc_id: number; first_name: string | null; last_name: string | null; contact_id: number }
+    | undefined;
+  if (!row || row.li_account_id !== account.id) return false;
+  if (row.status !== "sending") return true; // cancelled meanwhile (reply, stop): nothing to do
+  const reason = "déjà en conversation LinkedIn avec ce contact (message hors séquence) — non envoyé";
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL, error = ?
+       WHERE id = ? AND status IN ('pending', 'in_progress', 'awaiting_li')`
+    ).run(`LinkedIn (${account.name}) : ${reason}`, row.cc_id);
+    cancelLinkedInActions(`campaign_contact_id = ?`, row.cc_id, reason);
+  })();
+  const name = [row.first_name, row.last_name].filter(Boolean).join(" ") || `contact #${row.contact_id}`;
+  console.log(`[linkedin] ${name}: conversation already holds a message of ours (${account.name}) — message held back, sequence stopped`);
   return true;
 }

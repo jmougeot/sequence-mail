@@ -41,7 +41,7 @@ const stepSchema = z.object({
     .enum(["accepted", "not_accepted", ""])
     .optional()
     .describe(
-      "After a LinkedIn invite: step only for contacts whose invite was accepted (\"accepted\") or not (\"not_accepted\"); missing or empty = everyone. The first \"accepted\" step must be a LinkedIn message placed before the \"not_accepted\" steps: it tests acceptance (retried until it happens). The first \"not_accepted\" step's wait_days is the deadline, counted from the invite: past it without acceptance, the contact switches to the \"not_accepted\" steps (no LinkedIn message in them). A contact without a LinkedIn profile goes there directly."
+      "After a LinkedIn invite: step only for contacts whose invite was accepted (\"accepted\") or not (\"not_accepted\"); missing or empty = everyone. The first \"accepted\" step must be a LinkedIn message placed before the \"not_accepted\" steps: it goes as soon as the invite is accepted (checked every 2-3 h, its wait_days ignored). The first \"not_accepted\" step's wait_days is the deadline, counted from the invite: past it without acceptance, the contact switches to the \"not_accepted\" steps (no LinkedIn message in them). A contact without a LinkedIn profile goes there directly."
     ),
 });
 
@@ -353,7 +353,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Update a campaign",
       description:
-        "Updates a campaign, even while running: only provided fields change (name, description, sending accounts, LinkedIn accounts, sequence). steps, if given, replaces the WHOLE sequence; to change one step's text, delay or channel, prefer update_step. Contacts keep their progress; upcoming sends use the new content.",
+        "Updates a campaign, even while running: only provided fields change (name, description, sending accounts, LinkedIn accounts, sequence). steps, if given, replaces the WHOLE sequence; to change one step's text, delay or channel, prefer update_step. Contacts keep their progress; upcoming sends use the new content. A step with with_previous goes NOW for contacts already past the previous step (sent_now = how many): approval first, as for a launch.",
       inputSchema: updateShape,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
@@ -369,7 +369,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Update a step",
       description:
-        "Updates ONE campaign step without resending the rest of the sequence: only provided fields change (subject, subject_b, body, wait_days, with_previous, channel, li_action, branch). An empty string clears the field: empty subject on a follow-up = same thread as the first email, empty subject_b = ends the A/B test. The body is replaced whole (no partial text edits): read it first with get_campaign. The resulting sequence must stay valid (subject on the first email, body on every step except invites). Contacts keep their progress; upcoming sends of this step use the new content. Returns the step as saved.",
+        "Updates ONE campaign step without resending the rest of the sequence: only provided fields change (subject, subject_b, body, wait_days, with_previous, channel, li_action, branch). An empty string clears the field: empty subject on a follow-up = same thread as the first email, empty subject_b = ends the A/B test. The body is replaced whole (no partial text edits): read it first with get_campaign. The resulting sequence must stay valid (subject on the first email, body on every step except invites). Contacts keep their progress; upcoming sends of this step use the new content. Setting with_previous makes the step go NOW for contacts already past the previous one (sent_now = how many): approval first, as for a launch. Returns the step as saved.",
       inputSchema: updateStepShape,
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },

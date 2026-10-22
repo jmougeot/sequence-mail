@@ -25,6 +25,15 @@ export function nextStep<T extends BranchStep>(steps: T[], after: number, accept
   return steps.find((s) => s.step_number > after && (!s.branch || s.branch === want));
 }
 
+/**
+ * First "if accepted" step when it is a LinkedIn message: queued right after the invite, its own
+ * delay ignored, it goes as soon as the invite is accepted (see ACCEPT_CHECK_MS in outreach.ts).
+ */
+export function firstAccepted<T extends BranchStep & { channel: string | null }>(steps: T[]): T | undefined {
+  const s = steps.find((x) => x.branch === "accepted");
+  return s?.channel === "linkedin" ? s : undefined;
+}
+
 /** First "if not accepted" step: its delay is the acceptance deadline. */
 export function firstNotAccepted<T extends BranchStep>(steps: T[]): T | undefined {
   return steps.find((s) => s.branch === "not_accepted");

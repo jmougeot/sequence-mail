@@ -34,7 +34,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { config } from "../config.js";
 import { db } from "../db.js";
-import { firstNotAccepted, nextStep, unreachable } from "./branches.js";
+import { firstAccepted, firstNotAccepted, nextStep, unreachable } from "./branches.js";
 import { linkedinSlug } from "./linkedin-url.js";
 
 const L = config.linkedin;
@@ -564,12 +564,86 @@ interface StepRow {
   wait_days: number;
   channel: string;
   branch: string | null;
+  with_previous: number;
 }
 
 function campaignSteps(campaignId: number): StepRow[] {
   return db
-    .prepare(`SELECT step_number, wait_days, channel, branch FROM steps WHERE campaign_id = ? ORDER BY step_number`)
+    .prepare(`SELECT step_number, wait_days, channel, branch, with_previous FROM steps WHERE campaign_id = ? ORDER BY step_number`)
     .all(campaignId) as StepRow[];
+}
+
+/**
+ * Applies "same time as the previous step" to contacts already under way, after the sequence was
+ * saved: the step goes now instead of waiting for its old delay, or for the previous step's
+ * LinkedIn action (the action is then detached, as if the option had been set at launch).
+ * Contacts in a retry backoff keep it. Returns the number of contacts moved forward.
+ */
+export function applyWithPrevious(campaignId: number): number {
+  const steps = campaignSteps(campaignId);
+  const now = Date.now();
+  let moved = 0;
+  db.transaction(() => {
+    for (const s of steps.filter((x) => x.with_previous)) {
+      // Previous step done, this one waiting for its delay
+      moved += db
+        .prepare(
+          `UPDATE campaign_contacts SET next_send_at = ?
+           WHERE campaign_id = ? AND status = 'in_progress' AND current_step = ? AND next_send_at > ?
+             AND (error IS NULL OR error NOT LIKE 'retry:%')`
+        )
+        .run(now, campaignId, s.step_number - 1, now).changes;
+      // Previous step = LinkedIn action still queued, holding the contact
+      const held = db
+        .prepare(
+          `SELECT la.id, la.campaign_contact_id AS cc_id, cc.li_accepted, c.email, c.linkedin
+           FROM li_actions la
+           JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
+           JOIN contacts c ON c.id = cc.contact_id
+           WHERE cc.campaign_id = ? AND cc.status = 'awaiting_li' AND la.status = 'pending'
+             AND la.detached = 0 AND la.step_number = ?`
+        )
+        .all(campaignId, s.step_number - 1) as Array<{
+        id: number;
+        cc_id: number;
+        li_accepted: number | null;
+        email: string | null;
+        linkedin: string | null;
+      }>;
+      for (const h of held) {
+        // Not for its path, or no address: the step will be skipped after the action as usual
+        if (nextStep(steps, s.step_number - 1, h.li_accepted)?.step_number !== s.step_number || unreachable(s, h)) continue;
+        db.prepare(`UPDATE li_actions SET detached = 1 WHERE id = ?`).run(h.id);
+        db.prepare(
+          `UPDATE campaign_contacts SET status = 'in_progress', current_step = ?, next_send_at = ?, error = NULL WHERE id = ?`
+        ).run(s.step_number - 1, now, h.cc_id);
+        moved++;
+      }
+    }
+  })();
+  return moved;
+}
+
+/**
+ * Contacts still waiting for the old delay of their first "accepted" message (scheduled before it
+ * went as soon as accepted): the message is queued now. Run at startup; idempotent.
+ */
+export function releaseAcceptedMessages(): number {
+  const now = Date.now();
+  let moved = 0;
+  const campaigns = db.prepare(`SELECT DISTINCT campaign_id AS id FROM steps WHERE branch = 'accepted'`).all() as Array<{ id: number }>;
+  for (const c of campaigns) {
+    const first = firstAccepted(campaignSteps(c.id));
+    if (!first) continue;
+    moved += db
+      .prepare(
+        `UPDATE campaign_contacts SET next_send_at = ?
+         WHERE campaign_id = ? AND status = 'in_progress' AND current_step = ? AND next_send_at > ?
+           AND (li_accepted IS NULL OR li_accepted = 1) AND (error IS NULL OR error NOT LIKE 'retry:%')`
+      )
+      .run(now, c.id, first.step_number - 1, now).changes;
+  }
+  return moved;
 }
 
 /**
@@ -577,7 +651,9 @@ function campaignSteps(campaignId: number): StepRow[] {
  * sequence); steps of the other branch count as done. `immediate`: the next step skips
  * its delay (switch to "not accepted", whose delay was the acceptance deadline). A step
  * the contact cannot receive (email without address) also goes without delay: the
- * scheduler skips it and schedules the next one with its own.
+ * scheduler skips it and schedules the next one with its own. So does a step set to go at
+ * the same time (option set after this action was queued), and the first "accepted" message
+ * (it waits for the acceptance, not for a delay).
  */
 function advanceContact(ccId: number, completedStep: number, immediate = false): void {
   const cc = db
@@ -589,10 +665,12 @@ function advanceContact(ccId: number, completedStep: number, immediate = false):
     | { campaign_id: number; status: string; li_accepted: number | null; email: string | null; linkedin: string | null }
     | undefined;
   if (!cc || cc.status !== "awaiting_li") return; // replied/stopped meanwhile: do not restart anything
-  const next = nextStep(campaignSteps(cc.campaign_id), completedStep, cc.li_accepted);
+  const steps = campaignSteps(cc.campaign_id);
+  const next = nextStep(steps, completedStep, cc.li_accepted);
   if (next) {
     const jitter = rand(0, 4 * 3600 * 1000); // 0-4 h
-    const at = Date.now() + (immediate || unreachable(next, cc) ? 0 : next.wait_days * DAY_MS + jitter);
+    const noWait = immediate || unreachable(next, cc) || next.with_previous || next === firstAccepted(steps);
+    const at = Date.now() + (noWait ? 0 : next.wait_days * DAY_MS + jitter);
     db.prepare(
       `UPDATE campaign_contacts SET current_step = ?, status = 'in_progress', next_send_at = ?, error = NULL WHERE id = ?`
     ).run(next.step_number - 1, Math.round(at), ccId);
@@ -678,6 +756,9 @@ type ActionRow = {
 // absent from a fresh read that covers its invite is postponed without opening anything.
 const CONNECTIONS_EVERY_MIN = 90; // the list is re-read at most this often
 const CONNECTIONS_FRESH_MIN = 180; // an older read is not trusted
+// A message is not tried before its invite has been out this long: by then the Connections page
+// has been re-read since the invite, so the check needs no profile visit.
+const ACCEPT_CHECK_MS = 2 * 3600_000;
 
 /** Oldest invite still unanswered among the account's queued messages (ms), else null. */
 function connectionsSince(account: LiAccount): number | null {
@@ -831,6 +912,9 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
     `SELECT la.id, la.campaign_contact_id, la.linkedin, la.type, la.body, la.created_at ${ELIGIBLE}
        AND la.type IN (${allowed.map((t) => `'${t}'`).join(",")})
        AND (la.not_before IS NULL OR la.not_before <= @now)
+       AND NOT (la.type = 'message' AND EXISTS (
+         SELECT 1 FROM li_actions inv WHERE inv.campaign_contact_id = la.campaign_contact_id AND inv.type = 'invite'
+           AND (inv.status IN ('pending', 'sending') OR (inv.status = 'sent' AND inv.sent_at > @now - ${ACCEPT_CHECK_MS}))))
      ORDER BY (la.li_account_id IS NULL), la.id ASC LIMIT 1`
   );
   let row: ActionRow | undefined;
