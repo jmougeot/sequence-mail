@@ -161,7 +161,7 @@ async function loadLi() {
   btn.textContent = s.enabled ? "⏸ Pause all" : "▶ Resume all";
 
   if (typingIn("#liAccounts")) return;
-  $("#liAccounts tbody").innerHTML = s.accounts.map(a => {
+  $("#liAccounts tbody").innerHTML = liProfiles(s.accounts).map(({ a, ids, linked }) => {
     const server = a.mode === "server";
     const state = a.paused_until ? `<div class="err">paused until ${new Date(a.paused_until).toLocaleString("en-GB", {weekday:"short", hour:"2-digit", minute:"2-digit"})}</div>` : "";
     // Session du navigateur serveur : seuls les problèmes s'affichent
@@ -169,11 +169,12 @@ async function loadLi() {
     const sess = !server || a.session.state === "ok" ? ""
       : `<div class="err" title="${esc([a.session.error, "Resend it from the extension"].filter(Boolean).join(" — "))}">${sessLabel}</div>`;
     const proxy = !server ? "" : `<div><input value="" title="Residential or static ISP proxy, dedicated to this account: without a proxy, the server runs nothing" placeholder="${a.has_proxy ? "proxy configured ✓ (replace…)" : "⚠️ proxy http://user:pass@host:port"}" style="width:220px" onchange="patchLi(${a.id}, {proxy: this.value})"></div>`;
-    const quota = (kind, field, label) => `<td style="white-space:nowrap">${a.today[kind].sent} / <input type="number" min="0" value="${a[field]}" title="${label} / day" style="width:60px" onchange="patchLi(${a.id}, {${field}: this.value})"></td>`;
+    const quota = (kind, field, label) => `<td style="white-space:nowrap">${a.today[kind].sent} / <input type="number" min="0" value="${a[field]}" title="${label} / day" style="width:60px" onchange="patchLi(${ids}, {${field}: this.value})"></td>`;
     return `<tr>
       <td><input value="${esc(a.name)}" style="width:150px" onchange="patchLi(${a.id}, {name: this.value})">
         ${a.member ? `<div><a href="${esc(a.member.url)}" target="_blank" rel="noopener" title="Profile checked before each action">✓ ${esc(a.member.name || a.member.slug)}</a></div>` : `<div class="muted">profile not verified</div>`}
-        ${a.owner_ref ? `<div class="muted" title="Azerit user account: their campaigns only">client ${esc(a.owner_ref)}</div>` : ""}</td>
+        ${a.owner_ref ? `<div class="muted" title="Azerit user account: their campaigns only">client ${esc(a.owner_ref)}</div>` : ""}
+        ${linked.length ? `<div class="muted" title="Same LinkedIn profile, also linked from Azerit: invites, messages and quotas are shared">+ Azerit (${esc([...new Set(linked.map(l => l.owner_ref))].join(", "))})</div>` : ""}</td>
       <td><select style="width:170px" onchange="patchLi(${a.id}, {mode: this.value})">
           <option value="extension" ${server ? "" : "selected"}>Chrome extension</option>
           <option value="server" ${server ? "selected" : ""}>Server browser</option></select>
@@ -182,11 +183,42 @@ async function loadLi() {
       ${quota("invite", "invites_per_day", "Invites")}
       ${quota("message", "messages_per_day", "Messages")}
       <td>${a.queue.pending}${a.queue.failed ? ` <span class="err">· ${a.queue.failed} failed</span>` : ""}</td>
-      <td><input type="checkbox" ${a.active ? "checked" : ""} onchange="patchLi(${a.id}, {active: this.checked})"></td>
+      <td><input type="checkbox" ${a.active ? "checked" : ""} onchange="patchLi(${ids}, {active: this.checked})"></td>
       <td style="white-space:nowrap"><button class="ghost" onclick="rotateLi(${a.id})" title="Generate a new token (the old one stops working)">Token</button>
           <button class="icon-btn danger" onclick="deleteLi(${a.id})" title="Delete (only if the account hasn't done anything yet)">✕</button></td>
     </tr>`;
   }).join("") || '<tr><td colspan="7" class="muted">No LinkedIn accounts</td></tr>';
+}
+
+/**
+ * One row per LinkedIn profile. A profile linked from the dashboard and from Azerit has two
+ * accounts (an Azerit client's campaigns only use its own): the row shows the dashboard's, with
+ * the counts of the whole profile, as the quotas apply to it.
+ */
+function liProfiles(accounts) {
+  const groups = new Map();
+  for (const a of accounts) {
+    const key = a.member?.slug ? `in:${a.member.slug}` : `id:${a.id}`;
+    groups.set(key, [...(groups.get(key) || []), a]);
+  }
+  return [...groups.values()].map(g => {
+    const main = g.find(x => !x.owner_ref) || g[0];
+    const linked = g.filter(x => x !== main);
+    const sum = f => g.reduce((n, x) => n + f(x), 0);
+    const max = f => Math.max(0, ...g.map(f)) || null;
+    const a = {
+      ...main,
+      connected: g.some(x => x.connected),
+      last_seen_at: max(x => x.last_seen_at || 0),
+      paused_until: max(x => x.paused_until || 0),
+      active: g.every(x => x.active),
+      invites_per_day: Math.min(...g.map(x => x.invites_per_day)),
+      messages_per_day: Math.min(...g.map(x => x.messages_per_day)),
+      today: { invite: { sent: sum(x => x.today.invite.sent) }, message: { sent: sum(x => x.today.message.sent) } },
+      queue: { pending: sum(x => x.queue.pending), failed: sum(x => x.queue.failed) },
+    };
+    return { a, ids: JSON.stringify(g.map(x => x.id)), linked };
+  });
 }
 
 let shownToken = "";
@@ -212,8 +244,9 @@ async function addLiAccount() {
   loadLi();
 }
 
-async function patchLi(id, patch) {
-  try { await api(`/api/li/accounts/${id}`, jsonPost("PATCH", patch)); }
+// ids: one account, or every account of a profile (quotas and pause apply to the profile)
+async function patchLi(ids, patch) {
+  try { for (const id of [ids].flat()) await api(`/api/li/accounts/${id}`, jsonPost("PATCH", patch)); }
   catch (e) { fail(e); }
   loadLi();
 }
