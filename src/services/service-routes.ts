@@ -254,6 +254,12 @@ export function registerServiceRoutes(app: express.Express): void {
       accounts.find((a) => a.member_slug === member.slug) ??
       accounts.find((a) => !a.member_slug && !accountUsed(a.id)) ??
       createAccount(member.name || member.slug, owner).account;
+    // Profile already linked elsewhere (dashboard, other owner): the lowest cap of the profile
+    // applies to all its accounts, so the new one takes the existing caps rather than the default.
+    const twin = listAccounts().find((a) => a.id !== account.id && a.member_slug === member.slug);
+    if (twin && account.member_slug !== member.slug) {
+      updateAccount(account.id, { invites_per_day: twin.invites_per_day, messages_per_day: twin.messages_per_day });
+    }
     // Owner whose extension performs the sends itself: the account stays in extension mode, and the
     // extension gets a fresh token for it (the old one stops working) to connect on its own.
     const byExtension = config.linkedin.extensionOwners.includes(owner);
