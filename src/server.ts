@@ -31,7 +31,12 @@ export function createServer(): express.Express {
   app.use(express.text({ type: ["text/csv", "text/plain"], limit: "20mb" }));
   // Relative to the project, not the launch directory.
   // no-cache: the browser revalidates (ETag) on every load, so no stale CSS/JS after a deploy
-  app.use(express.static(fileURLToPath(new URL("../public", import.meta.url)), { cacheControl: true, maxAge: 0, setHeaders: (res) => res.setHeader("Cache-Control", "no-cache") }));
+  // Clean URLs: /campaigns serves campaigns.html, old /campaigns.html links redirect (the #hash is kept by the browser)
+  app.get(/^\/(index|campaigns|replies|settings)\.html$/, (req, res) => {
+    const page = req.path.slice(1, -5);
+    res.redirect(301, (page === "index" ? "/" : `/${page}`) + req.url.slice(req.path.length));
+  });
+  app.use(express.static(fileURLToPath(new URL("../public", import.meta.url)), { extensions: ["html"], cacheControl: true, maxAge: 0, setHeaders: (res) => res.setHeader("Cache-Control", "no-cache") }));
 
   // --- LinkedIn steps (used by the Chrome extension) ---
   registerOutreachRoutes(app);
@@ -49,7 +54,7 @@ export function createServer(): express.Express {
   registerInboxRoutes(app);
 
   // --- Google accounts ---
-  app.get("/auth/google", (_req, res) => res.redirect(config.google.clientId ? authUrl() : "/settings.html"));
+  app.get("/auth/google", (_req, res) => res.redirect(config.google.clientId ? authUrl() : "/settings"));
 
   // OAuth credentials entered in Settings (when .env provides none)
   app.put("/api/settings/google", (req, res) => {
@@ -78,7 +83,7 @@ export function createServer(): express.Express {
     try {
       const email = await handleOAuthCallback(String(req.query.code ?? ""), owner);
       if (owner && config.azeritReturnUrl) return back("gmail", email);
-      res.redirect(`/settings.html?connected=${encodeURIComponent(email)}`);
+      res.redirect(`/settings?connected=${encodeURIComponent(email)}`);
     } catch (err) {
       if (err instanceof GmailOwnedElsewhere && owner && config.azeritReturnUrl) return back("gmail_error", err.message);
       res.status(500).send(`OAuth error: ${err instanceof Error ? err.message : err}`);

@@ -27,7 +27,7 @@
 
 <script src="app.js?v=15"></script>
 <script>
-renderNav("replies.html");
+renderNav("/replies");
 
 const UNDO_MS = 5000; // délai pendant lequel un envoi peut être annulé
 let tab = "todo";
@@ -273,7 +273,7 @@ function renderDetail() {
           <div class="menu-list" id="moreList" hidden>
             ${c.gmail_url ? `<button data-href="${esc(c.gmail_url)}">Open in Gmail</button>` : ""}
             ${liLink ? `<button data-href="${esc(liLink)}">Open on LinkedIn</button>` : ""}
-            <button data-href="campaigns.html#${c.campaign.id}" data-same="1">View campaign</button>
+            <button data-href="/campaigns#${c.campaign.id}" data-same="1">View campaign</button>
             <button id="unseen">Mark as unread</button>
           </div>
         </div>

@@ -68,12 +68,12 @@ c'est plus lent mais beaucoup moins détectable.
 
 ## Usage
 
-1. Dans l'app (`/campaigns.html`), ajoutez à une séquence une **étape LinkedIn**
+1. Dans l'app (`/campaigns`), ajoutez à une séquence une **étape LinkedIn**
    (*Invitation* ou *Message*) avec son gabarit (`{{first_name}}`, `{{company}}`…).
 2. Quand un contact atteint cette étape, le serveur la met en file LinkedIn.
 3. Laissez un onglet Chrome ouvert. L'extension dépile au rythme autorisé. Suivez
    l'état « Extension connectée » et les quotas du jour dans **Réglages**
-   (`/settings.html`) et dans le popup.
+   (`/settings`) et dans le popup.
 
 ## Limites à connaître
 

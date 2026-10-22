@@ -133,7 +133,7 @@
 
 <script src="app.js?v=15"></script>
 <script>
-renderNav("campaigns.html");
+renderNav("/campaigns");
 
 let selectedId = null;   // null = création
 let accounts = [];
@@ -1061,7 +1061,7 @@ function renderContacts() {
           : (hasLiSteps ? ` <span class="err" title="No LinkedIn URL — LinkedIn steps will be skipped">⚠️</span>` : "")}</div>
         <div class="muted">${esc([r.company, r.email || "no email"].filter(Boolean).join(" · "))}</div>
       </td>
-      <td>${pill(r.status)}${r.status === "replied" || r.status === "opted_out" ? ` <a href="replies.html#cc=${r.cc_id}" title="Read the reply and answer it" onclick="event.stopPropagation()">💬</a>` : r.li_thread_url ? ` <a href="${esc(r.li_thread_url)}" target="_blank" rel="noopener" title="LinkedIn conversation" onclick="event.stopPropagation()">💬</a>` : ""}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
+      <td>${pill(r.status)}${r.status === "replied" || r.status === "opted_out" ? ` <a href="/replies#cc=${r.cc_id}" title="Read the reply and answer it" onclick="event.stopPropagation()">💬</a>` : r.li_thread_url ? ` <a href="${esc(r.li_thread_url)}" target="_blank" rel="noopener" title="LinkedIn conversation" onclick="event.stopPropagation()">💬</a>` : ""}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
       <td>${r.current_step || "—"}</td>
       <td>${r.visit_count ? `<span title="${new Date(r.last_visit_at).toLocaleString("en-GB")} — ${r.visit_count} visit(s)">🌐 ${r.visit_count}</span>` : "—"}</td>
       <td>${r.variant || "—"}</td>
@@ -1202,7 +1202,7 @@ async function attioSync(btn) {
   await loadVarInstructions();
   refreshPreviewAccounts(); // rempli avec tous les comptes tant qu'aucune campagne n'est sélectionnée
   const campaigns = await loadList();
-  const [hid, htab] = location.hash.slice(1).split("index.html");
+  const [hid, htab] = location.hash.slice(1).split("/");
   const tab = htab === "stats" ? "info" : ["seq","info","contacts","import"].includes(htab) ? htab : "seq"; // #…/stats : anciens liens
   if (hid && hid !== "new" && campaigns.some(c => c.id === +hid)) {
     selectCampaign(+hid, tab);

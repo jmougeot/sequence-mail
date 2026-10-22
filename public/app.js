@@ -22,16 +22,16 @@ function fmtBody(s) {
 
 function renderNav(active) {
   const links = [
-    ["index.html", "Dashboard"],
-    ["campaigns.html", "Campaigns"],
-    ["replies.html", "Replies"],
-    ["settings.html", "Settings"],
+    ["/", "Dashboard"],
+    ["/campaigns", "Campaigns"],
+    ["/replies", "Replies"],
+    ["/settings", "Settings"],
   ];
   document.body.insertAdjacentHTML(
     "afterbegin",
     `<nav><span class="brand">Sequence Mail</span>` +
       links
-        .map(([href, label]) => `<a href="${href}" class="${href === active ? "active" : ""}">${label}${href === "replies.html" ? ` <span class="nav-badge" id="navReplies" hidden></span>` : ""}</a>`)
+        .map(([href, label]) => `<a href="${href}" class="${href === active ? "active" : ""}">${label}${href === "/replies" ? ` <span class="nav-badge" id="navReplies" hidden></span>` : ""}</a>`)
         .join("") +
       `</nav>`
   );

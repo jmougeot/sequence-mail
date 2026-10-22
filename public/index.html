@@ -18,7 +18,7 @@
     <table id="campaigns"><thead><tr>
       <th>Campaign</th><th>Status</th><th>Contacts</th><th>Emails sent</th><th>Replies</th><th>Reply rate</th><th>Progress</th><th></th>
     </tr></thead><tbody></tbody></table>
-    <p><a class="btn" href="campaigns.html#new">+ New campaign</a></p>
+    <p><a class="btn" href="/campaigns#new">+ New campaign</a></p>
   </div>
 
   <details class="card" id="archived" hidden>
@@ -31,7 +31,7 @@
 
 <script src="app.js?v=15"></script>
 <script>
-renderNav("index.html");
+renderNav("/");
 
 const plural = (n, w) => `${n} ${w}${n > 1 ? "s" : ""}`;
 
@@ -58,7 +58,7 @@ async function refresh() {
   const row = c => `
     <tr>
       <td>
-        <a href="campaigns.html#${c.id}" class="camp-name">${esc(c.name)}</a>
+        <a href="/campaigns#${c.id}" class="camp-name">${esc(c.name)}</a>
         <div class="muted">#${c.id} · ${plural(c.steps, "step")}</div>
       </td>
       <td>${pill(c.status)}</td>
@@ -67,7 +67,7 @@ async function refresh() {
       <td>${c.replied}${c.opted_out ? `<div class="subnum"><span class="dot warn"></span>${plural(c.opted_out, "opt-out")}</div>` : ""}</td>
       <td><span class="rate">${c.reply_rate}%</span>${c.ab_test ? `<div class="subnum">A ${c.reply_rate_a}% · B ${c.reply_rate_b}%</div>` : ""}</td>
       <td style="min-width:150px"><div class="prog"><div class="bar"><div style="width:${c.progress}%"></div></div><span class="pv">${c.progress}%</span></div></td>
-      <td><a class="btn ghost" href="campaigns.html#${c.id}">Manage</a></td>
+      <td><a class="btn ghost" href="/campaigns#${c.id}">Manage</a></td>
     </tr>
   `;
   $("#campaigns tbody").innerHTML = campaigns.map(row).join("") || '<tr><td colspan="8" class="muted">No campaigns yet — create one from the Campaigns page.</td></tr>';
