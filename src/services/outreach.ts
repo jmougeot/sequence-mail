@@ -847,10 +847,11 @@ function inviteUnanswered(account: LiAccount, row: ActionRow, now: number): bool
   return now < acceptanceDeadline(row.campaign_contact_id, row.created_at).at;
 }
 
-// Actions an account may take: its own, or free ones (contact not bound yet) of a campaign
-// that allows it. Only for active campaigns and contacts still waiting (not stopped, no
-// reply meanwhile; a detached action, for a contact still in the sequence), and ALWAYS
-// of the same owner as the account.
+// Actions an account may take: its own, those still unbound of a contact it already reached
+// (a message queued alongside the invite, before the invite bound the contact), or free ones
+// (contact not bound yet) of a campaign that allows it. Only for active campaigns and contacts
+// still waiting (not stopped, no reply meanwhile; a detached action, for a contact still in
+// the sequence), and ALWAYS of the same owner as the account.
 const ELIGIBLE = `
   FROM li_actions la
   JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
@@ -860,6 +861,7 @@ const ELIGIBLE = `
     AND cp.status = 'active'
     AND cp.owner_ref IS @owner
     AND (la.li_account_id = @acc
+         OR (la.li_account_id IS NULL AND cc.li_account_id = @acc)
          OR (la.li_account_id IS NULL AND cc.li_account_id IS NULL
              AND (cp.li_account_ids IS NULL OR EXISTS (SELECT 1 FROM json_each(cp.li_account_ids) WHERE value = @acc))))`;
 
@@ -973,6 +975,11 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
       .run(now, account.id, row.id, account.id);
     if (!changes) return false;
     db.prepare(`UPDATE campaign_contacts SET li_account_id = ? WHERE id = ? AND li_account_id IS NULL`).run(
+      account.id,
+      row.campaign_contact_id
+    );
+    // The contact's other queued actions (its message behind this invite) follow the account.
+    db.prepare(`UPDATE li_actions SET li_account_id = ? WHERE campaign_contact_id = ? AND status = 'pending' AND li_account_id IS NULL`).run(
       account.id,
       row.campaign_contact_id
     );
