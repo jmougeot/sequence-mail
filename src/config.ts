@@ -51,6 +51,8 @@ export const config = {
     messagesPerDay: int("LI_MESSAGES_PER_DAY", 40),
     hourStart: int("LI_HOUR_START", 9),
     hourEnd: int("LI_HOUR_END", 18),
+    // Time zone of the message hours above (empty = server time zone)
+    hourTimezone: process.env.LI_HOUR_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone,
     // Invites: no start hour, last one before HH:MM in SEND_WINDOW_TZ (hours above = messages)
     inviteUntil: process.env.LI_INVITE_UNTIL || "21:30",
     workdaysOnly: (process.env.LI_WORKDAYS_ONLY ?? "1") !== "0",

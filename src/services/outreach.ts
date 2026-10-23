@@ -436,10 +436,14 @@ export function dailyCap(a: LiAccount, type: LiActionType): number {
   return Math.max(0, type === "invite" ? (a.invites_per_day ?? L.invitesPerDay) : (a.messages_per_day ?? L.messagesPerDay));
 }
 
+// Messages: LI_HOUR_START to LI_HOUR_END in LI_HOUR_TZ.
+const messageZone = new Intl.DateTimeFormat("en-US", { timeZone: L.hourTimezone, hourCycle: "h23", weekday: "short", hour: "numeric" });
+
 function withinWindow(ts: number): boolean {
-  const d = new Date(ts);
-  if (L.workdaysOnly && (d.getDay() === 0 || d.getDay() === 6)) return false;
-  return d.getHours() >= L.hourStart && d.getHours() < L.hourEnd;
+  const p: Record<string, string> = {};
+  for (const part of messageZone.formatToParts(ts)) p[part.type] = part.value;
+  if (L.workdaysOnly && (p.weekday === "Sat" || p.weekday === "Sun")) return false;
+  return Number(p.hour) >= L.hourStart && Number(p.hour) < L.hourEnd;
 }
 
 // Invites: no start hour, until L.inviteUntil in the email window's time zone.
@@ -482,12 +486,10 @@ function withinInboxWindow(ts: number): boolean {
 }
 
 function nextWindowOpen(ts: number): number {
-  const d = new Date(ts);
-  for (let i = 0; i < 8; i++) {
-    const open = new Date(d);
-    if (i > 0 || d.getHours() >= L.hourEnd) open.setDate(open.getDate() + (i || 1));
-    open.setHours(L.hourStart, 0, 0, 0);
-    if (open.getTime() > ts && withinWindow(open.getTime())) return open.getTime();
+  // Every UTC offset in use is a multiple of 15 min: the start hour falls on a quarter hour.
+  const step = 15 * 60_000;
+  for (let t = Math.ceil((ts + 1) / step) * step; t < ts + 8 * DAY_MS; t += step) {
+    if (withinWindow(t)) return t;
   }
   return ts + DAY_MS;
 }
@@ -841,6 +843,13 @@ const ELIGIBLE = `
          OR (la.li_account_id IS NULL AND cc.li_account_id IS NULL
              AND (cp.li_account_ids IS NULL OR EXISTS (SELECT 1 FROM json_each(cp.li_account_ids) WHERE value = @acc))))`;
 
+// Eligible and due now: not postponed, and no message while its invite is still out.
+const READY = `
+  AND (la.not_before IS NULL OR la.not_before <= @now)
+  AND NOT (la.type = 'message' AND EXISTS (
+    SELECT 1 FROM li_actions inv WHERE inv.campaign_contact_id = la.campaign_contact_id AND inv.type = 'invite'
+      AND (inv.status IN ('pending', 'sending') OR (inv.status = 'sent' AND inv.sent_at > @now - ${ACCEPT_CHECK_MS}))))`;
+
 export function nextAction(account: LiAccount, via: LiMode): NextResult {
   const now = Date.now();
   // "Connected" = the account's own executor (per its mode) is seen: an extension polling
@@ -910,11 +919,7 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   // Priority campaigns first; then its own actions (contacts already engaged), then free ones.
   const pick = db.prepare(
     `SELECT la.id, la.campaign_contact_id, la.linkedin, la.type, la.body, la.created_at ${ELIGIBLE}
-       AND la.type IN (${allowed.map((t) => `'${t}'`).join(",")})
-       AND (la.not_before IS NULL OR la.not_before <= @now)
-       AND NOT (la.type = 'message' AND EXISTS (
-         SELECT 1 FROM li_actions inv WHERE inv.campaign_contact_id = la.campaign_contact_id AND inv.type = 'invite'
-           AND (inv.status IN ('pending', 'sending') OR (inv.status = 'sent' AND inv.sent_at > @now - ${ACCEPT_CHECK_MS}))))
+       AND la.type IN (${allowed.map((t) => `'${t}'`).join(",")}) ${READY}
      ORDER BY cp.priority DESC, (la.li_account_id IS NULL), la.id ASC LIMIT 1`
   );
   let row: ActionRow | undefined;
@@ -966,9 +971,11 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
 }
 
 /**
- * Next action among several accounts served by the same executor: the account idle
- * the longest goes first, one action at most. Without an action: the shortest wait,
- * else the idle reasons. `account` = index of the account in the given list.
+ * Next action among several accounts served by the same executor: the account with a
+ * due action of a priority campaign goes first (accounts of one LinkedIn profile share its
+ * quotas, but each only sees its owner's campaigns), then the one idle the longest; one
+ * action at most. Without an action: the shortest wait, else the idle reasons.
+ * `account` = index of the account in the given list.
  */
 export function nextForAccounts(accounts: LiAccount[], via: LiMode): NextResult & { account?: number } {
   const lastSent = (a: LiAccount) =>
@@ -976,7 +983,12 @@ export function nextForAccounts(accounts: LiAccount[], via: LiMode): NextResult 
   // All are seen on this call, even those a served action spares from being polled.
   const now = Date.now();
   for (const a of accounts) if (a.mode === via) db.prepare("UPDATE li_accounts SET last_seen_at = ? WHERE id = ?").run(now, a.id);
-  const order = accounts.map((a, i) => ({ i, t: lastSent(a) })).sort((x, y) => x.t - y.t || x.i - y.i);
+  const topPriority = (a: LiAccount) =>
+    (db.prepare(`SELECT MAX(cp.priority) AS p ${ELIGIBLE} ${READY}`).get({ acc: a.id, owner: a.owner_ref, now }) as { p: number | null })
+      .p ?? 0;
+  const order = accounts
+    .map((a, i) => ({ i, p: topPriority(a), t: lastSent(a) }))
+    .sort((x, y) => y.p - x.p || x.t - y.t || x.i - y.i);
   const results: NextResult[] = [];
   for (const { i } of order) {
     const r = nextAction(accounts[i], via);

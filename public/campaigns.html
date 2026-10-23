@@ -1222,9 +1222,19 @@ async function attioSync(btn) {
   }
 })();
 
-// Échap ferme le panneau d'aperçu
+// Échap ferme le panneau d'aperçu ; ↓ / ↑ passent au contact suivant / précédent de la liste
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape" && !$("#drawer").hidden) closeDrawer();
+  if (e.key === "Escape" && !$("#drawer").hidden) return closeDrawer();
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  if ($("#paneContacts").hidden || e.target.closest("input, textarea, select") || e.metaKey || e.ctrlKey || e.altKey) return;
+  const rows = $$("#contacts tbody tr[data-contact]");
+  if (!rows.length) return;
+  e.preventDefault();
+  const idx = rows.findIndex(tr => tr.classList.contains("sel"));
+  const next = e.key === "ArrowDown" ? Math.min(idx + 1, rows.length - 1) : Math.max(idx - 1, 0);
+  if (next === idx) return;
+  previewContact(+rows[next].dataset.contact);
+  rows[next].scrollIntoView({ block: "nearest" });
 });
 
 // --- Autocomplétion des variables : taper {{ propose les choix disponibles ---

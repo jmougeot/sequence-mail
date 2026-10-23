@@ -115,6 +115,12 @@ async function startHttp(port: number): Promise<void> {
         });
         transport.onclose = () => { if (transport!.sessionId) transports.delete(transport!.sessionId); };
         await buildServer().connect(transport);
+      } else if (sessionId) {
+        // Unknown session (lost on restart): 404 tells the client to re-initialize.
+        res.writeHead(404, { "Content-Type": "application/json" }).end(
+          JSON.stringify({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null })
+        );
+        return;
       } else {
         res.writeHead(400, { "Content-Type": "application/json" }).end(
           JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Bad Request: no valid session" }, id: null })
