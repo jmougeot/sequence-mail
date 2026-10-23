@@ -362,11 +362,13 @@ export function registerServiceRoutes(app: express.Express): void {
   });
 
   /**
-   * Enrolls and launches candidates: [{ key, first_name, last_name, company, linkedin, email?,
-   * vars? }]. `vars` (e.g. the message written for this candidate) stays specific to this
-   * enrollment. An already launched candidate isn't relaunched.
+   * Enrolls candidates: [{ key, first_name, last_name, company, linkedin, email?, vars? }].
+   * `vars` (e.g. the message written for this candidate) stays specific to this enrollment.
+   * `/enroll` launches them; `/hold` leaves them held — nothing goes out until `/launch`. A separate
+   * route rather than a flag: a server without it answers 404 instead of sending. An already
+   * launched candidate isn't relaunched (nor put back on hold).
    */
-  app.post("/api/svc/campaigns/:id/enroll", async (req, res) => {
+  const enroll = (hold: boolean) => async (req: express.Request, res: express.Response) => {
     const owner = ownerOf(req)!;
     const campaign = ownedCampaign(req.params.id, owner);
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
@@ -423,6 +425,10 @@ export function registerServiceRoutes(app: express.Express): void {
           }
           if (cc.status === "held") {
             setMeta.run(vars ? JSON.stringify(vars) : null, key, cc.id);
+            if (hold) {
+              results.push({ key, cc_id: cc.id, status: "held" });
+              return;
+            }
             launch.run(cc.id);
             results.push({ key, cc_id: cc.id, status: "pending" });
           } else {
@@ -433,6 +439,25 @@ export function registerServiceRoutes(app: express.Express): void {
       })();
     }
     res.json({ results });
+  };
+  app.post("/api/svc/campaigns/:id/enroll", enroll(false));
+  app.post("/api/svc/campaigns/:id/hold", enroll(true));
+
+  /** Launches held candidates (Azerit keys). `launched`: keys that were held and now go out. */
+  app.post("/api/svc/campaigns/:id/launch", (req, res) => {
+    const campaign = ownedCampaign(req.params.id, ownerOf(req)!);
+    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    const keys = (req.body as { keys?: unknown }).keys;
+    if (!Array.isArray(keys) || !keys.length || keys.length > 500) return res.status(400).json({ error: "keys[] : 1 à 500" });
+    const launch = db.prepare(
+      "UPDATE campaign_contacts SET status = 'pending', error = NULL WHERE campaign_id = ? AND external_key = ? AND status = 'held'"
+    );
+    const launched = db.transaction(() => {
+      const done = keys.map(String).filter((key) => launch.run(campaign.id, key).changes > 0);
+      if (done.length) db.prepare("UPDATE campaigns SET status = 'active' WHERE id = ?").run(campaign.id);
+      return done;
+    })();
+    res.json({ launched });
   });
 
   /**
