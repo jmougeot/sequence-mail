@@ -110,13 +110,18 @@ export interface InboxReport {
   conversations: number;
   replied: Array<{ cc_id: number; name: string; opted_out: boolean }>;
   ambiguous: string[];
+  unmatched: number; // last message from the other side, but no watched contact of that name
+  stale: number; // matched, but older than our first action (or unread not set)
 }
 
 /** Processes the conversation list read by the account's executor. */
 export function processInbox(account: LiAccount, conversations: LiConversation[]): InboxReport {
-  const report: InboxReport = { conversations: conversations.length, replied: [], ambiguous: [] };
+  const report: InboxReport = { conversations: conversations.length, replied: [], ambiguous: [], unmatched: 0, stale: 0 };
   const pool = watched(account.id);
-  if (!pool.length) return report;
+  if (!pool.length) {
+    console.log(`[linkedin] inbox read (${account.name}): ${conversations.length} conversations, no contact to watch`);
+    return report;
+  }
 
   const bySlug = new Map<string, Watched>();
   const byName = new Map<string, Watched[]>();
@@ -138,7 +143,11 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
       if (cands.length > 1) report.ambiguous.push(conv.name ?? "?");
       if (cands.length === 1) match = cands[0];
     }
-    if (!match || done.has(match.cc_id)) continue;
+    if (!match) {
+      report.unmatched++;
+      continue;
+    }
+    if (done.has(match.cc_id)) continue;
 
     // The contact's message must postdate our first action (else it's an old conversation); unread
     // = accepted.
@@ -146,7 +155,10 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
     const firstDay = new Date(match.first_sent_at);
     firstDay.setHours(0, 0, 0, 0);
     const recent = at != null ? at >= firstDay.getTime() : Boolean(conv.unread);
-    if (!recent) continue;
+    if (!recent) {
+      report.stale++;
+      continue;
+    }
 
     done.add(match.cc_id);
     const optedOut = isOptOut(conv.snippet ?? "");
@@ -164,6 +176,10 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
     report.replied.push({ cc_id: match.cc_id, name: conv.name ?? "?", opted_out: optedOut });
     console.log(`[linkedin] ${conv.name} replied on LinkedIn (${account.name})${optedOut ? " — opted out" : ""} — sequence stopped`);
   }
+  console.log(
+    `[linkedin] inbox read (${account.name}): ${conversations.length} conversations, ${pool.length} watched, ` +
+      `${report.replied.length} replies, ${report.unmatched} from unknown contacts, ${report.ambiguous.length} ambiguous, ${report.stale} older than our first action`
+  );
   return report;
 }
 

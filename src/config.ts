@@ -53,7 +53,8 @@ export const config = {
     hourEnd: int("LI_HOUR_END", 18),
     // Time zone of the message hours above (empty = server time zone)
     hourTimezone: process.env.LI_HOUR_TZ || Intl.DateTimeFormat().resolvedOptions().timeZone,
-    // Invites: no start hour, last one before HH:MM in SEND_WINDOW_TZ (hours above = messages)
+    // Invites: from HH:MM, last one before HH:MM, in SEND_WINDOW_TZ (hours above = messages)
+    inviteFrom: process.env.LI_INVITE_FROM || "08:00",
     inviteUntil: process.env.LI_INVITE_UNTIL || "21:30",
     workdaysOnly: (process.env.LI_WORKDAYS_ONLY ?? "1") !== "0",
     minGapSec: int("LI_MIN_GAP_SEC", 90),

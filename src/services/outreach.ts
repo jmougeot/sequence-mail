@@ -396,17 +396,34 @@ export function runnerAccounts() {
   });
 }
 
-/** Hours during which the runner keeps browsers open (sending + inbox reads). */
+/** Hours (in LI_HOUR_TZ) during which the runner keeps browsers open (sending + inbox reads). */
 export function runnerWindow() {
-  return { hour_start: Math.max(0, L.hourStart - 1), hour_end: Math.min(24, L.hourEnd + 3), tz_offset_min: -new Date().getTimezoneOffset() };
+  return { hour_start: Math.max(0, L.hourStart - 1), hour_end: Math.min(24, L.hourEnd + 3), tz_offset_min: zoneOffsetMin(Date.now()) };
 }
 
 // --- Account pacing ----------------------------------------------------------
 
+// Calendar day and clock in LI_HOUR_TZ: daily caps reset at its midnight and inbox reads follow
+// its hours (the container itself runs in UTC).
+const dayZone = new Intl.DateTimeFormat("en-US", {
+  timeZone: L.hourTimezone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric",
+});
+function zoneParts(ts: number): Record<string, number> {
+  const p: Record<string, number> = {};
+  for (const part of dayZone.formatToParts(ts)) if (part.type !== "literal") p[part.type] = Number(part.value);
+  return p;
+}
+/** Offset of LI_HOUR_TZ from UTC at `ts`, in minutes (Paris: 60 or 120). */
+function zoneOffsetMin(ts: number): number {
+  const p = zoneParts(ts);
+  return Math.round((Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(ts / 1000) * 1000) / 60_000);
+}
+/** Midnight of `ts`'s day in LI_HOUR_TZ. */
 function startOfLocalDay(ts: number): number {
-  const d = new Date(ts);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+  const p = zoneParts(ts);
+  const midnight = Date.UTC(p.year, p.month - 1, p.day); // local midnight read as UTC
+  const guess = midnight - zoneOffsetMin(ts) * 60_000;
+  return midnight - zoneOffsetMin(guess) * 60_000; // offset at midnight itself (DST change days)
 }
 
 function sentToday(accountIds: number | number[], type: LiActionType): number {
@@ -446,22 +463,25 @@ function withinWindow(ts: number): boolean {
   return Number(p.hour) >= L.hourStart && Number(p.hour) < L.hourEnd;
 }
 
-// Invites: no start hour, until L.inviteUntil in the email window's time zone.
+// Invites: from L.inviteFrom until L.inviteUntil in the email window's time zone.
 const inviteZone = new Intl.DateTimeFormat("en-US", {
   timeZone: config.deliverability.sendWindowTimezone, hourCycle: "h23", weekday: "short", hour: "numeric", minute: "numeric",
 });
-const INVITE_UNTIL_MIN = (([h, m]) => h * 60 + (m || 0))(L.inviteUntil.split(":").map(Number));
+const hhmm = (s: string) => (([h, m]) => h * 60 + (m || 0))(s.split(":").map(Number));
+const INVITE_FROM_MIN = hhmm(L.inviteFrom);
+const INVITE_UNTIL_MIN = hhmm(L.inviteUntil);
 
 function withinInviteWindow(ts: number): boolean {
   const p: Record<string, string> = {};
   for (const part of inviteZone.formatToParts(ts)) p[part.type] = part.value;
   if (L.workdaysOnly && (p.weekday === "Sat" || p.weekday === "Sun")) return false;
-  return Number(p.hour) * 60 + Number(p.minute) < INVITE_UNTIL_MIN;
+  const min = Number(p.hour) * 60 + Number(p.minute);
+  return min >= INVITE_FROM_MIN && min < INVITE_UNTIL_MIN;
 }
 
-/** Next instant the invite window opens (midnight of an allowed day, in its time zone). */
+/** Next instant the invite window opens (LI_INVITE_FROM of an allowed day, in its time zone). */
 function nextInviteOpen(ts: number): number {
-  // Every UTC offset in use is a multiple of 15 min: midnight falls on a quarter hour.
+  // Every UTC offset in use is a multiple of 15 min: a start time on a quarter hour is hit exactly.
   const step = 15 * 60_000;
   for (let t = Math.ceil((ts + 1) / step) * step; t < ts + 8 * DAY_MS; t += step) {
     if (withinInviteWindow(t)) return t;
@@ -469,7 +489,7 @@ function nextInviteOpen(ts: number): number {
   return ts + DAY_MS;
 }
 
-/** Action types whose hours allow them at `ts`: messages in LI_HOUR_*, invites until LI_INVITE_UNTIL. */
+/** Action types whose hours allow them at `ts`: messages in LI_HOUR_*, invites in LI_INVITE_FROM–LI_INVITE_UNTIL. */
 function openTypes(ts: number): LiActionType[] {
   return (["invite", "message"] as LiActionType[]).filter((t) => (t === "invite" ? withinInviteWindow(ts) : withinWindow(ts)));
 }
@@ -481,7 +501,7 @@ function nextOpen(type: LiActionType, ts: number): number {
 /** Inbox reads: wider hours, weekends included (reading is not sending). */
 function withinInboxWindow(ts: number): boolean {
   const w = runnerWindow();
-  const h = new Date(ts).getHours();
+  const h = zoneParts(ts).hour;
   return h >= w.hour_start && h < w.hour_end;
 }
 
