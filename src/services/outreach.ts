@@ -797,7 +797,9 @@ function connectionsSince(account: LiAccount): number | null {
   return r.t;
 }
 
-/** Stores a read of the Connections page. `from` = oldest day the read covered (0 = whole list). */
+/** Stores a read of the Connections page. `from` = oldest day the read covered (0 = whole list).
+ *  A message postponed because its invite was unanswered goes out at the next poll once the
+ *  contact shows up in the list, instead of waiting out its delay. */
 export function recordConnections(account: LiAccount, list: unknown, from: unknown): number {
   if (!Array.isArray(list) || typeof from !== "number" || !Number.isFinite(from)) return 0;
   const now = Date.now();
@@ -806,14 +808,33 @@ export function recordConnections(account: LiAccount, list: unknown, from: unkno
      ON CONFLICT (li_account_id, slug) DO UPDATE SET connected_on = excluded.connected_on, seen_at = excluded.seen_at`
   );
   let n = 0;
+  const slugs = new Set<string>();
   db.transaction(() => {
     for (const c of list.slice(0, 2000) as Array<{ slug?: unknown; connected_on?: unknown }>) {
       const slug = linkedinSlug(`https://www.linkedin.com/in/${String(c?.slug ?? "")}`);
       if (!slug) continue;
       upsert.run(account.id, slug, typeof c.connected_on === "number" ? c.connected_on : null, now);
+      slugs.add(slug);
       n++;
     }
     db.prepare(`UPDATE li_accounts SET connections_at = ?, connections_from = ? WHERE id = ?`).run(now, from, account.id);
+    const ids = sameProfile(account).map((a) => a.id);
+    const waiting = db
+      .prepare(
+        `SELECT la.id, la.linkedin FROM li_actions la JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
+         WHERE la.status = 'pending' AND la.type = 'message' AND la.not_before > ?
+           AND (la.error LIKE 'invitation pas encore acceptée%' OR la.error LIKE 'pas encore en relation%')
+           AND COALESCE(la.li_account_id, cc.li_account_id) IN (${ids.map(() => "?").join(",")})`
+      )
+      .all(now, ...ids) as Array<{ id: number; linkedin: string | null }>;
+    const release = db.prepare(`UPDATE li_actions SET not_before = NULL, error = NULL WHERE id = ?`);
+    for (const w of waiting) {
+      const slug = linkedinSlug(w.linkedin);
+      if (slug && slugs.has(slug)) {
+        release.run(w.id);
+        console.log(`[linkedin] invitation accepted (${account.name}): message #${w.id} released`);
+      }
+    }
   })();
   return n;
 }
