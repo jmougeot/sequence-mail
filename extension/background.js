@@ -222,10 +222,10 @@ async function postVerdict(url, auth, body) {
 const WORK_TAB = "workTab";
 // Taille d'un écran d'ordinateur : sans elle Chrome crée la fenêtre en 500×677, et
 // à cette largeur LinkedIn ouvre « Message » en page entière (/messaging/compose/)
-// au lieu de la bulle. Réduite entre deux actions ; montrée le temps d'un message
-// (cf. showForMessage). `v` : une fenêtre notée par une version plus ancienne
-// (500 px) est recréée.
-const WORK_WINDOW = { width: 1280, height: 900, v: 2 };
+// au lieu de la bulle. Jamais réduite : posée dans un coin de l'écran, où la personne
+// peut la laisser (cf. showForMessage). `v` : une fenêtre notée par une version plus
+// ancienne (500 px, ou réduite) est recréée.
+const WORK_WINDOW = { width: 1280, height: 900, v: 3 };
 
 async function ensureTab() {
   // En storage.local (survit au rechargement de l'extension). Après un redémarrage
@@ -244,48 +244,48 @@ async function ensureTab() {
     width: WORK_WINDOW.width,
     height: WORK_WINDOW.height,
   });
-  // macOS ignore state: "minimized" à la création ; la réduction passe par update
-  await chrome.windows.update(win.id, { state: "minimized" }).catch(() => {});
   const tab = win.tabs[0];
   await chrome.storage.local.set({ [WORK_TAB]: { tabId: tab.id, windowId: win.id, v: WORK_WINDOW.v } });
   await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
   if ((await chrome.tabs.get(tab.id)).status !== "complete") await waitForLoad(tab.id);
+  await placeInCorner(win.id, tab.id);
   return tab;
 }
 
 /**
  * Messages seulement : LinkedIn dessine sa messagerie (bulle ou page) via
  * requestAnimationFrame, que Chrome gèle dans un onglet caché (fenêtre réduite
- * ou entièrement recouverte) — la zone de saisie n'apparaît alors jamais, quel
- * que soit le délai (vérifié : 0 image en 21 s). Les invitations, elles, n'en
- * dépendent pas. La fenêtre est donc montrée le temps du message, sans prendre
- * le focus, avec seulement un coin à l'écran (en bas à droite — un écran entier
- * gênerait et pourrait être cliqué par erreur), puis réduite à nouveau. Rend la
- * fonction qui la réduit.
+ * ou entièrement recouverte — sur macOS, une fenêtre recouverte est « occluded ») :
+ * la zone de saisie n'apparaît alors jamais. Les invitations n'en dépendent pas.
+ * Appelée par le content script juste avant d'ouvrir la messagerie, pour que la
+ * fenêtre ne gêne que quelques secondes : si l'onglet est déjà visible (un coin
+ * dégagé suffit, c'est l'état recherché), rien ; sinon la fenêtre est posée dans
+ * le coin bas droit de l'écran ; si elle reste recouverte, elle passe au premier
+ * plan le temps du message, et la fenêtre suivante reprend le devant ensuite.
+ * Rend la fonction qui termine l'affichage.
  */
 const MESSAGE_CORNER = { width: 320, height: 260 };
 
 async function showForMessage(tab) {
   const win = await chrome.windows.get(tab.windowId).catch(() => null);
   if (!win) return async () => {};
-  const area = await screenArea(tab.id);
+  if (await waitVisible(tab.id, 300)) return async () => {};
+  if (win.state === "minimized") await chrome.windows.update(win.id, { state: "normal" }).catch(() => {});
+  await placeInCorner(win.id, tab.id);
+  if (await waitVisible(tab.id, 1500)) return async () => {};
+  await chrome.windows.update(win.id, { focused: true }).catch(() => {});
+  await waitVisible(tab.id, 1500);
+  return async () => {
+    await chrome.windows.update(win.id, { focused: false }).catch(() => {});
+  };
+}
+
+/** Pose la fenêtre de travail en bas à droite, un coin seulement à l'écran. */
+async function placeInCorner(winId, tabId) {
+  const area = await screenArea(tabId);
   const left = Math.max(area.left, area.left + area.width - MESSAGE_CORNER.width);
   const top = Math.max(area.top, area.top + area.height - MESSAGE_CORNER.height);
-  // L'état d'abord (une fenêtre réduite ignore les coordonnées), puis la position.
-  await chrome.windows.update(win.id, { state: "normal" }).catch(() => {});
-  await chrome.windows.update(win.id, { left, top, width: WORK_WINDOW.width, height: WORK_WINDOW.height }).catch(() => {});
-  // macOS : une fenêtre réduite ne ressort pas toujours sans focus, et une fenêtre entièrement
-  // recouverte reste « hidden » (occlusion) — l'onglet était alors vu « hidden … en 0,0 » et le
-  // message échouait. Si l'onglet n'est pas visible au bout d'un instant, la fenêtre passe au
-  // premier plan le temps du message ; la réduction qui suit rend le focus.
-  if (!(await waitVisible(tab.id, 1500))) {
-    await chrome.windows.update(win.id, { focused: true }).catch(() => {});
-    await chrome.windows.update(win.id, { left, top, width: WORK_WINDOW.width, height: WORK_WINDOW.height }).catch(() => {});
-    await waitVisible(tab.id, 1500);
-  }
-  return async () => {
-    await chrome.windows.update(win.id, { state: "minimized" }).catch(() => {});
-  };
+  await chrome.windows.update(winId, { left, top, width: WORK_WINDOW.width, height: WORK_WINDOW.height }).catch(() => {});
 }
 
 /** Vrai dès que l'onglet est rendu (document.visibilityState « visible »), au plus tard après `ms`. */
@@ -351,11 +351,12 @@ async function sendToTab(tabId, payload, tries = 6) {
  * Exécute une action : on amène l'onglet sur le profil cible, puis le content
  * script y joue le geste humain (clic Se connecter / Message, saisie, envoi).
  */
+// Fin d'affichage de la fenêtre montrée pour le message en cours (cf. showForMessage).
+let pendingHide = async () => {};
+
 async function runAction(action) {
-  let hide = async () => {};
   try {
     const tab = await ensureTab();
-    if (action.type === "message") hide = await showForMessage(tab);
     await chrome.tabs.update(tab.id, { url: profileUrl(action.linkedin) });
     await waitForLoad(tab.id);
     await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500)); // laisse l'UI se stabiliser
@@ -370,7 +371,8 @@ async function runAction(action) {
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
   } finally {
-    await hide();
+    await pendingHide();
+    pendingHide = async () => {};
   }
 }
 
@@ -484,6 +486,14 @@ async function connectToAzerit(origin, code, replace) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Le content script, sur le profil, demande la fenêtre visible juste avant d'ouvrir la messagerie.
+  if (msg.type === "li-show-for-message" && sender.id === chrome.runtime.id && sender.tab) {
+    showForMessage(sender.tab).then(
+      (hide) => { pendingHide = hide; sendResponse({ ok: true }); },
+      () => sendResponse({ ok: false })
+    );
+    return true;
+  }
   if (!msg || typeof msg !== "object") return;
   if (msg.type === "reload-extension" && sender.id === chrome.runtime.id && !sender.tab) {
     // jamais au milieu d'une action : on attend sa fin

@@ -936,11 +936,13 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   const allowed = underCap.filter((t) => open.includes(t));
   if (!allowed.length) return { wait: untilOpen(underCap), reason: "Hors plage horaire d'envoi" };
 
-  // Priority campaigns first; then its own actions (contacts already engaged), then free ones.
+  // Priority campaigns first, and within a priority level messages before invites (a message
+  // reaches a contact who already accepted); then its own actions (contacts already engaged),
+  // then free ones.
   const pick = db.prepare(
     `SELECT la.id, la.campaign_contact_id, la.linkedin, la.type, la.body, la.created_at ${ELIGIBLE}
        AND la.type IN (${allowed.map((t) => `'${t}'`).join(",")}) ${READY}
-     ORDER BY cp.priority DESC, (la.li_account_id IS NULL), la.id ASC LIMIT 1`
+     ORDER BY cp.priority DESC, (la.type = 'message') DESC, (la.li_account_id IS NULL), la.id ASC LIMIT 1`
   );
   let row: ActionRow | undefined;
   for (let i = 0; i < 50; i++) {
@@ -991,11 +993,12 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
 }
 
 /**
- * Next action among several accounts served by the same executor: the account with a
- * due action of a priority campaign goes first (accounts of one LinkedIn profile share its
- * quotas, but each only sees its owner's campaigns), then the one idle the longest; one
- * action at most. Without an action: the shortest wait, else the idle reasons.
- * `account` = index of the account in the given list.
+ * Next action among several accounts served by the same executor: the account with the most
+ * urgent due action goes first — priority campaign before the others, and at equal priority a
+ * message before an invite (accounts of one LinkedIn profile share its quotas, but each only
+ * sees its owner's campaigns) — then the one idle the longest; one action at most. Without an
+ * action: the shortest wait, else the idle reasons. `account` = index of the account in the
+ * given list.
  */
 export function nextForAccounts(accounts: LiAccount[], via: LiMode): NextResult & { account?: number } {
   const lastSent = (a: LiAccount) =>
@@ -1004,8 +1007,11 @@ export function nextForAccounts(accounts: LiAccount[], via: LiMode): NextResult 
   const now = Date.now();
   for (const a of accounts) if (a.mode === via) db.prepare("UPDATE li_accounts SET last_seen_at = ? WHERE id = ?").run(now, a.id);
   const topPriority = (a: LiAccount) =>
-    (db.prepare(`SELECT MAX(cp.priority) AS p ${ELIGIBLE} ${READY}`).get({ acc: a.id, owner: a.owner_ref, now }) as { p: number | null })
-      .p ?? 0;
+    (
+      db.prepare(`SELECT MAX(cp.priority * 2 + (la.type = 'message')) AS p ${ELIGIBLE} ${READY}`).get({ acc: a.id, owner: a.owner_ref, now }) as {
+        p: number | null;
+      }
+    ).p ?? 0;
   const order = accounts
     .map((a, i) => ({ i, p: topPriority(a), t: lastSent(a) }))
     .sort((x, y) => y.p - x.p || x.t - y.t || x.i - y.i);

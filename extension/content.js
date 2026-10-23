@@ -575,6 +575,8 @@ async function doMessage(text, inThread, guard, meName) {
     // reporte le message de quelques heures, sans pause punitive.
     if (pending) return { ok: false, retry: true, error: "pas encore en relation (invitation non acceptée)" };
     if (!msgBtn) return { ok: false, error: "bouton « Message » du profil introuvable" };
+    // Fenêtre de travail rendue visible par le background juste avant d'ouvrir la messagerie.
+    await new Promise((r) => chrome.runtime.sendMessage({ type: "li-show-for-message" }, () => { void chrome.runtime.lastError; r(); }));
     // « non rendue » : le serveur y voit un échec passager et réessaie plus tard.
     if (!(await rendering())) {
       return { ok: false, error: `messagerie non rendue : onglet caché (fenêtre de travail réduite ou recouverte) — rien envoyé ; ${messageDiagnostic(null)}` };
