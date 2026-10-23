@@ -1026,6 +1026,9 @@ const CHECKPOINT = /contrôle de sécurité|checkpoint|captcha|challenge/i;
 // content script reloaded…): the action is retried instead of failing the contact.
 const TRANSIENT = /introuvable|injoignable|n'a pas été reconnu|mal saisi|resté dans le champ|non rendu|No current window|verdict non transmis/i;
 const MAX_UI_RETRIES = 2;
+// Work window hidden on the executor's machine (LinkedIn did not render its messaging): a local
+// display problem, nothing reached LinkedIn.
+const HIDDEN = /onglet caché/i;
 
 /** An executor's verdict on a served action. */
 export interface LiVerdict {
@@ -1166,6 +1169,17 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
   }
 
   const msg = v.error ?? "échec";
+  // Hidden work window: retried within the hour, not counted as an interface failure, no
+  // safety pause (LinkedIn saw nothing wrong), just a few minutes before the next action.
+  if (HIDDEN.test(msg)) {
+    db.prepare(`UPDATE li_actions SET status = 'pending', lease_at = NULL, not_before = ?, error = ? WHERE id = ?`).run(
+      Math.round(now + rand(20, 40) * 60_000),
+      `${msg} — nouvel essai prévu`,
+      id
+    );
+    db.prepare(`UPDATE li_accounts SET next_allowed_at = ? WHERE id = ?`).run(Math.round(now + rand(4, 8) * 60_000), account.id);
+    return true;
+  }
   // Passing interface failure: retried 1-3 h later (the account still pauses), up to
   // MAX_UI_RETRIES times before the contact is marked failed.
   if (TRANSIENT.test(msg) && !NOT_FOUND.test(msg) && !CHECKPOINT.test(msg) && row.ui_failures < MAX_UI_RETRIES) {

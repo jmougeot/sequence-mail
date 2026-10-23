@@ -274,9 +274,33 @@ async function showForMessage(tab) {
   // L'état d'abord (une fenêtre réduite ignore les coordonnées), puis la position.
   await chrome.windows.update(win.id, { state: "normal" }).catch(() => {});
   await chrome.windows.update(win.id, { left, top, width: WORK_WINDOW.width, height: WORK_WINDOW.height }).catch(() => {});
+  // macOS : une fenêtre réduite ne ressort pas toujours sans focus, et une fenêtre entièrement
+  // recouverte reste « hidden » (occlusion) — l'onglet était alors vu « hidden … en 0,0 » et le
+  // message échouait. Si l'onglet n'est pas visible au bout d'un instant, la fenêtre passe au
+  // premier plan le temps du message ; la réduction qui suit rend le focus.
+  if (!(await waitVisible(tab.id, 1500))) {
+    await chrome.windows.update(win.id, { focused: true }).catch(() => {});
+    await chrome.windows.update(win.id, { left, top, width: WORK_WINDOW.width, height: WORK_WINDOW.height }).catch(() => {});
+    await waitVisible(tab.id, 1500);
+  }
   return async () => {
     await chrome.windows.update(win.id, { state: "minimized" }).catch(() => {});
   };
+}
+
+/** Vrai dès que l'onglet est rendu (document.visibilityState « visible »), au plus tard après `ms`. */
+async function waitVisible(tabId, ms) {
+  const until = Date.now() + ms;
+  do {
+    try {
+      const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: () => document.visibilityState === "visible" });
+      if (r && r.result) return true;
+    } catch {
+      // onglet sans page scriptable
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  } while (Date.now() < until);
+  return false;
 }
 
 /** Zone utile de l'écran, lue dans l'onglet de travail (le service worker n'a pas `screen`). */
