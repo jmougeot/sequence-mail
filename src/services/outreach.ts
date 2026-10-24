@@ -463,9 +463,9 @@ function withinWindow(ts: number): boolean {
   return Number(p.hour) >= L.hourStart && Number(p.hour) < L.hourEnd;
 }
 
-// Invites: from L.inviteFrom until L.inviteUntil in the email window's time zone.
+// Invites: from L.inviteFrom until L.inviteUntil in the email window's time zone, weekends included.
 const inviteZone = new Intl.DateTimeFormat("en-US", {
-  timeZone: config.deliverability.sendWindowTimezone, hourCycle: "h23", weekday: "short", hour: "numeric", minute: "numeric",
+  timeZone: config.deliverability.sendWindowTimezone, hourCycle: "h23", hour: "numeric", minute: "numeric",
 });
 const hhmm = (s: string) => (([h, m]) => h * 60 + (m || 0))(s.split(":").map(Number));
 const INVITE_FROM_MIN = hhmm(L.inviteFrom);
@@ -474,12 +474,11 @@ const INVITE_UNTIL_MIN = hhmm(L.inviteUntil);
 function withinInviteWindow(ts: number): boolean {
   const p: Record<string, string> = {};
   for (const part of inviteZone.formatToParts(ts)) p[part.type] = part.value;
-  if (L.workdaysOnly && (p.weekday === "Sat" || p.weekday === "Sun")) return false;
   const min = Number(p.hour) * 60 + Number(p.minute);
   return min >= INVITE_FROM_MIN && min < INVITE_UNTIL_MIN;
 }
 
-/** Next instant the invite window opens (LI_INVITE_FROM of an allowed day, in its time zone). */
+/** Next instant the invite window opens (LI_INVITE_FROM, in its time zone). */
 function nextInviteOpen(ts: number): number {
   // Every UTC offset in use is a multiple of 15 min: a start time on a quarter hour is hit exactly.
   const step = 15 * 60_000;
