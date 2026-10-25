@@ -56,7 +56,7 @@ export const config = {
     // Invites: from HH:MM, last one before HH:MM, in SEND_WINDOW_TZ (hours above = messages)
     inviteFrom: process.env.LI_INVITE_FROM || "08:00",
     inviteUntil: process.env.LI_INVITE_UNTIL || "21:30",
-    // Messages on weekdays only (invites run every day)
+    // Messages every day but Saturday (invites run every day)
     workdaysOnly: (process.env.LI_WORKDAYS_ONLY ?? "1") !== "0",
     minGapSec: int("LI_MIN_GAP_SEC", 90),
     maxGapSec: int("LI_MAX_GAP_SEC", 240),

@@ -459,7 +459,7 @@ const messageZone = new Intl.DateTimeFormat("en-US", { timeZone: L.hourTimezone,
 function withinWindow(ts: number): boolean {
   const p: Record<string, string> = {};
   for (const part of messageZone.formatToParts(ts)) p[part.type] = part.value;
-  if (L.workdaysOnly && (p.weekday === "Sat" || p.weekday === "Sun")) return false;
+  if (L.workdaysOnly && p.weekday === "Sat") return false;
   return Number(p.hour) >= L.hourStart && Number(p.hour) < L.hourEnd;
 }
 
