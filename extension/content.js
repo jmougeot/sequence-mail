@@ -209,7 +209,6 @@ const NOT_FOUND_ERROR = "page LinkedIn introuvable (404) — l'URL n'existe pas,
 // --- Libellés (FR + EN). À COMPLÉTER si LinkedIn change. ----------------------
 const RE_CONNECT = /^(se connecter|connect|invitez|invite)\b/i;
 const RE_MORE = /^(plus|more actions|more)\b/i;
-const RE_MESSAGE = /(?:^|\b)(message|messagerie)\b/i;
 const RE_ADD_NOTE = /(ajouter une note|add a note)/i;
 const RE_SEND_NOTE = /(envoyer l.invitation|envoyer$|^envoyer\b|send invitation|^send$)/i;
 const RE_SEND_NO_NOTE = /(envoyer sans note|send without)/i;
@@ -395,17 +394,49 @@ function inviteDiagnostic(connect) {
   ].join(" ; ");
 }
 
+/** Fenêtre de travail rendue visible par le background (rien côté runner, sans fenêtre). */
+function showWorkWindow() {
+  if (!chrome.runtime.sendMessage) return Promise.resolve();
+  return new Promise((r) => chrome.runtime.sendMessage({ type: "li-show-for-message" }, () => { void chrome.runtime.lastError; r(); }));
+}
+
+/** Boutons du profil visibles quand « Se connecter » manque : de quoi corriger la détection. */
+function connectDiagnostic() {
+  const labels = deepQueryAll('button, a, [role="button"]')
+    .filter((el) => isShown(el) && !el.closest("aside, header, nav"))
+    .map((el) => (el.getAttribute("aria-label") || el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 40))
+    .filter(Boolean)
+    .slice(0, 12);
+  return [
+    `onglet ${document.visibilityState}`,
+    `degré ${profileDegree() ?? "?"}`,
+    `page ${location.pathname}`,
+    `boutons [${labels.join(" | ")}]`,
+  ].join(" ; ");
+}
+
 /** Envoie une invitation, avec la note si LinkedIn la permet. Une note trop
  *  longue n'est jamais tronquée, et un compte gratuit à court de notes (LinkedIn
  *  affiche alors une offre Premium au lieu du champ) n'échoue pas : dans les deux
  *  cas l'invitation part sans note, et le verdict le dit. */
 async function doInvite(note) {
-  // Déjà en relation / invitation déjà partie ? On considère l'action faite (pas d'erreur punitive).
-  if (!findOwnClickable(RE_CONNECT) && (findOwnClickable(RE_MESSAGE) || findOwnClickable(RE_PENDING))) {
-    if (!(await findConnectButton())) return { ok: true, error: "déjà en relation ou invitation déjà envoyée (ignoré)" };
+  // Déjà en relation (1er degré) ou invitation déjà partie (« En attente », parfois sous « Plus ») :
+  // l'action est considérée faite. Un bouton « Message » ne le prouve pas (Premium, profil
+  // ouvert, et en français le lien « Messagerie » de la barre du haut) : il ne compte plus.
+  const already = () => Boolean(findOwnClickable(RE_PENDING)) || profileDegree() === 1;
+  const skipped = { ok: true, error: "déjà en relation ou invitation déjà envoyée (ignoré)" };
+  if (!findOwnClickable(RE_CONNECT) && already()) return skipped;
+  let connect = await findConnectButton();
+  if (!connect) {
+    if (already()) return skipped;
+    // Menu « Plus » pas rendu dans un onglet caché : fenêtre de travail montrée, menu rouvert.
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+    await showWorkWindow();
+    await human();
+    connect = await findConnectButton();
+    if (!connect && already()) return skipped;
   }
-  const connect = await findConnectButton();
-  if (!connect) return { ok: false, error: "bouton « Se connecter » introuvable" };
+  if (!connect) return { ok: false, error: `bouton « Se connecter » introuvable ; ${connectDiagnostic()}` };
   await clickHuman(connect);
   await human();
 
@@ -576,7 +607,7 @@ async function doMessage(text, inThread, guard, meName) {
     if (pending) return { ok: false, retry: true, error: "pas encore en relation (invitation non acceptée)" };
     if (!msgBtn) return { ok: false, error: "bouton « Message » du profil introuvable" };
     // Fenêtre de travail rendue visible par le background juste avant d'ouvrir la messagerie.
-    await new Promise((r) => chrome.runtime.sendMessage({ type: "li-show-for-message" }, () => { void chrome.runtime.lastError; r(); }));
+    await showWorkWindow();
     // « non rendue » : le serveur y voit un échec passager et réessaie plus tard.
     if (!(await rendering())) {
       return { ok: false, error: `messagerie non rendue : onglet caché (fenêtre de travail réduite ou recouverte) — rien envoyé ; ${messageDiagnostic(null)}` };
