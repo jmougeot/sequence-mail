@@ -23,7 +23,6 @@ function fmtBody(s) {
 function renderNav(active) {
   const links = [
     ["/", "Dashboard"],
-    ["/campaigns", "Campaigns"],
     ["/replies", "Replies"],
     ["/settings", "Settings"],
   ];

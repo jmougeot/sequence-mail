@@ -70,7 +70,7 @@ async function refresh() {
       <td><a class="btn ghost" href="/campaigns#${c.id}">Manage</a></td>
     </tr>
   `;
-  $("#campaigns tbody").innerHTML = campaigns.map(row).join("") || '<tr><td colspan="8" class="muted">No campaigns yet — create one from the Campaigns page.</td></tr>';
+  $("#campaigns tbody").innerHTML = campaigns.map(row).join("") || '<tr><td colspan="8" class="muted">No campaigns yet.</td></tr>';
   $("#archived").hidden = !archived.length;
   $("#archivedCount").textContent = archived.length;
   $("#archivedCampaigns tbody").innerHTML = archived.map(row).join("");
