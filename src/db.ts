@@ -379,6 +379,18 @@ CREATE TABLE IF NOT EXISTS li_connections (
 `);
 addColumnIfMissing("li_accounts", "connections_at", "connections_at INTEGER"); // last read of the list
 addColumnIfMissing("li_accounts", "connections_from", "connections_from INTEGER"); // oldest day that read covered
+// Invitations still pending, read from the account's invitation manager: shows whether an
+// invite skipped as "already sent" really went out. Replaced by each complete read.
+db.exec(`
+CREATE TABLE IF NOT EXISTS li_sent_invitations (
+  li_account_id INTEGER NOT NULL REFERENCES li_accounts(id) ON DELETE CASCADE,
+  slug TEXT NOT NULL,
+  sent_at INTEGER,                       -- when LinkedIn says the invite was sent
+  seen_at INTEGER NOT NULL,
+  PRIMARY KEY (li_account_id, slug)
+);
+`);
+addColumnIfMissing("li_accounts", "sent_invitations_at", "sent_invitations_at INTEGER"); // last complete read
 // Per-enrollment variables (message written for THIS candidate on THIS job): take
 // precedence over contacts.extra, which is shared across campaigns.
 addColumnIfMissing("campaign_contacts", "vars", "vars TEXT");

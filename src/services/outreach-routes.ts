@@ -26,6 +26,7 @@ import {
   pauseForCheckpoint,
   profileStatus,
   recordConnections,
+  recordSentInvitations,
   recordResult,
   resolveAccount,
   rotateToken,
@@ -161,12 +162,15 @@ export function registerOutreachRoutes(app: express.Express): void {
       wrong_account?: boolean;
       connections?: unknown; // [{ slug, connected_on }] read from the Connections page
       connections_from?: unknown; // oldest day that read covered (0 = whole list)
+      sent_invitations?: unknown; // [{ slug, sent_at }] pending invitations
+      sent_invitations_complete?: unknown; // the whole list was read
     };
     if (!checkInboxMember(c.account, parseMember(b.member), Boolean(b.wrong_account))) {
       return res.json({ ok: true, processed: false, wrong_account: true });
     }
     // Independent of the conversation read: kept even if the inbox could not be read.
     const connections = recordConnections(c.account, b.connections, b.connections_from);
+    recordSentInvitations(c.account, b.sent_invitations, b.sent_invitations_complete);
     if (!b.ok || !Array.isArray(b.conversations)) {
       // Failed read: no pause (it isn't a send), unless it's a security check.
       if (/contrôle de sécurité|checkpoint|captcha/i.test(b.error ?? "")) pauseForCheckpoint(c.account, b.error!);

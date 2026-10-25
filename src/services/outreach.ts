@@ -777,6 +777,7 @@ type ActionRow = {
 // absent from a fresh read that covers its invite is postponed without opening anything.
 const CONNECTIONS_EVERY_MIN = 90; // the list is re-read at most this often
 const CONNECTIONS_FRESH_MIN = 180; // an older read is not trusted
+const SENT_INVITATIONS_EVERY_MIN = 360; // pending invitations re-read at most this often
 // A message is not tried before its invite has been out this long: by then the Connections page
 // has been re-read since the invite, so the check needs no profile visit.
 const ACCEPT_CHECK_MS = 2 * 3600_000;
@@ -834,6 +835,28 @@ export function recordConnections(account: LiAccount, list: unknown, from: unkno
         console.log(`[linkedin] invitation accepted (${account.name}): message #${w.id} released`);
       }
     }
+  })();
+  return n;
+}
+
+/** Stores a complete read of the pending invitations (replaces the previous one). An
+ *  incomplete read is ignored: an invite missing from it proves nothing. */
+export function recordSentInvitations(account: LiAccount, list: unknown, complete: unknown): number {
+  if (!Array.isArray(list) || complete !== true) return 0;
+  const now = Date.now();
+  const insert = db.prepare(
+    `INSERT OR REPLACE INTO li_sent_invitations (li_account_id, slug, sent_at, seen_at) VALUES (?, ?, ?, ?)`
+  );
+  let n = 0;
+  db.transaction(() => {
+    db.prepare(`DELETE FROM li_sent_invitations WHERE li_account_id = ?`).run(account.id);
+    for (const i of list.slice(0, 5000) as Array<{ slug?: unknown; sent_at?: unknown }>) {
+      const slug = linkedinSlug(`https://www.linkedin.com/in/${String(i?.slug ?? "")}`);
+      if (!slug) continue;
+      insert.run(account.id, slug, typeof i.sent_at === "number" ? i.sent_at : null, now);
+      n++;
+    }
+    db.prepare(`UPDATE li_accounts SET sent_invitations_at = ? WHERE id = ?`).run(now, account.id);
   })();
   return n;
 }
@@ -929,8 +952,12 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
     );
     // Connections page too, back to the oldest unanswered invite (minus a day of margin).
     const since = connectionsSince(account);
-    const seen = db.prepare(`SELECT connections_at FROM li_accounts WHERE id = ?`).get(account.id) as { connections_at: number | null };
+    const seen = db.prepare(`SELECT connections_at, sent_invitations_at FROM li_accounts WHERE id = ?`).get(account.id) as {
+      connections_at: number | null;
+      sent_invitations_at: number | null;
+    };
     const readConnections = since != null && now - (seen.connections_at ?? 0) >= CONNECTIONS_EVERY_MIN * 60_000;
+    const readSent = now - (seen.sent_invitations_at ?? 0) >= SENT_INVITATIONS_EVERY_MIN * 60_000;
     return {
       action: {
         id: 0,
@@ -940,6 +967,7 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
         limit: 40,
         expect_member: account.member_slug,
         ...(readConnections ? { connections_since: since - DAY_MS } : {}),
+        ...(readSent ? { sent_invitations: true } : {}),
       },
     };
   }

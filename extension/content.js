@@ -853,6 +853,41 @@ async function doListConnections(since) {
   };
 }
 
+/** Invitations envoyées encore en attente, lues par l'API du gestionnaire d'invitations
+ *  (aucune navigation) : le serveur y voit si une invitation est vraiment partie.
+ *  `complete` = toute la liste lue. Format inattendu → échec, on ne s'y fie pas. */
+async function doListSentInvitations() {
+  const m = document.cookie.match(/(?:^|;\s*)JSESSIONID="?([^";]+)"?/);
+  if (!m) return { ok: false, error: "invitations envoyées : session illisible" };
+  const out = [];
+  for (let start = 0; start < 2000; start += 100) {
+    let j;
+    try {
+      const r = await fetch(
+        `${location.origin}/voyager/api/relationships/sentInvitationViewsV2?count=100&invitationType=CONNECTION&q=invitationType&start=${start}`,
+        {
+          credentials: "include",
+          headers: { "csrf-token": m[1], accept: "application/vnd.linkedin.normalized+json+2.1", "x-restli-protocol-version": "2.0.0" },
+        }
+      );
+      if (!r.ok) return { ok: false, error: `invitations envoyées : HTTP ${r.status}` };
+      j = await r.json();
+    } catch (e) {
+      return { ok: false, error: `invitations envoyées : ${String(e && e.message ? e.message : e)}` };
+    }
+    const inc = j.included || [];
+    const profiles = new Map(inc.filter((x) => x.publicIdentifier).map((p) => [p.entityUrn, p.publicIdentifier]));
+    for (const i of inc.filter((x) => /\.invitation\.Invitation$/.test(x.$type || ""))) {
+      const slug = profiles.get(i["*toMember"]);
+      if (!slug) return { ok: false, error: "invitations envoyées : format inattendu" };
+      out.push({ slug: normSlug(slug), sent_at: typeof i.sentTime === "number" ? i.sentTime : null });
+    }
+    if (((j.data && j.data["*elements"]) || []).length < 100) return { ok: true, data: { invitations: out, complete: true } };
+    await sleep(rand(800, 1500));
+  }
+  return { ok: true, data: { invitations: out, complete: false } };
+}
+
 /**
  * Extrait les informations visibles du profil affiché (le background a déjà
  * navigué vers la page /in/...). Lecture pure du DOM, aucun clic.
@@ -1478,6 +1513,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           : action.type === "read_messages" ? await doReadMessages(action.limit, inThread)
           : action.type === "list_conversations" ? await doListConversations(action.limit)
           : action.type === "list_connections" ? await doListConnections(action.since)
+          : action.type === "list_sent_invitations" ? await doListSentInvitations()
           : action.type === "view_profile" ? await doViewProfile()
           : await doInvite(action.body);
         respond(r);

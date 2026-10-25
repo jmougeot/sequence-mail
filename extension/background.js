@@ -157,6 +157,8 @@ async function serve(SERVER, tokens) {
         wrong_account: r.wrong_account,
         connections: r.connections && r.connections.connections,
         connections_from: r.connections ? r.connections.connections_from : undefined,
+        sent_invitations: r.sent_invitations && r.sent_invitations.invitations,
+        sent_invitations_complete: r.sent_invitations ? r.sent_invitations.complete : undefined,
       }),
     });
     return r.ok
@@ -398,6 +400,15 @@ async function runInbox(action) {
         action: { type: "list_connections", since: action.connections_since, expect_member: action.expect_member ?? null },
       }).catch(() => null);
       if (c && c.ok && c.data) r.connections = c.data;
+    }
+    // Invitations encore en attente (API, sans navigation) : le serveur y vérifie qu'une
+    // invitation est vraiment partie.
+    if (r.ok && action.sent_invitations) {
+      const s = await sendToTab(tab.id, {
+        type: "li-action",
+        action: { type: "list_sent_invitations", expect_member: action.expect_member ?? null },
+      }).catch(() => null);
+      if (s && s.ok && s.data) r.sent_invitations = s.data;
     }
     return r;
   } catch (e) {
