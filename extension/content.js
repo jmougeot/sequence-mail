@@ -207,7 +207,7 @@ function pageNotFound() {
 const NOT_FOUND_ERROR = "page LinkedIn introuvable (404) — l'URL n'existe pas, ou le profil a été supprimé/renommé";
 
 // --- Libellés (FR + EN). À COMPLÉTER si LinkedIn change. ----------------------
-const RE_CONNECT = /^(se connecter|connect|invitez|invite)\b/i;
+const RE_CONNECT = /^(se connecter|connect|invitez|inviter|invite)\b/i;
 const RE_MORE = /^(plus|more actions|more)\b/i;
 const RE_ADD_NOTE = /(ajouter une note|add a note)/i;
 const RE_SEND_NOTE = /(envoyer l.invitation|envoyer$|^envoyer\b|send invitation|^send$)/i;
