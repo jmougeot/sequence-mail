@@ -63,8 +63,10 @@ export function lastFromUs(snippet: string | null | undefined): boolean {
  * notes? Compared on the start of the text, without accents or punctuation.
  */
 export function sentBySequence(snippet: string | null | undefined, bodies: Array<string | null>): boolean {
-  const ours = normName((snippet ?? "").replace(FROM_US, "").replace(/[,|(]/g, " "));
-  if (!ours) return true; // nothing readable: no conclusion
+  const raw = (snippet ?? "").replace(FROM_US, "").trim();
+  if (!raw) return true; // nothing readable: no conclusion
+  const ours = normName(raw.replace(/[,|(]/g, " "));
+  if (!ours) return false; // emoji only (« Vous : 👍 »): never a sequence message
   return bodies.some((b) => {
     const body = normName((b ?? "").replace(/[,|(]/g, " "));
     return body !== "" && (body.startsWith(ours) || ours.startsWith(body));
