@@ -4,6 +4,9 @@
  * reached: a conversation whose last message is from the contact, after our first action, counts as
  * a reply — the sequence stops on all channels (no more emails or LinkedIn messages), as for an
  * email reply.
+ * A conversation whose last message is ours but is not one the sequence sent (the user answered by
+ * hand before the list was read) also counts: the contact wrote in between, else the user wouldn't
+ * have answered.
  * Matching: by profile URL when the list provides it, else by full name (no accents or
  * punctuation), and only if it identifies a single contact of the account. When in doubt, no
  * conclusion: one follow-up too many beats a sequence stopped by mistake… except for an unread
@@ -48,9 +51,24 @@ export function normName(s: string | null | undefined): string {
     .trim();
 }
 
+const FROM_US = /^\s*(vous|you)\s*:\s*/i;
+
 /** Last message written by us? (« Vous : … » / « You: … » at the start of the snippet) */
 export function lastFromUs(snippet: string | null | undefined): boolean {
-  return /^\s*(vous|you)\s*:/i.test(snippet ?? "");
+  return FROM_US.test(snippet ?? "");
+}
+
+/**
+ * Our snippet (« Vous : … », cut short by LinkedIn) is one of the sequence's messages or invite
+ * notes? Compared on the start of the text, without accents or punctuation.
+ */
+export function sentBySequence(snippet: string | null | undefined, bodies: Array<string | null>): boolean {
+  const ours = normName((snippet ?? "").replace(FROM_US, "").replace(/[,|(]/g, " "));
+  if (!ours) return true; // nothing readable: no conclusion
+  return bodies.some((b) => {
+    const body = normName((b ?? "").replace(/[,|(]/g, " "));
+    return body !== "" && (body.startsWith(ours) || ours.startsWith(body));
+  });
 }
 
 const MONTHS: Record<string, number> = {
@@ -132,9 +150,11 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
     if (n.includes(" ")) byName.set(n, [...(byName.get(n) ?? []), w]); // first AND last name, else too ambiguous
   }
 
+  const bodies = db.prepare(`SELECT body FROM li_actions WHERE campaign_contact_id = ? AND status = 'sent'`);
   const done = new Set<number>();
   for (const conv of conversations) {
-    if (!conv || lastFromUs(conv.snippet)) continue; // we spoke last
+    if (!conv) continue;
+    const fromUs = lastFromUs(conv.snippet);
     let match: Watched | undefined;
     const slug = linkedinSlug(conv.profile_url);
     if (slug) match = bySlug.get(slug);
@@ -144,10 +164,12 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
       if (cands.length === 1) match = cands[0];
     }
     if (!match) {
-      report.unmatched++;
+      if (!fromUs) report.unmatched++;
       continue;
     }
     if (done.has(match.cc_id)) continue;
+    // We spoke last: a reply only if that message isn't the sequence's (answered by hand).
+    if (fromUs && sentBySequence(conv.snippet, (bodies.all(match.cc_id) as Array<{ body: string | null }>).map((r) => r.body))) continue;
 
     // The contact's message must postdate our first action (else it's an old conversation); unread
     // = accepted.
@@ -161,7 +183,7 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
     }
 
     done.add(match.cc_id);
-    const optedOut = isOptOut(conv.snippet ?? "");
+    const optedOut = !fromUs && isOptOut(conv.snippet ?? "");
     terminate(
       { cc_id: match.cc_id, contact_id: match.contact_id, attio_record_id: match.attio_record_id },
       optedOut ? "opted_out" : "replied",
@@ -170,11 +192,13 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
     );
     db.prepare("UPDATE campaign_contacts SET li_thread_url = COALESCE(?, li_thread_url), li_reply_text = ? WHERE id = ?").run(
       conv.thread_url ?? null,
-      conv.snippet?.trim().slice(0, 2000) || null,
+      fromUs ? null : conv.snippet?.trim().slice(0, 2000) || null, // our answer isn't the contact's text
       match.cc_id
     );
     report.replied.push({ cc_id: match.cc_id, name: conv.name ?? "?", opted_out: optedOut });
-    console.log(`[linkedin] ${conv.name} replied on LinkedIn (${account.name})${optedOut ? " — opted out" : ""} — sequence stopped`);
+    console.log(
+      `[linkedin] ${conv.name} replied on LinkedIn (${account.name})${optedOut ? " — opted out" : ""}${fromUs ? " — already answered by hand" : ""} — sequence stopped`
+    );
   }
   console.log(
     `[linkedin] inbox read (${account.name}): ${conversations.length} conversations, ${pool.length} watched, ` +
