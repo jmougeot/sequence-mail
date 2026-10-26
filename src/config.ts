@@ -60,7 +60,7 @@ export const config = {
     workdaysOnly: (process.env.LI_WORKDAYS_ONLY ?? "1") !== "0",
     minGapSec: int("LI_MIN_GAP_SEC", 90),
     maxGapSec: int("LI_MAX_GAP_SEC", 240),
-    pauseAfterErrorMin: int("LI_PAUSE_AFTER_ERROR_MIN", 60),
+    pauseAfterErrorMin: int("LI_PAUSE_AFTER_ERROR_MIN", 15),
     // Retry delay when a message targets a contact not connected yet (invitation not accepted)
     messageRetryHours: int("LI_MESSAGE_RETRY_HOURS", 12),
     // …for at most N days after queuing: beyond that, invitation ignored, sequence closed.

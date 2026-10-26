@@ -1254,12 +1254,12 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
     db.prepare(`UPDATE li_accounts SET next_allowed_at = ? WHERE id = ?`).run(Math.round(now + rand(4, 8) * 60_000), account.id);
     return true;
   }
-  // Passing interface failure: retried 1-3 h later (the account still pauses), up to
+  // Passing interface failure: retried 30-45 min later, then 1-1.5 h (the account still pauses), up to
   // MAX_UI_RETRIES times before the contact is marked failed.
   if (TRANSIENT.test(msg) && !NOT_FOUND.test(msg) && !CHECKPOINT.test(msg) && row.ui_failures < MAX_UI_RETRIES) {
     db.prepare(
       `UPDATE li_actions SET status = 'pending', lease_at = NULL, ui_failures = ui_failures + 1, not_before = ?, error = ? WHERE id = ?`
-    ).run(Math.round(now + (row.ui_failures + 1) * rand(1, 1.5) * 3600 * 1000), `${msg} — nouvel essai prévu`, id);
+    ).run(Math.round(now + (row.ui_failures + 1) * rand(30, 45) * 60_000), `${msg} — nouvel essai prévu`, id);
     db.prepare(`UPDATE li_accounts SET paused_until = ? WHERE id = ?`).run(now + L.pauseAfterErrorMin * 60_000, account.id);
     return true;
   }
