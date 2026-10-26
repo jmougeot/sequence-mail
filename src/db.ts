@@ -434,20 +434,20 @@ for (const column of ["steps_source", "steps_updated_at"]) {
 addColumnIfMissing("campaigns", "priority", "priority INTEGER NOT NULL DEFAULT 0");
 
 // Instruction for a personalization variable ({{personnalisation}}…): meaning, content, length, tone.
-// One per (owner, variable name): the dashboard's set (owner_ref '') shared by its campaigns and read
-// by the agent (MCP), and one set per Azerit account, edited from its Sequence page (services/variables.ts).
-db.exec(
-  "CREATE TABLE IF NOT EXISTS variable_instructions (owner_ref TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, instruction TEXT NOT NULL, PRIMARY KEY (owner_ref, name))"
-);
+// One per variable name, shared by all campaigns and by Azerit's Sequence page (services/variables.ts);
+// read by the agent (MCP) that fills it for contacts.
+db.exec("CREATE TABLE IF NOT EXISTS variable_instructions (name TEXT PRIMARY KEY, instruction TEXT NOT NULL)");
 {
-  // v1 (name PRIMARY KEY): the existing instructions become the dashboard's
+  // A few hours on 26 Oct. 2026 the table was keyed by (owner_ref, name): back to one shared set,
+  // an account's own text (if any) winning over the dashboard's for the same name.
   const cols = (db.prepare("PRAGMA table_info(variable_instructions)").all() as Array<{ name: string }>).map((c) => c.name);
-  if (!cols.includes("owner_ref")) {
+  if (cols.includes("owner_ref")) {
     db.exec(`
-      CREATE TABLE variable_instructions_v2 (owner_ref TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, instruction TEXT NOT NULL, PRIMARY KEY (owner_ref, name));
-      INSERT INTO variable_instructions_v2 (owner_ref, name, instruction) SELECT '', name, instruction FROM variable_instructions;
+      CREATE TABLE variable_instructions_v1 (name TEXT PRIMARY KEY, instruction TEXT NOT NULL);
+      INSERT OR REPLACE INTO variable_instructions_v1 (name, instruction)
+        SELECT name, instruction FROM variable_instructions ORDER BY CASE WHEN owner_ref = '' THEN 0 ELSE 1 END;
       DROP TABLE variable_instructions;
-      ALTER TABLE variable_instructions_v2 RENAME TO variable_instructions;
+      ALTER TABLE variable_instructions_v1 RENAME TO variable_instructions;
     `);
   }
 }

@@ -228,18 +228,17 @@ export function createServer(): express.Express {
     res.json({ id: result });
   });
 
-  // --- Personalization variable instructions: one per variable name, per owner (the dashboard's
-  // set by default; `owner` = an Azerit account's, shown when its campaign is open) ---
-  app.get("/api/variable-instructions", (req, res) => {
-    res.json(listInstructions(typeof req.query.owner === "string" ? req.query.owner : ""));
+  // --- Personalization variable instructions: one per variable name, shared by all campaigns
+  // (and by Azerit's Sequence page) ---
+  app.get("/api/variable-instructions", (_req, res) => {
+    res.json(listInstructions());
   });
 
   // Empty text = instruction removed
   app.put("/api/variable-instructions/:name", (req, res) => {
     const instruction = req.body?.instruction;
     if (typeof instruction !== "string") return res.status(400).json({ error: "instruction must be a string" });
-    const owner = typeof req.body?.owner === "string" ? req.body.owner : "";
-    const err = setInstruction(owner, req.params.name, instruction);
+    const err = setInstruction(req.params.name, instruction);
     if (err) return res.status(400).json({ error: err });
     res.json({ ok: true });
   });
@@ -309,14 +308,14 @@ export function createServer(): express.Express {
       .prepare(
         "SELECT id, name, description, status, priority, account_ids, li_account_ids, owner_ref, external_ref FROM campaigns WHERE id = ?"
       )
-      .get(req.params.id) as { account_ids: string | null; li_account_ids: string | null; owner_ref: string | null } | undefined;
+      .get(req.params.id) as { account_ids: string | null; li_account_ids: string | null } | undefined;
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
     // external_ref "job:<id>": the campaign of a position in Azerit, whose Sequence page reads and
     // writes these very steps (service-routes.ts); the dashboard says so.
     const steps = campaignStepRows(req.params.id as unknown as number);
-    // The sequence's personalization variables (excluding built-ins), with their instruction
-    // (the campaign owner's set): to read before filling them
-    const instructions = new Map(Object.entries(listInstructions(campaign.owner_ref ?? "")));
+    // The sequence's personalization variables (excluding built-ins), with their instruction: to
+    // read before filling them
+    const instructions = new Map(Object.entries(listInstructions()));
     const names = new Set<string>();
     for (const s of steps as Array<{ subject: string; subject_b: string | null; body: string }>) {
       for (const text of [s.subject, s.subject_b, s.body]) {

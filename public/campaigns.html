@@ -410,12 +410,10 @@ $("#varPanel").addEventListener("input", e => {
   const card = e.target.closest(".var-card");
   if (card) varInstructions[card.dataset.var] = e.target.value;
 });
-// Les consignes sont celles du propriétaire de la campagne ouverte : le tableau de bord
-// (owner ""), ou le compte Azerit dont c'est la campagne (sa page Séquence montre les mêmes).
-let loadedOwner;
-async function loadVarInstructions(owner = "") {
-  loadedOwner = owner;
-  varInstructions = await api("/api/variable-instructions" + (owner ? `?owner=${encodeURIComponent(owner)}` : ""));
+// Une seule liste de consignes, pour toutes les campagnes ; la page Séquence d'Azerit montre
+// et écrit les mêmes.
+async function loadVarInstructions() {
+  varInstructions = await api("/api/variable-instructions");
   savedVarInstructions = { ...varInstructions };
   delete $("#varPanel").dataset.key;
   renderVarPanel();
@@ -423,7 +421,7 @@ async function loadVarInstructions(owner = "") {
 async function saveVarInstructions() {
   for (const [name, text] of Object.entries(varInstructions)) {
     if ((savedVarInstructions[name] ?? "") === text.trim()) continue;
-    await api(`/api/variable-instructions/${encodeURIComponent(name)}`, { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ instruction: text, owner: loadedOwner || "" }) });
+    await api(`/api/variable-instructions/${encodeURIComponent(name)}`, { method: "PUT", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ instruction: text }) });
     savedVarInstructions[name] = text.trim();
   }
 }
@@ -616,7 +614,6 @@ function newCampaign() {
   location.hash = "new";
   $("#liSenderMenu").hidden = true;
   campaignOwner = null;
-  if (loadedOwner) loadVarInstructions("");
   $("#saveBtn").textContent = "Create campaign";
   $("#statusZone").innerHTML = "";
   $("#campDot").className = "dot-st";
@@ -761,7 +758,7 @@ async function selectCampaign(id, tab = "seq") {
   $("#descMsg").textContent = "";
   $("#campMsg").textContent = "";
   campaignOwner = c.owner_ref ?? null;
-  if ((campaignOwner || "") !== (loadedOwner || "")) await loadVarInstructions(campaignOwner || "");
+  await loadVarInstructions(); // une modification faite dans Azerit depuis l'ouverture se voit
   renderManagedNote(c);
   renderSenders(c.account_ids);
   renderLiSenders(c);

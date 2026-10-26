@@ -386,20 +386,20 @@ export function registerServiceRoutes(app: express.Express): void {
   });
 
   /**
-   * The owner's variable instructions ({{perso}}: what it contains, length, tone), by name — the
-   * same ones the dashboard shows next to its campaigns. Set one with PUT (empty text removes it).
+   * The variable instructions ({{perso}}: what it contains, length, tone), by name — the very ones
+   * the dashboard's Variables panel shows and edits. Set one with PUT (empty text removes it).
    */
-  app.get("/api/svc/variables", (req, res) => {
-    res.json({ variables: listInstructions(ownerOf(req)!) });
+  app.get("/api/svc/variables", (_req, res) => {
+    res.json({ variables: listInstructions() });
   });
   app.put("/api/svc/variables/:name", (req, res) => {
     const instruction = (req.body as { instruction?: unknown }).instruction;
     if (typeof instruction !== "string" || instruction.length > MESSAGE_MAX) {
       return res.status(400).json({ error: "instruction : texte attendu" });
     }
-    const err = setInstruction(ownerOf(req)!, req.params.name, instruction);
+    const err = setInstruction(req.params.name, instruction);
     if (err) return res.status(400).json({ error: err });
-    res.json({ variables: listInstructions(ownerOf(req)!) });
+    res.json({ variables: listInstructions() });
   });
 
   /**

@@ -1,37 +1,30 @@
 /**
- * Instruction of a personalization variable ({{perso}}, {{personnalisation}}…): what it contains,
- * its length, its tone. One per (owner, variable name): the dashboard's own set (owner "") and one
- * set per Azerit account (owner "azerit:u:<id>"), each read where the variable is filled — by the
- * agent (MCP) for the dashboard, by Azerit's Sequence page for its accounts.
+ * Instruction of a personalization variable ({{perso}}, {{projet}}…): what it contains, its length,
+ * its tone. One per variable name, shared by every campaign and every place that edits it — the
+ * dashboard's Variables panel and Azerit's Sequence page show and write the same text.
  */
 import { db } from "../db.js";
 
 export const VARIABLE_NAME = /^[\p{L}\p{N}_]+$/u;
 
-function ownInstructions(owner: string): Record<string, string> {
-  const rows = db
-    .prepare("SELECT name, instruction FROM variable_instructions WHERE owner_ref = ? ORDER BY name")
-    .all(owner) as Array<{ name: string; instruction: string }>;
+/** All instructions, by variable name. */
+export function listInstructions(): Record<string, string> {
+  const rows = db.prepare("SELECT name, instruction FROM variable_instructions ORDER BY name").all() as Array<{
+    name: string;
+    instruction: string;
+  }>;
   return Object.fromEntries(rows.map((r) => [r.name, r.instruction]));
 }
 
-/**
- * An owner's instructions, by variable name. An Azerit account starts from the dashboard's set
- * (the ones written before accounts had their own) and overrides them with what it writes.
- */
-export function listInstructions(owner: string): Record<string, string> {
-  return owner ? { ...ownInstructions(""), ...ownInstructions(owner) } : ownInstructions("");
-}
-
 /** Sets one instruction; an empty text removes it. Returns an error message for a bad name. */
-export function setInstruction(owner: string, name: string, instruction: string): string | null {
+export function setInstruction(name: string, instruction: string): string | null {
   if (!VARIABLE_NAME.test(name)) return `"${name}" is not a valid variable name`;
   if (instruction.trim()) {
     db.prepare(
-      "INSERT INTO variable_instructions (owner_ref, name, instruction) VALUES (?, ?, ?) ON CONFLICT(owner_ref, name) DO UPDATE SET instruction = excluded.instruction"
-    ).run(owner, name, instruction.trim());
+      "INSERT INTO variable_instructions (name, instruction) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET instruction = excluded.instruction"
+    ).run(name, instruction.trim());
   } else {
-    db.prepare("DELETE FROM variable_instructions WHERE owner_ref = ? AND name = ?").run(owner, name);
+    db.prepare("DELETE FROM variable_instructions WHERE name = ?").run(name);
   }
   return null;
 }
