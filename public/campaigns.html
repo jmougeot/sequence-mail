@@ -42,7 +42,7 @@
         <div class="seq-tools">
           <button class="ghost var-toggle" id="varToggle" onclick="toggleVars()" hidden>Variables</button>
         </div>
-        <!-- Campagne d'un poste Azerit (external_ref job:<id>) : la séquence s'édite d'abord là-bas -->
+        <!-- Campagne d'un poste Azerit (external_ref job:<id>) : même séquence, éditée ici ou là-bas -->
         <div id="managedNote" class="managed-note" hidden></div>
         <div id="steps"></div>
         <div class="add-row" id="addRow"></div>
@@ -771,17 +771,14 @@ async function selectCampaign(id, tab = "seq") {
   loadList();
 }
 
-// Campagne d'un poste Azerit : sa page « Sequence » dans Azerit est la référence. Ce qui est
-// modifié ici y est repris à sa prochaine ouverture (si plus récent), et une sauvegarde
-// faite là-bas remplace la séquence d'ici.
+// Campagne d'un poste Azerit : sa page « Sequence » dans Azerit lit et écrit ces mêmes étapes
+// (il n'y en a qu'un exemplaire, ici). Modifier d'un côté ou de l'autre revient au même.
 function renderManagedNote(c) {
   const note = $("#managedNote");
   const managed = /^job:/.test(c.external_ref || "");
   note.hidden = !managed;
   if (!managed) return;
-  const when = c.steps_source === "dashboard" && c.steps_updated_at
-    ? ` Last edited here on ${new Date(c.steps_updated_at).toLocaleString()}.` : "";
-  note.innerHTML = `<b>Managed from Azerit.</b> This sequence belongs to a position in Azerit, where it is edited. Changes made here are picked up by Azerit's Sequence page the next time it opens; a save made there replaces them.${esc(when)}`;
+  note.innerHTML = `<b>Position in Azerit.</b> Its Sequence page shows and edits these very steps: a change made here or there is the same change.`;
 }
 
 async function toggleStatus(id, status) {

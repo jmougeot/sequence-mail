@@ -222,7 +222,6 @@ export function createServer(): express.Express {
         .prepare("INSERT INTO campaigns (name, description, status, account_ids, li_account_ids) VALUES (?, ?, 'paused', ?, ?)")
         .run(name, desc.value, senders.value, liSenders.value);
       insertSteps(lastInsertRowid, steps);
-      db.prepare("UPDATE campaigns SET steps_updated_at = ?, steps_source = 'dashboard' WHERE id = ?").run(Date.now(), lastInsertRowid);
       return lastInsertRowid;
     })();
     res.json({ id: result });
@@ -311,12 +310,12 @@ export function createServer(): express.Express {
   app.get("/api/campaigns/:id", (req, res) => {
     const campaign = db
       .prepare(
-        "SELECT id, name, description, status, priority, account_ids, li_account_ids, owner_ref, external_ref, steps_source, steps_updated_at FROM campaigns WHERE id = ?"
+        "SELECT id, name, description, status, priority, account_ids, li_account_ids, owner_ref, external_ref FROM campaigns WHERE id = ?"
       )
       .get(req.params.id) as { account_ids: string | null; li_account_ids: string | null } | undefined;
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
-    // external_ref "job:<id>": the sequence belongs to a position in Azerit (edited there, see
-    // service-routes.ts); the dashboard says so.
+    // external_ref "job:<id>": the campaign of a position in Azerit, whose Sequence page reads and
+    // writes these very steps (service-routes.ts); the dashboard says so.
     const steps = campaignStepRows(req.params.id as unknown as number);
     // The sequence's personalization variables (excluding built-ins), with their instruction: to
     // read before filling them
@@ -372,7 +371,7 @@ export function createServer(): express.Express {
       if (liSenders) {
         db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(liSenders.value, req.params.id);
       }
-      replaceSteps(Number(req.params.id), steps, "dashboard");
+      replaceSteps(Number(req.params.id), steps);
     })();
     res.json({ ok: true, sent_now: applyWithPrevious(Number(req.params.id)) });
   });
@@ -419,7 +418,7 @@ export function createServer(): express.Express {
       if (senders) db.prepare("UPDATE campaigns SET account_ids = ? WHERE id = ?").run(senders.value, campaign.id);
       if (liSenders) db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(liSenders.value, campaign.id);
       if (body.steps !== undefined) {
-        replaceSteps(campaign.id, body.steps, "dashboard");
+        replaceSteps(campaign.id, body.steps);
       }
     })();
     res.json({ ok: true, ...(body.steps !== undefined && { sent_now: applyWithPrevious(campaign.id) }) });
@@ -463,7 +462,7 @@ export function createServer(): express.Express {
     ) as StepInput[];
     const err = validateSteps(campaign.name, next);
     if (err) return res.status(400).json({ error: err });
-    db.transaction(() => replaceSteps(campaign.id, next, "dashboard"))();
+    db.transaction(() => replaceSteps(campaign.id, next))();
     res.json({ ok: true, step: campaignStepRows(campaign.id)[index], sent_now: applyWithPrevious(campaign.id) });
   });
 

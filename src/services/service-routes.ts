@@ -114,25 +114,17 @@ function ownedCampaign(id: unknown, owner: string): OwnedCampaign | undefined {
     | undefined;
 }
 
-type SvcStep = Partial<StepInput> & { action?: unknown };
-
 /**
  * Steps as Azerit sends them: the dashboard's own shape (channel, li_action, subject, subject_b,
- * body, wait_days, branch, with_previous), or the earlier short form (`action`: "invite" |
- * "message" | "email"). Both become StepInput, then obey the dashboard's rules (steps.ts): a
- * sequence written from Azerit is exactly what the dashboard would have saved.
+ * body, wait_days, branch, with_previous). They obey the dashboard's rules (steps.ts) plus the
+ * size limits: a sequence written from Azerit is exactly what the dashboard would have saved.
  */
 function toSteps(steps: unknown): { steps: StepInput[] } | { error: string } {
   if (!Array.isArray(steps) || !steps.length || steps.length > 10) return { error: "steps[] : 1 à 10 étapes" };
   const out: StepInput[] = [];
-  for (const [i, raw] of (steps as SvcStep[]).entries()) {
-    const kind =
-      raw?.action === "message" || raw?.action === "invite" || raw?.action === "email"
-        ? raw.action
-        : raw?.channel === "linkedin"
-          ? raw.li_action === "message" ? "message" : "invite"
-          : raw?.channel === "email" ? "email" : null;
-    if (!kind) return { error: `étape ${i + 1} : type attendu « invite », « message » ou « email »` };
+  for (const [i, raw] of (steps as Array<Partial<StepInput>>).entries()) {
+    const kind = raw?.channel === "linkedin" ? (raw.li_action === "message" ? "message" : "invite") : raw?.channel === "email" ? "email" : null;
+    if (!kind) return { error: `étape ${i + 1} : channel attendu « linkedin » (li_action invite | message) ou « email »` };
     const body = typeof raw.body === "string" ? raw.body.trim() : "";
     const subject = kind === "email" && typeof raw.subject === "string" ? raw.subject.trim().slice(0, 300) : "";
     const subjectB = kind === "email" && typeof raw.subject_b === "string" ? raw.subject_b.trim().slice(0, 300) : "";
@@ -354,7 +346,7 @@ export function registerServiceRoutes(app: express.Express): void {
       db.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run(name, cid);
       if (liSenders) db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(liSenders.value, cid);
       if (emailSenders) db.prepare("UPDATE campaigns SET account_ids = ? WHERE id = ?").run(emailSenders.value, cid);
-      replaceSteps(cid, v.steps, "azerit");
+      replaceSteps(cid, v.steps);
       return cid;
     })();
     // A step set to go "at the same time" goes now for contacts already past the previous one.
@@ -362,18 +354,17 @@ export function registerServiceRoutes(app: express.Express): void {
   });
 
   /**
-   * The campaign as Azerit's sequence page shows it: steps in the dashboard's shape, sending
-   * accounts, and who last wrote the sequence (steps_source "dashboard" | "azerit", steps_updated_at
-   * epoch ms) — Azerit picks up a sequence edited here when it is newer than its own.
+   * The campaign as Azerit's Sequence page shows it: its steps in the dashboard's shape, its
+   * sending accounts, its state. These steps are the sequence: Azerit keeps no copy.
    */
   app.get("/api/svc/campaigns/:id", (req, res) => {
     const owner = ownerOf(req)!;
     const campaign = db
       .prepare(
-        "SELECT id, name, status, account_ids, li_account_ids, steps_source, steps_updated_at FROM campaigns WHERE id = ? AND owner_ref = ?"
+        "SELECT id, name, status, account_ids, li_account_ids FROM campaigns WHERE id = ? AND owner_ref = ?"
       )
       .get(Number(req.params.id), owner) as
-      | { id: number; name: string; status: string; account_ids: string | null; li_account_ids: string | null; steps_source: string | null; steps_updated_at: number | null }
+      | { id: number; name: string; status: string; account_ids: string | null; li_account_ids: string | null }
       | undefined;
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
     res.json({
@@ -383,8 +374,6 @@ export function registerServiceRoutes(app: express.Express): void {
       steps: campaignStepRows(campaign.id).map((s) => ({ ...s, with_previous: Boolean(s.with_previous) })),
       li_account_ids: campaign.li_account_ids ? JSON.parse(campaign.li_account_ids) : null,
       account_ids: campaign.account_ids ? JSON.parse(campaign.account_ids) : null,
-      steps_source: campaign.steps_source,
-      steps_updated_at: campaign.steps_updated_at,
     });
   });
 

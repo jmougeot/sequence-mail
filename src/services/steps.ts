@@ -35,9 +35,6 @@ export type StepRow = {
   with_previous: number;
 };
 
-/** Where the sequence was last written from: the dashboard, or Azerit (service API). */
-export type StepsSource = "dashboard" | "azerit";
-
 const isEmail = (s: StepInput) => (s.channel ?? "email") !== "linkedin";
 const isMessage = (s: StepInput) => s.channel === "linkedin" && s.li_action === "message";
 const isInvite = (s: StepInput) => s.channel === "linkedin" && (s.li_action ?? "invite") === "invite";
@@ -110,11 +107,10 @@ export function insertSteps(campaignId: number | bigint, steps: StepInput[]): vo
   });
 }
 
-/** Replaces a campaign's whole sequence and records who wrote it (and when). */
-export function replaceSteps(campaignId: number | bigint, steps: StepInput[], source: StepsSource): void {
+/** Replaces a campaign's whole sequence. */
+export function replaceSteps(campaignId: number | bigint, steps: StepInput[]): void {
   db.prepare("DELETE FROM steps WHERE campaign_id = ?").run(campaignId);
   insertSteps(campaignId, steps);
-  db.prepare("UPDATE campaigns SET steps_updated_at = ?, steps_source = ? WHERE id = ?").run(Date.now(), source, campaignId);
 }
 
 /** A campaign's steps, in order, as the dashboard and Azerit read them. */

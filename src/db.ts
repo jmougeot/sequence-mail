@@ -423,10 +423,12 @@ addColumnIfMissing("li_actions", "detached", "detached INTEGER NOT NULL DEFAULT 
 // agents (MCP) before adding contacts or editing the sequence.
 addColumnIfMissing("campaigns", "description", "description TEXT");
 
-// Who last wrote the sequence (steps) and when: the dashboard, or Azerit through the service API.
-// Azerit reads them back to pick up a sequence edited here (campaigns of its positions).
-addColumnIfMissing("campaigns", "steps_source", "steps_source TEXT");
-addColumnIfMissing("campaigns", "steps_updated_at", "steps_updated_at INTEGER");
+// A campaign's steps have one home: here. Azerit's Sequence page reads and writes them through
+// the service API; the two columns that once recorded "who wrote last" are gone.
+for (const column of ["steps_source", "steps_updated_at"]) {
+  const cols = (db.prepare("PRAGMA table_info(campaigns)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (cols.includes(column)) db.exec(`ALTER TABLE campaigns DROP COLUMN ${column}`);
+}
 
 // Priority campaign: its contacts go first in the send queues (LinkedIn actions, due emails).
 addColumnIfMissing("campaigns", "priority", "priority INTEGER NOT NULL DEFAULT 0");
