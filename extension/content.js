@@ -384,7 +384,9 @@ function inviteDiagnostic(connect) {
     .filter(Boolean)
     .slice(0, 6);
   const text = (dialog ? dialog.textContent : "").trim().replace(/\s+/g, " ").slice(0, 80);
-  const clicked = `${connect.tagName.toLowerCase()} « ${(connect.getAttribute("aria-label") || connect.textContent || "").trim().slice(0, 40)} »`;
+  const clicked = connect
+    ? `${connect.tagName.toLowerCase()} « ${(connect.getAttribute("aria-label") || connect.textContent || "").trim().slice(0, 40)} »`
+    : "aucun (page d'invitation)";
   return [
     `clic sur ${clicked}`,
     `onglet ${document.visibilityState} ${innerWidth}×${innerHeight}`,
@@ -419,15 +421,31 @@ function connectDiagnostic() {
  *  longue n'est jamais tronquée, et un compte gratuit à court de notes (LinkedIn
  *  affiche alors une offre Premium au lieu du champ) n'échoue pas : dans les deux
  *  cas l'invitation part sans note, et le verdict le dit. */
-async function doInvite(note) {
+async function doInvite(note, target) {
+  // Page d'invitation (/preload/custom-invite/?vanityName=…) : sur le nouveau profil, « Se
+  // connecter » est un lien qui y mène en rechargeant l'onglet ; le background renvoie alors
+  // l'action au content script de cette page, fenêtre d'invitation déjà ouverte.
+  const invitePage = /^\/preload\/custom-invite\b/.test(location.pathname);
+  if (invitePage) {
+    const vanity = normSlug(new URLSearchParams(location.search).get("vanityName"));
+    const want = normSlug(((target || "").match(/\/in\/([^/?#]+)/) || [])[1]);
+    const base = (x) => x.replace(/-(?=[0-9a-f]*\d)[0-9a-f]{5,}$/, "");
+    if (vanity && want && base(vanity) !== base(want)) {
+      return { ok: false, error: `page d'invitation d'un autre profil (${vanity}) — rien envoyé` };
+    }
+    const ready = await waitFor(() => findOwnClickable(RE_SEND_NO_NOTE) || findOwnClickable(RE_ADD_NOTE), 10000);
+    if (!ready) {
+      return { ok: false, error: `fenêtre d'invitation non rendue (invitation peut-être déjà partie) ; ${connectDiagnostic()}` };
+    }
+  }
   // Déjà en relation (1er degré) ou invitation déjà partie (« En attente », parfois sous « Plus ») :
   // l'action est considérée faite. Un bouton « Message » ne le prouve pas (Premium, profil
   // ouvert, et en français le lien « Messagerie » de la barre du haut) : il ne compte plus.
   const already = () => Boolean(findOwnClickable(RE_PENDING)) || profileDegree() === 1;
   const skipped = { ok: true, error: "déjà en relation ou invitation déjà envoyée (ignoré)" };
-  if (!findOwnClickable(RE_CONNECT) && already()) return skipped;
-  let connect = await findConnectButton();
-  if (!connect) {
+  if (!invitePage && !findOwnClickable(RE_CONNECT) && already()) return skipped;
+  let connect = invitePage ? null : await findConnectButton();
+  if (!invitePage && !connect) {
     if (already()) return skipped;
     // Menu « Plus » pas rendu dans un onglet caché : fenêtre de travail montrée, menu rouvert.
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
@@ -436,9 +454,11 @@ async function doInvite(note) {
     connect = await findConnectButton();
     if (!connect && already()) return skipped;
   }
-  if (!connect) return { ok: false, error: `bouton « Se connecter » introuvable ; ${connectDiagnostic()}` };
-  await clickHuman(connect);
-  await human();
+  if (!invitePage && !connect) return { ok: false, error: `bouton « Se connecter » introuvable ; ${connectDiagnostic()}` };
+  if (connect) {
+    await clickHuman(connect);
+    await human();
+  }
 
   let clean = (note || "").trim();
   let dropped = null; // pourquoi l'invitation part sans la note demandée
@@ -1546,7 +1566,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           : action.type === "list_connections" ? await doListConnections(action.since)
           : action.type === "list_sent_invitations" ? await doListSentInvitations()
           : action.type === "view_profile" ? await doViewProfile()
-          : await doInvite(action.body);
+          : await doInvite(action.body, action.linkedin);
         respond(r);
       } catch (e) {
         sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
