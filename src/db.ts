@@ -434,8 +434,23 @@ for (const column of ["steps_source", "steps_updated_at"]) {
 addColumnIfMissing("campaigns", "priority", "priority INTEGER NOT NULL DEFAULT 0");
 
 // Instruction for a personalization variable ({{personnalisation}}…): meaning, content, length, tone.
-// One per variable name, shared by all campaigns; read by the agent (MCP) that fills it for contacts.
-db.exec("CREATE TABLE IF NOT EXISTS variable_instructions (name TEXT PRIMARY KEY, instruction TEXT NOT NULL)");
+// One per (owner, variable name): the dashboard's set (owner_ref '') shared by its campaigns and read
+// by the agent (MCP), and one set per Azerit account, edited from its Sequence page (services/variables.ts).
+db.exec(
+  "CREATE TABLE IF NOT EXISTS variable_instructions (owner_ref TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, instruction TEXT NOT NULL, PRIMARY KEY (owner_ref, name))"
+);
+{
+  // v1 (name PRIMARY KEY): the existing instructions become the dashboard's
+  const cols = (db.prepare("PRAGMA table_info(variable_instructions)").all() as Array<{ name: string }>).map((c) => c.name);
+  if (!cols.includes("owner_ref")) {
+    db.exec(`
+      CREATE TABLE variable_instructions_v2 (owner_ref TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, instruction TEXT NOT NULL, PRIMARY KEY (owner_ref, name));
+      INSERT INTO variable_instructions_v2 (owner_ref, name, instruction) SELECT '', name, instruction FROM variable_instructions;
+      DROP TABLE variable_instructions;
+      ALTER TABLE variable_instructions_v2 RENAME TO variable_instructions;
+    `);
+  }
+}
 
 // Settings entered in the UI (Google credentials…); the .env takes precedence.
 db.exec("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");

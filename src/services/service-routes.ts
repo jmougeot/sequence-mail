@@ -21,6 +21,7 @@ import { authUrl, signOwnerState } from "./google.js";
 import { normalizeLinkedin } from "./linkedin-url.js";
 import { applyWithPrevious } from "./outreach.js";
 import { campaignStepRows, replaceSteps, validateSteps, type StepInput } from "./steps.js";
+import { listInstructions, setInstruction } from "./variables.js";
 import {
   accountStatus,
   cancelLinkedInActions,
@@ -375,6 +376,23 @@ export function registerServiceRoutes(app: express.Express): void {
       li_account_ids: campaign.li_account_ids ? JSON.parse(campaign.li_account_ids) : null,
       account_ids: campaign.account_ids ? JSON.parse(campaign.account_ids) : null,
     });
+  });
+
+  /**
+   * The owner's variable instructions ({{perso}}: what it contains, length, tone), by name — the
+   * same ones the dashboard shows next to its campaigns. Set one with PUT (empty text removes it).
+   */
+  app.get("/api/svc/variables", (req, res) => {
+    res.json({ variables: listInstructions(ownerOf(req)!) });
+  });
+  app.put("/api/svc/variables/:name", (req, res) => {
+    const instruction = (req.body as { instruction?: unknown }).instruction;
+    if (typeof instruction !== "string" || instruction.length > MESSAGE_MAX) {
+      return res.status(400).json({ error: "instruction : texte attendu" });
+    }
+    const err = setInstruction(ownerOf(req)!, req.params.name, instruction);
+    if (err) return res.status(400).json({ error: err });
+    res.json({ variables: listInstructions(ownerOf(req)!) });
   });
 
   /**

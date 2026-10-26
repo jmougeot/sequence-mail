@@ -22,6 +22,7 @@ import { registerVisitRoutes } from "./services/visits.js";
 import { registerUnsubscribeRoutes } from "./services/unsubscribe.js";
 import { registerInboxRoutes } from "./services/inbox-routes.js";
 import { normalizeLinkedin } from "./services/linkedin-url.js";
+import { listInstructions, setInstruction } from "./services/variables.js";
 
 export function createServer(): express.Express {
   const app = express();
@@ -227,23 +228,19 @@ export function createServer(): express.Express {
     res.json({ id: result });
   });
 
-  // --- Personalization variable instructions: one per variable name, shared by all campaigns ---
-  app.get("/api/variable-instructions", (_req, res) => {
-    const rows = db.prepare("SELECT name, instruction FROM variable_instructions ORDER BY name").all() as Array<{ name: string; instruction: string }>;
-    res.json(Object.fromEntries(rows.map((r) => [r.name, r.instruction])));
+  // --- Personalization variable instructions: one per variable name, per owner (the dashboard's
+  // set by default; `owner` = an Azerit account's, shown when its campaign is open) ---
+  app.get("/api/variable-instructions", (req, res) => {
+    res.json(listInstructions(typeof req.query.owner === "string" ? req.query.owner : ""));
   });
 
   // Empty text = instruction removed
   app.put("/api/variable-instructions/:name", (req, res) => {
-    const { name } = req.params;
-    if (!/^[\p{L}\p{N}_]+$/u.test(name)) return res.status(400).json({ error: `"${name}" is not a valid variable name` });
     const instruction = req.body?.instruction;
     if (typeof instruction !== "string") return res.status(400).json({ error: "instruction must be a string" });
-    if (instruction.trim()) {
-      db.prepare("INSERT INTO variable_instructions (name, instruction) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET instruction = excluded.instruction").run(name, instruction.trim());
-    } else {
-      db.prepare("DELETE FROM variable_instructions WHERE name = ?").run(name);
-    }
+    const owner = typeof req.body?.owner === "string" ? req.body.owner : "";
+    const err = setInstruction(owner, req.params.name, instruction);
+    if (err) return res.status(400).json({ error: err });
     res.json({ ok: true });
   });
 
@@ -312,16 +309,14 @@ export function createServer(): express.Express {
       .prepare(
         "SELECT id, name, description, status, priority, account_ids, li_account_ids, owner_ref, external_ref FROM campaigns WHERE id = ?"
       )
-      .get(req.params.id) as { account_ids: string | null; li_account_ids: string | null } | undefined;
+      .get(req.params.id) as { account_ids: string | null; li_account_ids: string | null; owner_ref: string | null } | undefined;
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
     // external_ref "job:<id>": the campaign of a position in Azerit, whose Sequence page reads and
     // writes these very steps (service-routes.ts); the dashboard says so.
     const steps = campaignStepRows(req.params.id as unknown as number);
-    // The sequence's personalization variables (excluding built-ins), with their instruction: to
-    // read before filling them
-    const instructions = new Map(
-      (db.prepare("SELECT name, instruction FROM variable_instructions").all() as Array<{ name: string; instruction: string }>).map((r) => [r.name, r.instruction])
-    );
+    // The sequence's personalization variables (excluding built-ins), with their instruction
+    // (the campaign owner's set): to read before filling them
+    const instructions = new Map(Object.entries(listInstructions(campaign.owner_ref ?? "")));
     const names = new Set<string>();
     for (const s of steps as Array<{ subject: string; subject_b: string | null; body: string }>) {
       for (const text of [s.subject, s.subject_b, s.body]) {
