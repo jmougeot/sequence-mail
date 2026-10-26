@@ -356,7 +356,9 @@ export function registerServiceRoutes(app: express.Express): void {
 
   /**
    * The campaign as Azerit's Sequence page shows it: its steps in the dashboard's shape, its
-   * sending accounts, its state. These steps are the sequence: Azerit keeps no copy.
+   * sending accounts, its state, and each enrolled candidate's variables (the ones Azerit sent,
+   * plus any set here — Azerit shows and counts them). These steps are the sequence: Azerit keeps
+   * no copy.
    */
   app.get("/api/svc/campaigns/:id", (req, res) => {
     const owner = ownerOf(req)!;
@@ -375,6 +377,11 @@ export function registerServiceRoutes(app: express.Express): void {
       steps: campaignStepRows(campaign.id).map((s) => ({ ...s, with_previous: Boolean(s.with_previous) })),
       li_account_ids: campaign.li_account_ids ? JSON.parse(campaign.li_account_ids) : null,
       account_ids: campaign.account_ids ? JSON.parse(campaign.account_ids) : null,
+      contacts: (
+        db
+          .prepare("SELECT external_key AS key, vars FROM campaign_contacts WHERE campaign_id = ? AND external_key IS NOT NULL")
+          .all(campaign.id) as Array<{ key: string; vars: string | null }>
+      ).map((c) => ({ key: c.key, vars: c.vars ? (JSON.parse(c.vars) as Record<string, string>) : {} })),
     });
   });
 

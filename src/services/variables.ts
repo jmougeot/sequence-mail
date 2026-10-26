@@ -8,12 +8,19 @@ import { db } from "../db.js";
 
 export const VARIABLE_NAME = /^[\p{L}\p{N}_]+$/u;
 
-/** All of an owner's instructions, by variable name. */
-export function listInstructions(owner: string): Record<string, string> {
+function ownInstructions(owner: string): Record<string, string> {
   const rows = db
     .prepare("SELECT name, instruction FROM variable_instructions WHERE owner_ref = ? ORDER BY name")
     .all(owner) as Array<{ name: string; instruction: string }>;
   return Object.fromEntries(rows.map((r) => [r.name, r.instruction]));
+}
+
+/**
+ * An owner's instructions, by variable name. An Azerit account starts from the dashboard's set
+ * (the ones written before accounts had their own) and overrides them with what it writes.
+ */
+export function listInstructions(owner: string): Record<string, string> {
+  return owner ? { ...ownInstructions(""), ...ownInstructions(owner) } : ownInstructions("");
 }
 
 /** Sets one instruction; an empty text removes it. Returns an error message for a bad name. */
