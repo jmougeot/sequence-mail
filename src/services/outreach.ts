@@ -35,7 +35,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEq
 import { config } from "../config.js";
 import { db } from "../db.js";
 import { firstAccepted, firstNotAccepted, nextStep, unreachable } from "./branches.js";
-import { linkedinSlug } from "./linkedin-url.js";
+import { linkedinSlug, nearSlug } from "./linkedin-url.js";
 
 const L = config.linkedin;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -808,29 +808,36 @@ export function recordConnections(account: LiAccount, list: unknown, from: unkno
      ON CONFLICT (li_account_id, slug) DO UPDATE SET connected_on = excluded.connected_on, seen_at = excluded.seen_at`
   );
   let n = 0;
-  const slugs = new Set<string>();
+  const slugs = new Map<string, number | null>(); // slug -> connected_on
   db.transaction(() => {
     for (const c of list.slice(0, 2000) as Array<{ slug?: unknown; connected_on?: unknown }>) {
       const slug = linkedinSlug(`https://www.linkedin.com/in/${String(c?.slug ?? "")}`);
       if (!slug) continue;
-      upsert.run(account.id, slug, typeof c.connected_on === "number" ? c.connected_on : null, now);
-      slugs.add(slug);
+      const on = typeof c.connected_on === "number" ? c.connected_on : null;
+      upsert.run(account.id, slug, on, now);
+      slugs.set(slug, on);
       n++;
     }
     db.prepare(`UPDATE li_accounts SET connections_at = ?, connections_from = ? WHERE id = ?`).run(now, from, account.id);
     const ids = sameProfile(account).map((a) => a.id);
     const waiting = db
       .prepare(
-        `SELECT la.id, la.linkedin FROM li_actions la JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
+        `SELECT la.id, la.linkedin,
+                (SELECT MAX(i.sent_at) FROM li_actions i
+                 WHERE i.campaign_contact_id = la.campaign_contact_id AND i.type = 'invite' AND i.status = 'sent') AS invite_at
+         FROM li_actions la JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
          WHERE la.status = 'pending' AND la.type = 'message' AND la.not_before > ?
            AND (la.error LIKE 'invitation pas encore acceptée%' OR la.error LIKE 'pas encore en relation%')
            AND COALESCE(la.li_account_id, cc.li_account_id) IN (${ids.map(() => "?").join(",")})`
       )
-      .all(now, ...ids) as Array<{ id: number; linkedin: string | null }>;
+      .all(now, ...ids) as Array<{ id: number; linkedin: string | null; invite_at: number | null }>;
     const release = db.prepare(`UPDATE li_actions SET not_before = NULL, error = NULL WHERE id = ?`);
     for (const w of waiting) {
       const slug = linkedinSlug(w.linkedin);
-      if (slug && slugs.has(slug)) {
+      // Same name under another URL form counts if connected since the invite (see inviteUnanswered).
+      const near = (s: string, on: number | null) =>
+        nearSlug(slug!, s) && on != null && w.invite_at != null && on >= w.invite_at - DAY_MS;
+      if (slug && (slugs.has(slug) || [...slugs].some(([s, on]) => near(s, on)))) {
         release.run(w.id);
         console.log(`[linkedin] invitation accepted (${account.name}): message #${w.id} released`);
       }
@@ -887,6 +894,12 @@ function inviteUnanswered(account: LiAccount, row: ActionRow, now: number): bool
     .prepare(`SELECT 1 FROM li_connections WHERE slug = ? AND li_account_id IN (${ids.map(() => "?").join(",")}) LIMIT 1`)
     .get(slug, ...ids);
   if (listed) return false;
+  // Same name under another URL form, connected since the invite: likely the contact — the
+  // executor opens the profile (LinkedIn redirects to the right one) and checks the degree.
+  const recent = db
+    .prepare(`SELECT slug FROM li_connections WHERE connected_on >= ? AND li_account_id IN (${ids.map(() => "?").join(",")})`)
+    .all(invite.t - DAY_MS, ...ids) as Array<{ slug: string }>;
+  if (recent.some((c) => nearSlug(slug, c.slug))) return false;
   return now < acceptanceDeadline(row.campaign_contact_id, row.created_at).at;
 }
 

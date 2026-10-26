@@ -19,6 +19,17 @@ export function linkedinSlug(value: string | null | undefined): string | null {
   return m ? m[1] : null;
 }
 
+/** Slug without LinkedIn's generated suffix (« teddy-lecomte-9798b015b » → « teddy-lecomte »):
+ *  the same person can show up under either form (custom URL set later). */
+export function slugBase(slug: string): string {
+  return slug.replace(/-(?=[0-9a-f]*\d)[0-9a-f]{5,}$/, "");
+}
+
+/** Two different slugs that may be the same profile (same base, one with a suffix). */
+export function nearSlug(a: string, b: string): boolean {
+  return a !== b && slugBase(a) === slugBase(b);
+}
+
 function decodeSlug(slug: string): string {
   let out = slug;
   try {
