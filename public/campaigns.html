@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sequence Mail — Campaigns</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
-<link rel="stylesheet" href="style.css?v=16">
+<link rel="stylesheet" href="style.css?v=17">
 </head>
 <body>
 <div class="wrap wide">
@@ -42,6 +42,8 @@
         <div class="seq-tools">
           <button class="ghost var-toggle" id="varToggle" onclick="toggleVars()" hidden>Variables</button>
         </div>
+        <!-- Campagne d'un poste Azerit (external_ref job:<id>) : la séquence s'édite d'abord là-bas -->
+        <div id="managedNote" class="managed-note" hidden></div>
         <div id="steps"></div>
         <div class="add-row" id="addRow"></div>
         <div class="editor-foot">
@@ -605,6 +607,7 @@ function refreshPreviewAccounts() {
 }
 
 function newCampaign() {
+  $("#managedNote").hidden = true;
   selectedId = null;
   location.hash = "new";
   $("#liSenderMenu").hidden = true;
@@ -753,6 +756,7 @@ async function selectCampaign(id, tab = "seq") {
   $("#descMsg").textContent = "";
   $("#campMsg").textContent = "";
   campaignOwner = c.owner_ref ?? null;
+  renderManagedNote(c);
   renderSenders(c.account_ids);
   renderLiSenders(c);
   refreshPreviewAccounts();
@@ -765,6 +769,19 @@ async function selectCampaign(id, tab = "seq") {
   showTab(tab);
   if (tab !== "contacts") loadContacts(); // alimente aussi l'autocomplétion des variables
   loadList();
+}
+
+// Campagne d'un poste Azerit : sa page « Sequence » dans Azerit est la référence. Ce qui est
+// modifié ici y est repris à sa prochaine ouverture (si plus récent), et une sauvegarde
+// faite là-bas remplace la séquence d'ici.
+function renderManagedNote(c) {
+  const note = $("#managedNote");
+  const managed = /^job:/.test(c.external_ref || "");
+  note.hidden = !managed;
+  if (!managed) return;
+  const when = c.steps_source === "dashboard" && c.steps_updated_at
+    ? ` Last edited here on ${new Date(c.steps_updated_at).toLocaleString()}.` : "";
+  note.innerHTML = `<b>Managed from Azerit.</b> This sequence belongs to a position in Azerit, where it is edited. Changes made here are picked up by Azerit's Sequence page the next time it opens; a save made there replaces them.${esc(when)}`;
 }
 
 async function toggleStatus(id, status) {

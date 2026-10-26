@@ -19,6 +19,8 @@ import { db } from "../db.js";
 import { MERGED_EXTRA, importContacts, renderTemplate } from "./contacts.js";
 import { authUrl, signOwnerState } from "./google.js";
 import { normalizeLinkedin } from "./linkedin-url.js";
+import { applyWithPrevious } from "./outreach.js";
+import { campaignStepRows, replaceSteps, validateSteps, type StepInput } from "./steps.js";
 import {
   accountStatus,
   cancelLinkedInActions,
@@ -112,51 +114,48 @@ function ownedCampaign(id: unknown, owner: string): OwnedCampaign | undefined {
     | undefined;
 }
 
-type SvcStep = { action?: string; body?: string; subject?: string; wait_days?: number; branch?: string };
-type CleanStep = { action: "invite" | "message" | "email"; body: string; subject: string; wait_days: number; branch: string | null };
+type SvcStep = Partial<StepInput> & { action?: unknown };
 
 /**
- * Steps: LinkedIn (invite / message) and email (subject + body; an empty subject on a later email =
- * reply in the same thread). `branch`: "accepted" / "not_accepted" (see
- * branches.ts) — the first "accepted" step must be a LinkedIn message (it tests the acceptance).
+ * Steps as Azerit sends them: the dashboard's own shape (channel, li_action, subject, subject_b,
+ * body, wait_days, branch, with_previous), or the earlier short form (`action`: "invite" |
+ * "message" | "email"). Both become StepInput, then obey the dashboard's rules (steps.ts): a
+ * sequence written from Azerit is exactly what the dashboard would have saved.
  */
-function validateSteps(steps: unknown): { steps: CleanStep[] } | { error: string } {
+function toSteps(steps: unknown): { steps: StepInput[] } | { error: string } {
   if (!Array.isArray(steps) || !steps.length || steps.length > 10) return { error: "steps[] : 1 à 10 étapes" };
-  const out: CleanStep[] = [];
+  const out: StepInput[] = [];
   for (const [i, raw] of (steps as SvcStep[]).entries()) {
-    const action =
-      raw?.action === "message" ? "message" : raw?.action === "invite" ? "invite" : raw?.action === "email" ? "email" : null;
-    if (!action) return { error: `étape ${i + 1} : action attendue « invite », « message » ou « email »` };
+    const kind =
+      raw?.action === "message" || raw?.action === "invite" || raw?.action === "email"
+        ? raw.action
+        : raw?.channel === "linkedin"
+          ? raw.li_action === "message" ? "message" : "invite"
+          : raw?.channel === "email" ? "email" : null;
+    if (!kind) return { error: `étape ${i + 1} : type attendu « invite », « message » ou « email »` };
     const body = typeof raw.body === "string" ? raw.body.trim() : "";
-    const subject = action === "email" && typeof raw.subject === "string" ? raw.subject.trim().slice(0, 300) : "";
-    if (action !== "invite" && !body) return { error: `étape ${i + 1} : message vide` };
-    if (action !== "invite" && body.length > MESSAGE_MAX) return { error: `étape ${i + 1} : message trop long` };
-    if (action === "invite" && body.length > INVITE_NOTE_MAX) {
+    const subject = kind === "email" && typeof raw.subject === "string" ? raw.subject.trim().slice(0, 300) : "";
+    const subjectB = kind === "email" && typeof raw.subject_b === "string" ? raw.subject_b.trim().slice(0, 300) : "";
+    if (kind !== "invite" && !body) return { error: `étape ${i + 1} : message vide` };
+    if (body.length > MESSAGE_MAX) return { error: `étape ${i + 1} : message trop long` };
+    if (kind === "invite" && body.length > INVITE_NOTE_MAX) {
       return { error: `étape ${i + 1} : note d'invitation limitée à ${INVITE_NOTE_MAX} caractères par LinkedIn` };
     }
-    if (action === "email" && !subject && !out.some((s) => s.action === "email")) {
-      return { error: `étape ${i + 1} : objet requis pour le premier email` };
-    }
-    const branch = raw.branch === "accepted" || raw.branch === "not_accepted" ? raw.branch : null;
-    if (branch === "accepted" && !out.some((s) => s.branch === "accepted") && action !== "message") {
-      return { error: `étape ${i + 1} : la première étape « acceptée » doit être un message LinkedIn` };
-    }
+    const branch = raw.branch === "accepted" || raw.branch === "not_accepted" ? raw.branch : undefined;
     const wait = Number(raw.wait_days ?? (i === 0 ? 0 : 2));
-    out.push({ action, body, subject, branch, wait_days: i === 0 ? 0 : Math.max(0, Math.min(60, Math.round(Number.isFinite(wait) ? wait : 2))) });
+    out.push({
+      channel: kind === "email" ? "email" : "linkedin",
+      li_action: kind === "email" ? undefined : kind,
+      subject,
+      subject_b: subjectB || undefined,
+      body,
+      wait_days: Math.max(0, Math.min(60, Math.round(Number.isFinite(wait) ? wait : 2))),
+      branch,
+      with_previous: i > 0 && Boolean(raw.with_previous),
+    });
   }
-  return { steps: out };
-}
-
-function replaceSteps(campaignId: number, steps: CleanStep[]): void {
-  db.prepare("DELETE FROM steps WHERE campaign_id = ?").run(campaignId);
-  const insert = db.prepare(
-    `INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days, channel, li_action, branch)
-     VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?)`
-  );
-  steps.forEach((s, i) =>
-    insert.run(campaignId, i + 1, s.subject, s.body, s.wait_days, s.action === "email" ? "email" : "linkedin",
-      s.action === "email" ? null : s.action, s.branch)
-  );
+  const error = validateSteps(out);
+  return error ? { error } : { steps: out };
 }
 
 /** Enrollment variables: simple keys, text values. */
@@ -331,7 +330,7 @@ export function registerServiceRoutes(app: express.Express): void {
     const ref = typeof b.external_ref === "string" ? b.external_ref.trim().slice(0, 200) : "";
     const name = typeof b.name === "string" ? b.name.trim().slice(0, 200) : "";
     if (!ref || !name) return res.status(400).json({ error: "external_ref et name requis" });
-    const v = validateSteps(b.steps);
+    const v = toSteps(b.steps);
     if ("error" in v) return res.status(400).json(v);
     const liSenders = "li_account_ids" in b
       ? ownedIds(b.li_account_ids, ownerLiAccounts(owner).map((a) => a.id), "li_account_ids")
@@ -355,10 +354,38 @@ export function registerServiceRoutes(app: express.Express): void {
       db.prepare("UPDATE campaigns SET name = ? WHERE id = ?").run(name, cid);
       if (liSenders) db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(liSenders.value, cid);
       if (emailSenders) db.prepare("UPDATE campaigns SET account_ids = ? WHERE id = ?").run(emailSenders.value, cid);
-      replaceSteps(cid, v.steps);
+      replaceSteps(cid, v.steps, "azerit");
       return cid;
     })();
-    res.json({ id });
+    // A step set to go "at the same time" goes now for contacts already past the previous one.
+    res.json({ id, sent_now: applyWithPrevious(id) });
+  });
+
+  /**
+   * The campaign as Azerit's sequence page shows it: steps in the dashboard's shape, sending
+   * accounts, and who last wrote the sequence (steps_source "dashboard" | "azerit", steps_updated_at
+   * epoch ms) — Azerit picks up a sequence edited here when it is newer than its own.
+   */
+  app.get("/api/svc/campaigns/:id", (req, res) => {
+    const owner = ownerOf(req)!;
+    const campaign = db
+      .prepare(
+        "SELECT id, name, status, account_ids, li_account_ids, steps_source, steps_updated_at FROM campaigns WHERE id = ? AND owner_ref = ?"
+      )
+      .get(Number(req.params.id), owner) as
+      | { id: number; name: string; status: string; account_ids: string | null; li_account_ids: string | null; steps_source: string | null; steps_updated_at: number | null }
+      | undefined;
+    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    res.json({
+      id: campaign.id,
+      name: campaign.name,
+      status: campaign.status,
+      steps: campaignStepRows(campaign.id).map((s) => ({ ...s, with_previous: Boolean(s.with_previous) })),
+      li_account_ids: campaign.li_account_ids ? JSON.parse(campaign.li_account_ids) : null,
+      account_ids: campaign.account_ids ? JSON.parse(campaign.account_ids) : null,
+      steps_source: campaign.steps_source,
+      steps_updated_at: campaign.steps_updated_at,
+    });
   });
 
   /**

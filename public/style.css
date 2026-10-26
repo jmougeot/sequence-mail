@@ -77,6 +77,8 @@ textarea { min-height:90px; }
 .camp-name-input { font-size:16px; font-weight:600; padding:10px 12px; margin:0 0 6px; }
 /* Above the steps: the button that collapses the variables panel */
 .seq-tools { display:flex; justify-content:flex-end; margin-bottom:8px; }
+.managed-note { margin:0 0 12px; padding:9px 12px; border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:8px; background:var(--card); color:var(--muted); font-size:12.5px; line-height:1.5; }
+.managed-note b { color:var(--text); }
 .var-toggle { display:inline-flex; align-items:center; gap:4px; padding:4px 10px; font-size:12px; color:var(--muted); }
 .var-toggle:hover { color:var(--text); }
 .var-toggle.active { color:var(--accent); border-color:var(--accent); background:var(--accent-bg); }

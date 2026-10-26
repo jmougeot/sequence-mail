@@ -15,7 +15,7 @@ import { syncFromAttio } from "./services/attio.js";
 import { effectiveDailyLimit, nextEmailEstimate, sendWindowState } from "./services/scheduler.js";
 import { registerOutreachRoutes } from "./services/outreach-routes.js";
 import { registerServiceRoutes, setEnrollmentVars } from "./services/service-routes.js";
-import { BRANCHES, type Branch } from "./services/branches.js";
+import { campaignStepRows, replaceSteps, validateSteps as validateStepList, insertSteps, type StepInput } from "./services/steps.js";
 import { applyWithPrevious, cancelLinkedInActions } from "./services/outreach.js";
 import { optOutFromCampaignOf } from "./services/opt-out.js";
 import { registerVisitRoutes } from "./services/visits.js";
@@ -175,62 +175,10 @@ export function createServer(): express.Express {
   // A step is either an email (subject + body) or a LinkedIn action (channel='linkedin',
   // li_action='invite'|'message', body = note/message). branch: only for contacts whose invitation
   // was accepted ('accepted') or not ('not_accepted'); absent = all (see services/branches.ts).
-  type StepInput = {
-    subject?: string;
-    subject_b?: string;
-    body?: string;
-    wait_days?: number;
-    channel?: string;
-    li_action?: string;
-    branch?: string;
-    with_previous?: boolean | number;
-  };
-
-  /** Validates a sequence; returns an error message, or null if valid. */
+  /** Validates a campaign's name and sequence; returns an error message, or null if valid. */
   function validateSteps(name: string, steps: StepInput[]): string | null {
     if (!name || !steps?.length) return "name et steps[] sont requis";
-    const isEmail = (s: StepInput) => (s.channel ?? "email") !== "linkedin";
-    const isMessage = (s: StepInput) => s.channel === "linkedin" && s.li_action === "message";
-    // The first email opens the thread, so its subject is required (subjectless follow-ups go out
-    // as "Re:"). With branches, the first email of each branch.
-    const hasBranches = steps.some((s) => s.branch);
-    for (const branch of hasBranches ? BRANCHES : [undefined]) {
-      const firstEmail = steps.find((s) => isEmail(s) && (!s.branch || s.branch === branch));
-      if (firstEmail && !firstEmail.subject?.trim()) {
-        return branch
-          ? `Le premier email des contacts dont l'invitation ${branch === "accepted" ? "est acceptée" : "n'est pas acceptée"} doit avoir un objet`
-          : "Le premier email de la séquence doit avoir un objet";
-      }
-    }
-    for (const s of steps) {
-      const isInvite = s.channel === "linkedin" && (s.li_action ?? "invite") === "invite";
-      if (!isInvite && !s.body?.trim()) return "Chaque étape doit avoir un contenu (la note d'invitation seule est facultative)";
-    }
-    // Same time as the previous step: one email and one LinkedIn action, in the same path.
-    for (let i = 0; i < steps.length; i++) {
-      if (!steps[i].with_previous) continue;
-      const prev = steps[i - 1];
-      if (!prev) return "La première étape ne peut pas partir « en même temps » qu'une étape précédente";
-      if (isEmail(prev) === isEmail(steps[i])) return `Étape ${i + 1} : « en même temps » associe un email et une action LinkedIn`;
-      if ((prev.branch || null) !== (steps[i].branch || null)) return `Étape ${i + 1} : « en même temps » demande la même branche que l'étape précédente`;
-    }
-    if (hasBranches) {
-      if (steps.some((s) => s.branch && !BRANCHES.includes(s.branch as Branch))) return `branch : valeurs possibles ${BRANCHES.join(", ")}`;
-      const invite = steps.findIndex((s) => s.channel === "linkedin" && (s.li_action ?? "invite") === "invite");
-      const firstBranch = steps.findIndex((s) => s.branch);
-      if (invite < 0 || firstBranch < invite) return "Les étapes « si invitation acceptée / non acceptée » viennent après une invitation LinkedIn";
-      // The LinkedIn message reveals acceptance: it opens the "accepted" branch, before any "not
-      // accepted" step (which has no LinkedIn message).
-      const probe = steps.findIndex((s) => s.branch === "accepted");
-      const fallback = steps.findIndex((s) => s.branch === "not_accepted");
-      if (fallback >= 0 && (probe < 0 || !isMessage(steps[probe]) || probe > fallback)) {
-        return "Des étapes « invitation non acceptée » demandent un message LinkedIn en tête du chemin « invitation acceptée » : c'est lui qui détecte l'acceptation";
-      }
-      if (steps.some((s) => s.branch === "not_accepted" && isMessage(s))) {
-        return "Pas de message LinkedIn dans les étapes « si invitation non acceptée »";
-      }
-    }
-    return null;
+    return validateStepList(steps);
   }
 
   /**
@@ -251,30 +199,6 @@ export function createServer(): express.Express {
     if (value == null) return { value: null };
     if (typeof value !== "string") return { error: "description must be a string" };
     return { value: value.trim() || null };
-  }
-
-  /** Inserts a campaign's steps (email or LinkedIn). */
-  function insertSteps(campaignId: number | bigint, steps: StepInput[]): void {
-    const insert = db.prepare(
-      "INSERT INTO steps (campaign_id, step_number, subject, subject_b, body, wait_days, channel, li_action, branch, with_previous) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    );
-    steps.forEach((s, i) => {
-      const channel = s.channel === "linkedin" ? "linkedin" : "email";
-      const li = channel === "linkedin" ? (s.li_action === "message" ? "message" : "invite") : null;
-      const same = i > 0 && !!s.with_previous;
-      insert.run(
-        campaignId,
-        i + 1,
-        channel === "linkedin" ? "" : (s.subject ?? ""),
-        i === 0 && channel === "email" ? s.subject_b?.trim() || null : null, // A/B test: email step 1 only
-        s.body ?? "",
-        i === 0 || same ? 0 : (s.wait_days ?? 3),
-        channel,
-        li,
-        BRANCHES.includes(s.branch as Branch) ? s.branch : null,
-        same ? 1 : 0
-      );
-    });
   }
 
   app.post("/api/campaigns", (req, res) => {
@@ -298,6 +222,7 @@ export function createServer(): express.Express {
         .prepare("INSERT INTO campaigns (name, description, status, account_ids, li_account_ids) VALUES (?, ?, 'paused', ?, ?)")
         .run(name, desc.value, senders.value, liSenders.value);
       insertSteps(lastInsertRowid, steps);
+      db.prepare("UPDATE campaigns SET steps_updated_at = ?, steps_source = 'dashboard' WHERE id = ?").run(Date.now(), lastInsertRowid);
       return lastInsertRowid;
     })();
     res.json({ id: result });
@@ -385,14 +310,14 @@ export function createServer(): express.Express {
   // Campaign detail with its steps (for editing)
   app.get("/api/campaigns/:id", (req, res) => {
     const campaign = db
-      .prepare("SELECT id, name, description, status, priority, account_ids, li_account_ids, owner_ref FROM campaigns WHERE id = ?")
+      .prepare(
+        "SELECT id, name, description, status, priority, account_ids, li_account_ids, owner_ref, external_ref, steps_source, steps_updated_at FROM campaigns WHERE id = ?"
+      )
       .get(req.params.id) as { account_ids: string | null; li_account_ids: string | null } | undefined;
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
-    const steps = db
-      .prepare(
-        "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch, with_previous FROM steps WHERE campaign_id = ? ORDER BY step_number"
-      )
-      .all(req.params.id);
+    // external_ref "job:<id>": the sequence belongs to a position in Azerit (edited there, see
+    // service-routes.ts); the dashboard says so.
+    const steps = campaignStepRows(req.params.id as unknown as number);
     // The sequence's personalization variables (excluding built-ins), with their instruction: to
     // read before filling them
     const instructions = new Map(
@@ -447,8 +372,7 @@ export function createServer(): express.Express {
       if (liSenders) {
         db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(liSenders.value, req.params.id);
       }
-      db.prepare("DELETE FROM steps WHERE campaign_id = ?").run(req.params.id);
-      insertSteps(Number(req.params.id), steps);
+      replaceSteps(Number(req.params.id), steps, "dashboard");
     })();
     res.json({ ok: true, sent_now: applyWithPrevious(Number(req.params.id)) });
   });
@@ -495,8 +419,7 @@ export function createServer(): express.Express {
       if (senders) db.prepare("UPDATE campaigns SET account_ids = ? WHERE id = ?").run(senders.value, campaign.id);
       if (liSenders) db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(liSenders.value, campaign.id);
       if (body.steps !== undefined) {
-        db.prepare("DELETE FROM steps WHERE campaign_id = ?").run(campaign.id);
-        insertSteps(campaign.id, body.steps);
+        replaceSteps(campaign.id, body.steps, "dashboard");
       }
     })();
     res.json({ ok: true, ...(body.steps !== undefined && { sent_now: applyWithPrevious(campaign.id) }) });
@@ -510,10 +433,7 @@ export function createServer(): express.Express {
       | { id: number; name: string }
       | undefined;
     if (!campaign) return res.status(404).json({ error: "Campaign not found" });
-    const selectSteps = db.prepare(
-      "SELECT step_number, subject, subject_b, body, wait_days, channel, li_action, branch, with_previous FROM steps WHERE campaign_id = ? ORDER BY step_number"
-    );
-    const steps = selectSteps.all(campaign.id) as Array<{ step_number: number } & Record<string, unknown>>;
+    const steps = campaignStepRows(campaign.id) as Array<{ step_number: number } & Record<string, unknown>>;
     const n = Number(req.params.n);
     const index = steps.findIndex((s) => s.step_number === n);
     if (index < 0) return res.status(404).json({ error: `Step ${req.params.n} not found (the campaign has ${steps.length})` });
@@ -543,11 +463,8 @@ export function createServer(): express.Express {
     ) as StepInput[];
     const err = validateSteps(campaign.name, next);
     if (err) return res.status(400).json({ error: err });
-    db.transaction(() => {
-      db.prepare("DELETE FROM steps WHERE campaign_id = ?").run(campaign.id);
-      insertSteps(campaign.id, next);
-    })();
-    res.json({ ok: true, step: (selectSteps.all(campaign.id) as Array<{ step_number: number }>)[index], sent_now: applyWithPrevious(campaign.id) });
+    db.transaction(() => replaceSteps(campaign.id, next, "dashboard"))();
+    res.json({ ok: true, step: campaignStepRows(campaign.id)[index], sent_now: applyWithPrevious(campaign.id) });
   });
 
   // Email preview: variables rendered with a real contact of the campaign (the first) or a sample

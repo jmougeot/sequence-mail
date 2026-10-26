@@ -423,6 +423,11 @@ addColumnIfMissing("li_actions", "detached", "detached INTEGER NOT NULL DEFAULT 
 // agents (MCP) before adding contacts or editing the sequence.
 addColumnIfMissing("campaigns", "description", "description TEXT");
 
+// Who last wrote the sequence (steps) and when: the dashboard, or Azerit through the service API.
+// Azerit reads them back to pick up a sequence edited here (campaigns of its positions).
+addColumnIfMissing("campaigns", "steps_source", "steps_source TEXT");
+addColumnIfMissing("campaigns", "steps_updated_at", "steps_updated_at INTEGER");
+
 // Priority campaign: its contacts go first in the send queues (LinkedIn actions, due emails).
 addColumnIfMissing("campaigns", "priority", "priority INTEGER NOT NULL DEFAULT 0");
 
