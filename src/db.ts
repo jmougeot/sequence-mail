@@ -381,6 +381,9 @@ CREATE TABLE IF NOT EXISTS li_connections (
 `);
 addColumnIfMissing("li_accounts", "connections_at", "connections_at INTEGER"); // last read of the list
 addColumnIfMissing("li_accounts", "connections_from", "connections_from INTEGER"); // oldest day that read covered
+addColumnIfMissing("li_accounts", "connections_try_at", "connections_try_at INTEGER"); // last time the extension was asked for the list
+addColumnIfMissing("li_accounts", "connections_error", "connections_error TEXT"); // why the last read failed (NULL = it worked)
+addColumnIfMissing("li_accounts", "connections_error_at", "connections_error_at INTEGER");
 // Invitations still pending, read from the account's invitation manager: shows whether an
 // invite skipped as "already sent" really went out. Replaced by each complete read; later reads
 // only add what is new since the previous one.

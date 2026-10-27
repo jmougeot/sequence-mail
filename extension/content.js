@@ -973,13 +973,19 @@ function connectionCards() {
   return out;
 }
 
+let connectionsApiWhy = null; // pourquoi l'API n'a pas servi : joint à l'échec si la page ne sert pas non plus
+
 /** Relations par l'API interne que la page « Relations » appelle elle-même : pages de 40
  *  triées par ajout récent, heure exacte. Ne dépend ni du défilement ni de l'affichage, qui
  *  ne se font pas dans une fenêtre réduite (seules les 10 premières cartes y sortaient).
  *  null si l'API ne répond pas comme prévu : on se rabat alors sur la page. */
 async function connectionsFromApi(since) {
+  connectionsApiWhy = null;
   const m = document.cookie.match(/(?:^|;\s*)JSESSIONID="?([^";]+)"?/);
-  if (!m) return null;
+  if (!m) {
+    connectionsApiWhy = "cookie JSESSIONID illisible";
+    return null;
+  }
   const out = [];
   for (let start = 0; start < 400; start += 40) {
     let j;
@@ -991,9 +997,13 @@ async function connectionsFromApi(since) {
           headers: { "csrf-token": m[1], accept: "application/vnd.linkedin.normalized+json+2.1", "x-restli-protocol-version": "2.0.0" },
         }
       );
-      if (!r.ok) return null;
+      if (!r.ok) {
+        connectionsApiWhy = `HTTP ${r.status} à la page ${start / 40 + 1}`;
+        return null;
+      }
       j = await r.json();
-    } catch {
+    } catch (e) {
+      connectionsApiWhy = `requête échouée à la page ${start / 40 + 1} (${e && e.message ? e.message : e})`;
       return null;
     }
     const inc = j.included || [];
@@ -1003,7 +1013,11 @@ async function connectionsFromApi(since) {
     for (const u of urns) {
       const c = conns.get(u);
       const p = c && profiles.get(c.connectedMember || c["*connectedMemberResolutionResult"]);
-      if (!p || typeof c.createdAt !== "number") return null; // format inattendu : on ne s'y fie pas
+      if (!p || typeof c.createdAt !== "number") {
+        // format inattendu : on ne s'y fie pas
+        connectionsApiWhy = `format inattendu à la page ${start / 40 + 1} (${c ? (p ? "date absente" : "profil absent") : "relation absente"})`;
+        return null;
+      }
       out.push({ slug: normSlug(p.publicIdentifier), connected_on: c.createdAt });
     }
     const oldest = out.length ? Math.min(...out.map((c) => c.connected_on)) : null;
@@ -1025,7 +1039,12 @@ async function doListConnections(since) {
   const api = await connectionsFromApi(since);
   if (api) return { ok: true, data: { ...api, source: "api" } };
   const ready = await waitFor(() => connectionCards().size > 0, 15000);
-  if (!ready) return { ok: false, error: "liste des relations introuvable (page non chargée ?)" };
+  if (!ready) {
+    return {
+      ok: false,
+      error: `liste des relations introuvable (page non chargée ?)${connectionsApiWhy ? ` ; API : ${connectionsApiWhy}` : ""}`,
+    };
+  }
   let cards = connectionCards();
   const oldest = () => {
     const d = [...cards.values()].filter((x) => x != null);

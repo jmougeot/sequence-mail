@@ -145,7 +145,7 @@ async function serve(SERVER, tokens) {
   const auth = await authHeaders(tokens[res.account ?? 0]);
   if (res.action && res.action.type === "sync_inbox") {
     // Lecture de la messagerie : le serveur y cherche les réponses des contacts.
-    await setStatus({ kind: "run", text: "Lecture de la messagerie…" });
+    await setStatus({ kind: "run", text: res.action.connections_only ? "Lecture des relations…" : "Lecture de la messagerie…" });
     const r = await runInbox(res.action);
     await fetch(`${SERVER}/api/li/inbox`, {
       method: "POST",
@@ -158,11 +158,18 @@ async function serve(SERVER, tokens) {
         wrong_account: r.wrong_account,
         connections: r.connections && r.connections.connections,
         connections_from: r.connections ? r.connections.connections_from : undefined,
+        connections_error: r.connections_error,
+        connections_only: res.action.connections_only || undefined,
         sent_invitations: r.sent_invitations && r.sent_invitations.invitations,
         sent_invitations_complete: r.sent_invitations ? r.sent_invitations.complete : undefined,
         sent_invitations_since: r.sent_invitations && r.sent_invitations.reached ? res.action.sent_invitations_since : undefined,
       }),
     });
+    if (res.action.connections_only) {
+      return r.ok
+        ? { kind: "ok", text: "Relations lues" }
+        : { kind: "err", text: `Relations : ${r.error || "illisibles"}` };
+    }
     return r.ok
       ? { kind: "ok", text: "Messagerie lue" }
       : { kind: "err", text: `Messagerie : ${r.error || "illisible"}` };
@@ -644,11 +651,47 @@ async function runAction(action) {
   }
 }
 
-/** Ouvre la messagerie et en lit la liste des conversations récentes. */
+/** Lit la page « Relations » et joint ce qu'elle donne à `r` (`connections`). Un échec n'est pas
+ *  avalé : il part au serveur (`connections_error`), qui le garde et l'affiche dans l'état du compte. */
+async function addConnections(tabId, action, r) {
+  try {
+    await chrome.tabs.update(tabId, { url: "https://www.linkedin.com/mynetwork/invite-connect/connections/" });
+    await waitForLoad(tabId);
+    await new Promise((res) => setTimeout(res, 2500 + Math.random() * 2500));
+    const c = await sendToTab(tabId, {
+      type: "li-action",
+      action: { type: "list_connections", since: action.connections_since, expect_member: action.expect_member ?? null },
+    });
+    if (c && c.ok && c.data) {
+      r.connections = c.data;
+      if (c.member) r.member = c.member;
+    } else {
+      r.connections_error = (c && c.error) || "réponse vide de la page";
+      if (c && c.wrong_account) {
+        r.wrong_account = true;
+        r.member = c.member;
+      }
+    }
+  } catch (e) {
+    r.connections_error = String(e && e.message ? e.message : e);
+  }
+  if (r.connections_error) r.connections_error += ` [ext ${chrome.runtime.getManifest().version}]`;
+}
+
+/** Ouvre la messagerie et en lit la liste des conversations récentes. Sur demande du serveur, lit
+ *  aussi la page « Relations » (ou elle seule, `connections_only` : une actualisation avant un
+ *  message dont on ne sait pas encore si l'invitation a été acceptée). */
 async function runInbox(action) {
   try {
     const tab = await ensureTab();
     await attachDebugger(tab.id);
+    if (action.connections_only) {
+      const r = {};
+      await addConnections(tab.id, action, r);
+      r.ok = Boolean(r.connections);
+      r.error = r.connections_error;
+      return r;
+    }
     await chrome.tabs.update(tab.id, { url: "https://www.linkedin.com/messaging/" });
     await waitForLoad(tab.id);
     await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500));
@@ -658,15 +701,9 @@ async function runInbox(action) {
     });
     // Relations nouées depuis les invitations en attente : le serveur y voit qui a accepté
     // sans ouvrir chaque profil. Un échec ici ne gâche pas la lecture de la messagerie.
-    if (r.ok && action.connections_since) {
-      await chrome.tabs.update(tab.id, { url: "https://www.linkedin.com/mynetwork/invite-connect/connections/" });
-      await waitForLoad(tab.id);
-      await new Promise((res) => setTimeout(res, 2500 + Math.random() * 2500));
-      const c = await sendToTab(tab.id, {
-        type: "li-action",
-        action: { type: "list_connections", since: action.connections_since, expect_member: action.expect_member ?? null },
-      }).catch(() => null);
-      if (c && c.ok && c.data) r.connections = c.data;
+    if (action.connections_since) {
+      if (r.ok) await addConnections(tab.id, action, r);
+      else r.connections_error = `non tentée : messagerie illisible (${r.error || "?"}) [ext ${chrome.runtime.getManifest().version}]`;
     }
     // Invitations encore en attente (API, sans navigation) : le serveur y vérifie qu'une
     // invitation est vraiment partie.
