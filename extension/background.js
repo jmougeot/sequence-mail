@@ -544,6 +544,14 @@ async function typeText(tabId, text) {
   }
 }
 
+/** Dépose `text` d'un coup : événements beforeinput/input de confiance, sans touche, comme un
+ *  collage, une dictée ou un remplissage automatique. Pas de disposition de clavier à imiter,
+ *  pas de session de frappe de plusieurs minutes. Une courte pause avant, le temps de « coller ». */
+async function insertText(tabId, text) {
+  await sleepMs(lognormal(600, 0.4, 250, 2000));
+  await cdp(tabId, "Input.insertText", { text });
+}
+
 /** Touche isolée (Échap…). */
 async function pressKey(tabId, name) {
   const keys = { Escape: { key: "Escape", code: "Escape", vk: 27 }, Tab: { key: "Tab", code: "Tab", vk: 9 } };
@@ -563,6 +571,7 @@ async function realInput(tabId, msg) {
   else if (msg.op === "press") await press(tabId);
   else if (msg.op === "wheel") await wheel(tabId, Number(msg.dy), vw, vh);
   else if (msg.op === "type") await typeText(tabId, String(msg.text || ""));
+  else if (msg.op === "insert") await insertText(tabId, String(msg.text || ""));
   else if (msg.op === "key") await pressKey(tabId, msg.key);
   else return { ok: false, error: `geste inconnu : ${msg.op}` };
   await setDebuggerState({ lastUse: Date.now() });

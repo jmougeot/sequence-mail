@@ -232,9 +232,13 @@ async function realClick(el) {
   return true;
 }
 
-/** Vraie frappe dans un champ vide : clic dedans si besoin, puis touche par touche. Vrai si
+// Texte déposé d'un coup par le débogueur (événements de confiance, sans touche). Vrai : touche
+// par touche à la place (rythme humain, mais disposition de clavier à imiter et 1 à 2 min par message).
+const TYPE_KEY_BY_KEY = false;
+
+/** Texte dans un champ vide : clic réel dedans si besoin, puis insertion par le débogueur. Vrai si
  *  le champ contient exactement `text` ensuite (sinon l'appelant remplace par la saisie simulée). */
-async function realType(el, text) {
+async function realFill(el, text) {
   const fieldText = () => (el.tagName === "TEXTAREA" || el.tagName === "INPUT" ? el.value : el.innerText) || "";
   if (!canRealInput() || normWords(fieldText())) return false; // brouillon déjà là : saisie simulée, qui remplace
   const focused = () => composedContains(el, activeDeep());
@@ -243,7 +247,7 @@ async function realType(el, text) {
     await sleep(rand(200, 500));
   }
   if (!focused()) return false;
-  if (!(await realInput({ op: "type", text }))) return false;
+  if (!(await realInput({ op: TYPE_KEY_BY_KEY ? "type" : "insert", text }))) return false;
   await sleep(rand(300, 700));
   return normWords(fieldText()) === normWords(text);
 }
@@ -626,7 +630,7 @@ async function doInvite(note, target) {
         return deepQueryAll('textarea[name="message"], #custom-message').find(isShown) || null;
       }, 4000);
       if (box) {
-        if (!(await realType(box, clean))) await typeInto(box, clean);
+        if (!(await realFill(box, clean))) await typeInto(box, clean);
         noted = true;
       } else {
         dropped = "plus de note personnalisée disponible sur ce compte (offre Premium affichée)";
@@ -801,8 +805,8 @@ async function doMessage(text, inThread, guard, meName) {
   // Clic dans le champ d'abord : sans curseur dedans (onglet en arrière-plan),
   // l'éditeur ignore le collage comme la saisie et Envoyer reste grisé.
   await clickHuman(editor);
-  // Vraie frappe d'abord ; sinon collage, qui remplace ce qui a pu être tapé.
-  let send = (await realType(editor, text.trim())) ? await waitFor(() => findSendButton(editor), 4000) : null;
+  // Insertion réelle d'abord ; sinon collage, qui remplace ce qui a pu être déposé.
+  let send = (await realFill(editor, text.trim())) ? await waitFor(() => findSendButton(editor), 4000) : null;
   if (!send) {
     await pasteInto(editor, text.trim());
     send = await waitFor(() => findSendButton(editor), 4000);
