@@ -382,7 +382,8 @@ CREATE TABLE IF NOT EXISTS li_connections (
 addColumnIfMissing("li_accounts", "connections_at", "connections_at INTEGER"); // last read of the list
 addColumnIfMissing("li_accounts", "connections_from", "connections_from INTEGER"); // oldest day that read covered
 // Invitations still pending, read from the account's invitation manager: shows whether an
-// invite skipped as "already sent" really went out. Replaced by each complete read.
+// invite skipped as "already sent" really went out. Replaced by each complete read; later reads
+// only add what is new since the previous one.
 db.exec(`
 CREATE TABLE IF NOT EXISTS li_sent_invitations (
   li_account_id INTEGER NOT NULL REFERENCES li_accounts(id) ON DELETE CASCADE,

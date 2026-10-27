@@ -165,13 +165,14 @@ export function registerOutreachRoutes(app: express.Express): void {
       connections_from?: unknown; // oldest day that read covered (0 = whole list)
       sent_invitations?: unknown; // [{ slug, sent_at }] pending invitations
       sent_invitations_complete?: unknown; // the whole list was read
+      sent_invitations_since?: unknown; // or: read back to this date (what is new since the last read)
     };
     if (!checkInboxMember(c.account, parseMember(b.member), Boolean(b.wrong_account))) {
       return res.json({ ok: true, processed: false, wrong_account: true });
     }
     // Independent of the conversation read: kept even if the inbox could not be read.
     const connections = recordConnections(c.account, b.connections, b.connections_from);
-    recordSentInvitations(c.account, b.sent_invitations, b.sent_invitations_complete);
+    recordSentInvitations(c.account, b.sent_invitations, b.sent_invitations_complete, b.sent_invitations_since);
     // One read per LinkedIn profile: the conversations are matched for each of its accounts.
     const others = sameProfile(c.account).filter((a) => a.id !== c.account.id);
     if (!b.ok || !Array.isArray(b.conversations)) {

@@ -897,17 +897,19 @@ export function recordConnections(account: LiAccount, list: unknown, from: unkno
   return n;
 }
 
-/** Stores a complete read of the pending invitations (replaces the previous one). An
+/** Stores a read of the pending invitations. A complete read replaces the previous one; a read
+ *  that reached back to `since` (only what is new since the last read) adds to it. Any other
  *  incomplete read is ignored: an invite missing from it proves nothing. */
-export function recordSentInvitations(account: LiAccount, list: unknown, complete: unknown): number {
-  if (!Array.isArray(list) || complete !== true) return 0;
+export function recordSentInvitations(account: LiAccount, list: unknown, complete: unknown, since?: unknown): number {
+  const partial = complete !== true && typeof since === "number";
+  if (!Array.isArray(list) || (complete !== true && !partial)) return 0;
   const now = Date.now();
   const insert = db.prepare(
     `INSERT OR REPLACE INTO li_sent_invitations (li_account_id, slug, sent_at, seen_at) VALUES (?, ?, ?, ?)`
   );
   let n = 0;
   db.transaction(() => {
-    db.prepare(`DELETE FROM li_sent_invitations WHERE li_account_id = ?`).run(account.id);
+    if (!partial) db.prepare(`DELETE FROM li_sent_invitations WHERE li_account_id = ?`).run(account.id);
     for (const i of list.slice(0, 5000) as Array<{ slug?: unknown; sent_at?: unknown }>) {
       const slug = linkedinSlug(`https://www.linkedin.com/in/${String(i?.slug ?? "")}`);
       if (!slug) continue;
@@ -1041,6 +1043,8 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
     };
     const readConnections = since != null && now - (seen.connections_at ?? 0) >= CONNECTIONS_EVERY_MIN * 60_000;
     const readSent = now - (seen.sent_invitations_at ?? 0) >= SENT_INVITATIONS_EVERY_MIN * 60_000;
+    // After a first read, only what is new since the last one (minus a day of margin).
+    const invitesSince = seen.sent_invitations_at != null ? seen.sent_invitations_at - DAY_MS : null;
     return {
       action: {
         id: 0,
@@ -1050,7 +1054,7 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
         limit: 40,
         expect_member: account.member_slug,
         ...(readConnections ? { connections_since: since - DAY_MS } : {}),
-        ...(readSent ? { sent_invitations: true } : {}),
+        ...(readSent ? { sent_invitations: true, ...(invitesSince != null ? { sent_invitations_since: invitesSince } : {}) } : {}),
       },
     };
   }

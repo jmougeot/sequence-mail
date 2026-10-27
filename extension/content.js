@@ -1058,8 +1058,11 @@ async function doListConnections(since) {
 
 /** Invitations envoyées encore en attente, lues par l'API du gestionnaire d'invitations
  *  (aucune navigation) : le serveur y voit si une invitation est vraiment partie.
- *  `complete` = toute la liste lue. Format inattendu → échec, on ne s'y fie pas. */
-async function doListSentInvitations() {
+ *  `since` (ms) : seules les invitations plus récentes intéressent le serveur — la liste
+ *  (des plus récentes aux plus anciennes) n'est lue que jusque-là.
+ *  `complete` = toute la liste lue, `reached` = lue jusqu'à `since`. Format inattendu →
+ *  échec, on ne s'y fie pas. */
+async function doListSentInvitations(since) {
   const m = document.cookie.match(/(?:^|;\s*)JSESSIONID="?([^";]+)"?/);
   if (!m) return { ok: false, error: "invitations envoyées : session illisible" };
   const out = [];
@@ -1080,12 +1083,20 @@ async function doListSentInvitations() {
     }
     const inc = j.included || [];
     const profiles = new Map(inc.filter((x) => x.publicIdentifier).map((p) => [p.entityUrn, p.publicIdentifier]));
+    const page = [];
     for (const i of inc.filter((x) => /\.invitation\.Invitation$/.test(x.$type || ""))) {
       const slug = profiles.get(i["*toMember"]);
       if (!slug) return { ok: false, error: "invitations envoyées : format inattendu" };
-      out.push({ slug: normSlug(slug), sent_at: typeof i.sentTime === "number" ? i.sentTime : null });
+      page.push({ slug: normSlug(slug), sent_at: typeof i.sentTime === "number" ? i.sentTime : null });
     }
+    out.push(...page);
     if (((j.data && j.data["*elements"]) || []).length < 100) return { ok: true, data: { invitations: out, complete: true } };
+    // Page datée, triée de la plus récente à la plus ancienne, et dont la dernière précède
+    // `since` : la suite est plus ancienne encore. Tri non vérifié → on lit tout.
+    const dated = page.length && page.every((i, k) => i.sent_at != null && (k === 0 || i.sent_at <= page[k - 1].sent_at));
+    if (since && dated && page[page.length - 1].sent_at < since) {
+      return { ok: true, data: { invitations: out, complete: false, reached: true } };
+    }
     await sleep(rand(800, 1500));
   }
   return { ok: true, data: { invitations: out, complete: false } };
@@ -1731,7 +1742,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           : action.type === "read_messages" ? await doReadMessages(action.limit, inThread)
           : action.type === "list_conversations" ? await doListConversations(action.limit)
           : action.type === "list_connections" ? await doListConnections(action.since)
-          : action.type === "list_sent_invitations" ? await doListSentInvitations()
+          : action.type === "list_sent_invitations" ? await doListSentInvitations(action.since)
           : action.type === "view_profile" ? await doViewProfile()
           : await doInvite(action.body, action.linkedin);
         respond(r);
