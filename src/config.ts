@@ -58,18 +58,30 @@ export const config = {
     inviteUntil: process.env.LI_INVITE_UNTIL || "21:30",
     // Messages every day but Saturday (invites run every day)
     workdaysOnly: (process.env.LI_WORKDAYS_ONLY ?? "1") !== "0",
-    minGapSec: int("LI_MIN_GAP_SEC", 90),
-    maxGapSec: int("LI_MAX_GAP_SEC", 240),
+    // Rolling 7-day invite cap per LinkedIn profile, on top of the daily one (LinkedIn counts by week).
+    invitesPerWeek: int("LI_INVITES_PER_WEEK", 80),
+    // Each day's cap is drawn between this share and 100 % of the cap above (no flat daily volume).
+    capFloorPct: int("LI_CAP_FLOOR_PCT", 60),
+    // Hours move each day: start up to N min later, stop up to N min earlier.
+    windowJitterMin: int("LI_WINDOW_JITTER_MIN", 75),
+    // Actions go in short sessions (LI_SESSION_MIN–MAX actions, LI_MIN/MAX_GAP_SEC apart), then
+    // the profile rests LI_REST_MIN–MAX minutes; inbox reads happen at a session start.
+    sessionMin: int("LI_SESSION_MIN", 2),
+    sessionMax: int("LI_SESSION_MAX", 5),
+    minGapSec: int("LI_MIN_GAP_SEC", 120),
+    maxGapSec: int("LI_MAX_GAP_SEC", 420),
+    restMinMin: int("LI_REST_MIN", 60),
+    restMaxMin: int("LI_REST_MAX", 150),
     pauseAfterErrorMin: int("LI_PAUSE_AFTER_ERROR_MIN", 15),
     // Retry delay when a message targets a contact not connected yet (invitation not accepted)
-    messageRetryHours: int("LI_MESSAGE_RETRY_HOURS", 12),
+    messageRetryHours: int("LI_MESSAGE_RETRY_HOURS", 24),
     // …for at most N days after queuing: beyond that, invitation ignored, sequence closed.
     messageRetryMaxDays: int("LI_MESSAGE_RETRY_MAX_DAYS", 21),
     // LinkedIn security check / captcha: long pause for that account
     checkpointPauseMin: int("LI_CHECKPOINT_PAUSE_MIN", 24 * 60),
-    // Inbox reading (LinkedIn reply detection): at most once every N minutes per account, if it has
-    // contacts to watch.
-    inboxEveryMin: int("LI_INBOX_EVERY_MIN", 20),
+    // Inbox reading (LinkedIn reply detection): at most once every N minutes per LinkedIn profile, if
+    // it has contacts to watch, and never during a rest.
+    inboxEveryMin: int("LI_INBOX_EVERY_MIN", 120),
     // Encrypts the LinkedIn session and proxy of server-mode accounts. Required for that mode;
     // never change it without re-sending the sessions.
     secretKey: process.env.LI_SECRET_KEY ?? "",

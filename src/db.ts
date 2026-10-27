@@ -289,6 +289,8 @@ addColumnIfMissing("li_accounts", "session_state", "session_state TEXT"); // NUL
 addColumnIfMissing("li_accounts", "session_error", "session_error TEXT");
 addColumnIfMissing("li_accounts", "session_updated_at", "session_updated_at INTEGER");
 addColumnIfMissing("li_accounts", "last_inbox_at", "last_inbox_at INTEGER");
+// Actions left in the profile's current session before a long rest (NULL = next action opens one).
+addColumnIfMissing("li_accounts", "session_left", "session_left INTEGER");
 // LinkedIn thread where the contact replied (link in the dashboard).
 addColumnIfMissing("campaign_contacts", "li_thread_url", "li_thread_url TEXT");
 // Replies page: contact's last LinkedIn message (inbox preview), reply opened, reply handled.

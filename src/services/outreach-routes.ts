@@ -32,6 +32,7 @@ import {
   rotateToken,
   runnerAccounts,
   runnerWindow,
+  sameProfile,
   setEnabled,
   setProxy,
   setSessionState,
@@ -171,13 +172,17 @@ export function registerOutreachRoutes(app: express.Express): void {
     // Independent of the conversation read: kept even if the inbox could not be read.
     const connections = recordConnections(c.account, b.connections, b.connections_from);
     recordSentInvitations(c.account, b.sent_invitations, b.sent_invitations_complete);
+    // One read per LinkedIn profile: the conversations are matched for each of its accounts.
+    const others = sameProfile(c.account).filter((a) => a.id !== c.account.id);
     if (!b.ok || !Array.isArray(b.conversations)) {
       // Failed read: no pause (it isn't a send), unless it's a security check.
       if (/contrôle de sécurité|checkpoint|captcha/i.test(b.error ?? "")) pauseForCheckpoint(c.account, b.error!);
       console.warn(`[linkedin] cannot read the inbox (${c.account.name}): ${b.error ?? "?"}`);
       return res.json({ ok: true, processed: false, connections });
     }
-    res.json({ ok: true, connections, ...processInbox(c.account, b.conversations.slice(0, 200)) });
+    const conversations = b.conversations.slice(0, 200);
+    for (const a of others) processInbox(a, conversations);
+    res.json({ ok: true, connections, ...processInbox(c.account, conversations) });
   });
 
   // The extension hands over its browser's LinkedIn session: the account switches to server mode
