@@ -837,7 +837,7 @@ type ActionRow = {
 const CONNECTIONS_EVERY_MIN = 240; // the list is re-read at most this often
 const CONNECTIONS_FRESH_MIN = 420; // an older read is not trusted
 const CONNECTIONS_RETRY_MIN = 15; // a read asked for and not answered is not asked again before this
-const CONNECTIONS_RETRY_AFTER_ERROR_MIN = 60; // after a failed read, profiles are checked as before for this long
+const CONNECTIONS_RETRY_AFTER_ERROR_MIN = 240; // after a failed read, profiles are checked as before for this long (the regular cadence)
 const SENT_INVITATIONS_EVERY_MIN = 24 * 60; // pending invitations re-read at most this often
 // A message is not tried before its invite has been out this long: by then the Connections page
 // has been re-read since the invite, so the check needs no profile visit.

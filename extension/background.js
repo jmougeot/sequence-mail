@@ -665,6 +665,10 @@ async function addConnections(tabId, action, r) {
     if (c && c.ok && c.data) {
       r.connections = c.data;
       if (c.member) r.member = c.member;
+      // Page lue mais sans dates : inutilisable pour le serveur ; on lui dit aussi pourquoi l'API n'a pas servi.
+      if (c.data.connections_from == null) {
+        r.connections_error = `relations lues sans dates exploitables${c.data.api_issue ? ` ; API : ${c.data.api_issue}` : ""}`;
+      }
     } else {
       r.connections_error = (c && c.error) || "réponse vide de la page";
       if (c && c.wrong_account) {
@@ -688,7 +692,7 @@ async function runInbox(action) {
     if (action.connections_only) {
       const r = {};
       await addConnections(tab.id, action, r);
-      r.ok = Boolean(r.connections);
+      r.ok = Boolean(r.connections) && !r.connections_error;
       r.error = r.connections_error;
       return r;
     }

@@ -1075,7 +1075,12 @@ async function doListConnections(since) {
   }
   return {
     ok: true,
-    data: { connections: [...cards].map(([slug, on]) => ({ slug, connected_on: on })), connections_from: from, total },
+    data: {
+      connections: [...cards].map(([slug, on]) => ({ slug, connected_on: on })),
+      connections_from: from,
+      total,
+      api_issue: connectionsApiWhy, // pourquoi l'API n'a pas servi (null si elle a servi : on ne passe pas ici)
+    },
   };
 }
 
