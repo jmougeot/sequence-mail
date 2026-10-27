@@ -987,6 +987,12 @@ async function connectionsFromApi(since) {
     return null;
   }
   const out = [];
+  // Relations dont le profil n'est pas lisible (sans identifiant public) : sans lien /in/, rien à
+  // rapprocher d'un contact. La lecture ne garantit alors que ce qui est plus récent que la
+  // dernière d'entre elles — l'une d'elles pourrait être un contact qui vient d'accepter.
+  let unresolved = 0;
+  let unresolvedAt = 0;
+  const covers = (from) => (unresolved ? Math.max(from, unresolvedAt) : from);
   for (let start = 0; start < 400; start += 40) {
     let j;
     try {
@@ -1012,20 +1018,25 @@ async function connectionsFromApi(since) {
     const urns = (j.data && j.data["*elements"]) || [];
     for (const u of urns) {
       const c = conns.get(u);
-      const p = c && profiles.get(c.connectedMember || c["*connectedMemberResolutionResult"]);
-      if (!p || typeof c.createdAt !== "number") {
+      if (!c || typeof c.createdAt !== "number") {
         // format inattendu : on ne s'y fie pas
-        connectionsApiWhy = `format inattendu à la page ${start / 40 + 1} (${c ? (p ? "date absente" : "profil absent") : "relation absente"})`;
+        connectionsApiWhy = `format inattendu à la page ${start / 40 + 1} (${c ? "date absente" : "relation absente"})`;
         return null;
+      }
+      const p = profiles.get(c.connectedMember || c["*connectedMemberResolutionResult"]);
+      if (!p) {
+        unresolved++;
+        unresolvedAt = Math.max(unresolvedAt, c.createdAt);
+        continue;
       }
       out.push({ slug: normSlug(p.publicIdentifier), connected_on: c.createdAt });
     }
     const oldest = out.length ? Math.min(...out.map((c) => c.connected_on)) : null;
-    if (urns.length < 40) return { connections: out, connections_from: 0 }; // liste entière lue
-    if (oldest < since) return { connections: out, connections_from: oldest };
+    if (urns.length < 40) return { connections: out, connections_from: covers(0), unresolved }; // liste entière lue
+    if (oldest < since) return { connections: out, connections_from: covers(oldest), unresolved };
     await sleep(rand(600, 1400));
   }
-  return { connections: out, connections_from: out.length ? Math.min(...out.map((c) => c.connected_on)) : null };
+  return { connections: out, connections_from: out.length ? covers(Math.min(...out.map((c) => c.connected_on))) : null, unresolved };
 }
 
 /**
