@@ -107,6 +107,7 @@ async function setStatus(status) {
 
 async function tick() {
   if (busy) return;
+  await detachIfIdle().catch(() => {});
   if (!(await getEnabled())) {
     await setStatus({ kind: "off", text: "Extension en pause" });
     return;
@@ -337,6 +338,260 @@ function waitForLoad(tabId) {
   });
 }
 
+// --- Vrais gestes (chrome.debugger) ------------------------------------------
+// Un clic ou une touche simulés depuis la page sont marqués isTrusted = false, sans
+// position écran, pression ni touche enfoncée : un script LinkedIn le voit en une ligne.
+// Envoyés par le protocole DevTools, ils sortent de Chrome comme ceux d'une vraie souris
+// et d'un vrai clavier (mesuré : mêmes propriétés que la main de l'utilisateur). Le
+// content script mesure la cible, le background joue le geste ; refus ou échec → le
+// content script revient aux gestes simulés.
+// Le débogueur reste attaché le temps d'une session (bandeau « débogage » de Chrome) :
+// attaché AVANT la navigation, la page visitée naît avec le bandeau, sans redimensionnement
+// au moment d'agir ; détaché après DEBUGGER_IDLE_MS sans action.
+const DEBUGGER_IDLE_MS = 12 * 60_000;
+// Bandeau fermé par la personne (« Annuler ») : pas de nouvel attachement avant ce délai.
+const DEBUGGER_REFUSED_MS = 60 * 60_000;
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+const between = (a, b) => a + Math.random() * (b - a);
+// Tirage log-normal autour d'une médiane (rythmes humains : beaucoup de valeurs proches, quelques longues)
+const lognormal = (median, sigma, min, max) => {
+  const u = 1 - Math.random(), v = Math.random();
+  const z = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+  return Math.min(max, Math.max(min, median * Math.exp(sigma * z)));
+};
+
+async function debuggerState() {
+  const { dbg } = await chrome.storage.session.get("dbg");
+  return dbg || {};
+}
+async function setDebuggerState(patch) {
+  await chrome.storage.session.set({ dbg: { ...(await debuggerState()), ...patch } });
+}
+
+chrome.debugger.onDetach.addListener(async (source, reason) => {
+  const st = await debuggerState();
+  if (source.tabId !== st.tabId) return;
+  await setDebuggerState({ tabId: null, ...(reason === "canceled_by_user" ? { refusedAt: Date.now() } : {}) });
+});
+
+/** Attache le débogueur à l'onglet de travail (sans effet s'il l'est déjà). Faux si refusé. */
+async function attachDebugger(tabId) {
+  const st = await debuggerState();
+  if (st.refusedAt && Date.now() - st.refusedAt < DEBUGGER_REFUSED_MS) return false;
+  try {
+    await chrome.debugger.attach({ tabId }, "1.3");
+  } catch (e) {
+    if (!/already attached/i.test(String(e && e.message))) return false;
+  }
+  await setDebuggerState({ tabId, lastUse: Date.now() });
+  return true;
+}
+
+/** Détache le débogueur après une session (appelé à chaque tick). */
+async function detachIfIdle() {
+  const st = await debuggerState();
+  if (!st.tabId || Date.now() - (st.lastUse || 0) < DEBUGGER_IDLE_MS) return;
+  await chrome.debugger.detach({ tabId: st.tabId }).catch(() => {});
+  await setDebuggerState({ tabId: null });
+}
+
+async function cdp(tabId, method, params) {
+  try {
+    return await chrome.debugger.sendCommand({ tabId }, method, params);
+  } catch (e) {
+    if (!/not attached/i.test(String(e && e.message)) || !(await attachDebugger(tabId))) throw e;
+    return await chrome.debugger.sendCommand({ tabId }, method, params);
+  }
+}
+
+// Dernière position du curseur dans l'onglet de travail (CSS px de la fenêtre de la page).
+const cursor = { x: null, y: null };
+
+function startCursor(vw, vh) {
+  if (cursor.x == null) Object.assign(cursor, { x: between(0.3, 0.7) * vw, y: between(0.25, 0.65) * vh });
+}
+
+/** Trajectoire de main : courbe de Bézier légèrement arquée, vitesse « minimum jerk »
+ *  (accélère puis freine), un point toutes les ~16 ms comme une souris réelle (60 Hz),
+ *  coordonnées au sous-pixel avec un léger tremblement. Durée selon la distance (Fitts). */
+function mousePath(from, to) {
+  const dx = to.x - from.x, dy = to.y - from.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 1) return [to];
+  const duration = Math.min(1300, Math.max(140, (120 + 105 * Math.log2(1 + dist / 10)) * between(0.8, 1.25)));
+  const n = Math.max(3, Math.round(duration / 16.7));
+  const nx = -dy / dist, ny = dx / dist; // perpendiculaire
+  const bend = between(-0.18, 0.18) * dist;
+  const c1 = { x: from.x + dx * between(0.15, 0.4) + nx * bend, y: from.y + dy * between(0.15, 0.4) + ny * bend };
+  const c2 = { x: from.x + dx * between(0.6, 0.85) + nx * bend * between(0.2, 0.9), y: from.y + dy * between(0.6, 0.85) + ny * bend * between(0.2, 0.9) };
+  const pts = [];
+  for (let i = 1; i <= n; i++) {
+    const s = i / n;
+    const t = 10 * s ** 3 - 15 * s ** 4 + 6 * s ** 5;
+    const u = 1 - t;
+    const shake = i === n ? 0 : between(-0.35, 0.35);
+    pts.push({
+      x: u ** 3 * from.x + 3 * u * u * t * c1.x + 3 * u * t * t * c2.x + t ** 3 * to.x + shake,
+      y: u ** 3 * from.y + 3 * u * u * t * c1.y + 3 * u * t * t * c2.y + t ** 3 * to.y + shake,
+    });
+  }
+  return pts;
+}
+
+async function moveTo(tabId, x, y, vw, vh) {
+  startCursor(vw, vh);
+  const clamp = (v, max) => Math.min(max - 1, Math.max(1, v));
+  const to = { x: clamp(x, vw), y: clamp(y, vh) };
+  const from = { x: cursor.x, y: cursor.y };
+  let pts = mousePath(from, to);
+  // Sur un long trajet, la main dépasse parfois un peu la cible puis revient.
+  const dist = Math.hypot(to.x - from.x, to.y - from.y);
+  if (dist > 160 && Math.random() < 0.35) {
+    const k = between(4, 12) / dist;
+    const over = { x: clamp(to.x + (to.x - from.x) * k + between(-3, 3), vw), y: clamp(to.y + (to.y - from.y) * k + between(-3, 3), vh) };
+    pts = [...mousePath(from, over), ...mousePath(over, to)];
+  }
+  for (const p of pts) {
+    await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: p.x, y: p.y, button: "none", buttons: 0 });
+    await sleepMs(between(14.5, 18.5));
+  }
+  Object.assign(cursor, to);
+}
+
+/** Appui et relâche du bouton gauche là où est le curseur (80–150 ms, comme mesuré). */
+async function press(tabId) {
+  const at = { x: cursor.x, y: cursor.y };
+  await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", ...at, button: "left", buttons: 1, clickCount: 1, force: 0.5 });
+  await sleepMs(between(80, 150));
+  await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: at.x, y: at.y + between(0, 0.3), button: "left", buttons: 0, clickCount: 1 });
+}
+
+/** Défilement à la molette/pavé tactile : une rafale d'à-coups décroissants (inertie). */
+async function wheel(tabId, dy, vw, vh) {
+  startCursor(vw, vh);
+  const n = Math.round(Math.min(40, Math.max(6, Math.abs(dy) / 25)));
+  const w = Array.from({ length: n }, (_, i) => (1 - i / n) ** 1.6);
+  const sum = w.reduce((a, b) => a + b, 0);
+  for (const wi of w) {
+    await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: cursor.x, y: cursor.y, button: "none", deltaX: 0, deltaY: (dy * wi) / sum });
+    await sleepMs(between(14.5, 18.5));
+  }
+}
+
+// Touches d'un clavier : code et keyCode des caractères courants (les autres arrivent
+// comme d'un sélecteur de caractères, sans touche).
+function keyFor(ch) {
+  const up = ch.toUpperCase();
+  if (/^[a-z]$/i.test(ch)) return { code: `Key${up}`, vk: up.charCodeAt(0), shift: ch !== ch.toLowerCase() };
+  if (/^[0-9]$/.test(ch)) return { code: `Digit${ch}`, vk: ch.charCodeAt(0), shift: false };
+  const map = {
+    " ": ["Space", 32], ",": ["Comma", 188], ".": ["Period", 190], "-": ["Minus", 189], "'": ["Quote", 222],
+    ";": ["Semicolon", 186], "/": ["Slash", 191], "é": ["Digit2", 50], "è": ["Digit7", 55], "à": ["Digit0", 48],
+    "ç": ["Digit9", 57], "ù": ["Quote", 192], "(": ["Digit5", 53], ")": ["Minus", 219], "!": ["Digit8", 56],
+  };
+  const m = map[ch];
+  return m ? { code: m[0], vk: m[1], shift: false } : null;
+}
+
+async function key(tabId, type, k, extra = {}) {
+  await cdp(tabId, "Input.dispatchKeyEvent", { type, key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk, ...extra });
+}
+
+/** Tape `text` touche par touche, au rythme mesuré sur une vraie frappe : ~165 ms entre
+ *  deux touches (100–570), chaque touche enfoncée ~100 ms, des pauses après la
+ *  ponctuation et de temps en temps pour réfléchir. Retour à la ligne = Maj+Entrée
+ *  (Entrée seule enverrait le message). */
+async function typeText(tabId, text) {
+  const SHIFT = { key: "Shift", code: "ShiftLeft", vk: 16 };
+  for (const ch of Array.from(text)) {
+    if (ch === "\r") continue;
+    const hold = lognormal(100, 0.35, 40, 260);
+    if (ch === "\n") {
+      await key(tabId, "rawKeyDown", SHIFT, { modifiers: 8 });
+      await sleepMs(between(40, 110));
+      await key(tabId, "keyDown", { key: "Enter", code: "Enter", vk: 13 }, { modifiers: 8, text: "\r", unmodifiedText: "\r" });
+      await sleepMs(hold);
+      await key(tabId, "keyUp", { key: "Enter", code: "Enter", vk: 13 }, { modifiers: 8 });
+      await sleepMs(between(30, 90));
+      await key(tabId, "keyUp", SHIFT);
+    } else {
+      const k = keyFor(ch);
+      if (!k) {
+        await cdp(tabId, "Input.insertText", { text: ch });
+      } else {
+        const mods = k.shift ? 8 : 0;
+        if (k.shift) {
+          await key(tabId, "rawKeyDown", SHIFT, { modifiers: 8 });
+          await sleepMs(between(40, 120));
+        }
+        const kk = { key: ch, code: k.code, vk: k.vk };
+        await key(tabId, "keyDown", kk, { modifiers: mods, text: ch, unmodifiedText: k.shift ? ch.toLowerCase() : ch });
+        await sleepMs(hold);
+        await key(tabId, "keyUp", kk, { modifiers: mods });
+        if (k.shift) {
+          await sleepMs(between(20, 70));
+          await key(tabId, "keyUp", SHIFT);
+        }
+      }
+    }
+    let gap = lognormal(165, 0.4, 70, 600) - hold;
+    if (/[.!?…]/.test(ch)) gap += between(300, 1100);
+    else if (/[,;:\n]/.test(ch)) gap += between(150, 600);
+    else if (ch === " " && Math.random() < 0.08) gap += between(300, 1500);
+    if (Math.random() < 0.015) gap += between(1000, 2500); // on relit, on réfléchit
+    await sleepMs(Math.max(15, gap));
+  }
+}
+
+/** Touche isolée (Échap…). */
+async function pressKey(tabId, name) {
+  const keys = { Escape: { key: "Escape", code: "Escape", vk: 27 }, Tab: { key: "Tab", code: "Tab", vk: 9 } };
+  const k = keys[name];
+  if (!k) throw new Error(`touche inconnue : ${name}`);
+  await key(tabId, "rawKeyDown", k);
+  await sleepMs(lognormal(95, 0.3, 50, 200));
+  await key(tabId, "keyUp", k);
+}
+
+/** Geste demandé par le content script de l'onglet de travail. */
+async function realInput(tabId, msg) {
+  if (!(await attachDebugger(tabId))) return { ok: false, error: "débogueur indisponible" };
+  await setDebuggerState({ lastUse: Date.now() });
+  const vw = Number(msg.vw) || 1280, vh = Number(msg.vh) || 800;
+  if (msg.op === "move") await moveTo(tabId, Number(msg.x), Number(msg.y), vw, vh);
+  else if (msg.op === "press") await press(tabId);
+  else if (msg.op === "wheel") await wheel(tabId, Number(msg.dy), vw, vh);
+  else if (msg.op === "type") await typeText(tabId, String(msg.text || ""));
+  else if (msg.op === "key") await pressKey(tabId, msg.key);
+  else return { ok: false, error: `geste inconnu : ${msg.op}` };
+  await setDebuggerState({ lastUse: Date.now() });
+  return { ok: true };
+}
+
+// Profil connecté lu par l'API LinkedIn (/voyager/api/me) : gardé quelques heures au lieu
+// d'un appel avant chaque action, tant que la session LinkedIn (cookie li_at) est la même.
+// Un autre compte connecté entre-temps change le cookie : nouvelle lecture.
+const WHOAMI_TTL_MS = 4 * 3600_000;
+
+async function sessionKey() {
+  const c = await chrome.cookies.get({ url: "https://www.linkedin.com", name: "li_at" }).catch(() => null);
+  if (!c || !c.value) return null;
+  const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(c.value));
+  return [...new Uint8Array(h)].slice(0, 12).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function whoamiCache(msg) {
+  const key = await sessionKey();
+  if (!key) return { data: null };
+  if (msg.type === "whoami-cache-set") {
+    if (msg.data && msg.data.slug) await chrome.storage.session.set({ whoami: { key, data: msg.data, at: Date.now() } });
+    return { ok: true };
+  }
+  const { whoami } = await chrome.storage.session.get("whoami");
+  const fresh = whoami && whoami.key === key && Date.now() - whoami.at < WHOAMI_TTL_MS;
+  return { data: fresh ? whoami.data : null };
+}
+
 /** Envoie un message au content script, avec quelques essais (script pas encore prêt). */
 async function sendToTab(tabId, payload, tries = 6) {
   for (let i = 0; i < tries; i++) {
@@ -359,9 +614,10 @@ let pendingHide = async () => {};
 async function runAction(action) {
   try {
     const tab = await ensureTab();
+    await attachDebugger(tab.id); // avant la navigation : la page naît avec le bandeau
     await chrome.tabs.update(tab.id, { url: profileUrl(action.linkedin) });
     await waitForLoad(tab.id);
-    await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500)); // laisse l'UI se stabiliser
+    await new Promise((r) => setTimeout(r, 3500 + Math.random() * 4500)); // laisse l'UI se stabiliser
     const res = await sendToTab(tab.id, { type: "li-action", action });
     if (res.ok || res.error !== "content script injoignable") return res;
     // content.js absent de la page (onglet déchargé, ou extension rechargée) :
@@ -382,6 +638,7 @@ async function runAction(action) {
 async function runInbox(action) {
   try {
     const tab = await ensureTab();
+    await attachDebugger(tab.id);
     await chrome.tabs.update(tab.id, { url: "https://www.linkedin.com/messaging/" });
     await waitForLoad(tab.id);
     await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500));
@@ -497,6 +754,21 @@ async function connectToAzerit(origin, code, replace) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Vrai geste demandé par le content script : seulement depuis l'onglet de travail
+  // (jamais un onglet LinkedIn de la personne), cadre principal.
+  if (msg && msg.type === "real-input" && sender.id === chrome.runtime.id && sender.tab && sender.frameId === 0) {
+    chrome.storage.local
+      .get(WORK_TAB)
+      .then(({ [WORK_TAB]: saved }) =>
+        saved && saved.tabId === sender.tab.id ? realInput(sender.tab.id, msg) : { ok: false, error: "hors onglet de travail" }
+      )
+      .then(sendResponse, (e) => sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }));
+    return true;
+  }
+  if (msg && (msg.type === "whoami-cache-get" || msg.type === "whoami-cache-set") && sender.id === chrome.runtime.id && sender.tab) {
+    whoamiCache(msg).then(sendResponse, () => sendResponse({ data: null }));
+    return true;
+  }
   // Le content script, sur le profil, demande la fenêtre visible juste avant d'ouvrir la messagerie.
   if (msg.type === "li-show-for-message" && sender.id === chrome.runtime.id && sender.tab) {
     showForMessage(sender.tab).then(

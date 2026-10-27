@@ -11,9 +11,21 @@ La règle d'or : **l'extension n'envoie jamais quand elle veut.** À chaque tick
 (~1 min), elle demande au serveur local « ai-je le droit d'agir maintenant ? ».
 Le serveur (`outreach.ts`) répond en appliquant :
 
-- **plafonds journaliers** par type (par défaut 20 invitations, 40 messages) ;
-- **plage horaire ouvrée** seulement (9h–18h, lun–ven par défaut) ;
-- **délai aléatoire** entre deux actions (90–240 s, jamais régulier) ;
+- **plafonds journaliers** par type (par défaut 20 invitations, 40 messages),
+  tirés chaque jour entre 60 et 100 % du plafond, et **80 invitations sur 7 jours
+  glissants** au plus ;
+- **plage horaire** décalée chaque jour (début plus tard, fin plus tôt, jusqu'à 75 min) ;
+- **sessions courtes** : 2 à 5 actions espacées de 2 à 7 min, puis **1 h à 2 h 30 de
+  repos** ; la messagerie n'est lue qu'au plus toutes les 2 h, hors repos, une fois
+  pour tout le profil LinkedIn ;
+- **lecture du profil** (arrêt, défilement, retour en haut) avant chaque invitation
+  ou message ;
+- **vrais gestes** : clics, molette et frappe passent par le débogueur de Chrome
+  (permission `debugger`) et sortent comme ceux d'une vraie souris et d'un vrai
+  clavier (`isTrusted`, trajectoire à 60 Hz, frappe touche par touche au rythme
+  humain). Chrome affiche alors le bandeau « a commencé le débogage de ce navigateur »
+  le temps d'une session (détaché après 12 min sans action) ; le fermer coupe les
+  vrais gestes pendant 1 h (retour aux gestes simulés) ;
 - **pause de sécurité longue** (60 min) dès qu'une action échoue, et arrêt net
   si LinkedIn affiche un contrôle de sécurité / captcha.
 

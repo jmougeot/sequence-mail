@@ -143,6 +143,7 @@ async function pressAt(el, x, y) {
  *  (celui qui a toujours fonctionné ici — pas de synthétique en plus, sinon on
  *  risquerait un double envoi). */
 async function clickHuman(el) {
+  if (await realClick(el)) return;
   try { el.scrollIntoView({ block: "center", behavior: "smooth" }); }
   catch { el.scrollIntoView({ block: "center" }); }
   await sleep(rand(400, 950)); // laisse le défilement se stabiliser (coords fiables)
@@ -152,6 +153,153 @@ async function clickHuman(el) {
   await pressAt(el, x, y);
   await sleep(rand(20, 70));
   el.click(); // déclenchement unique et éprouvé
+}
+
+// --- Vrais gestes ---------------------------------------------------------------
+// Souris, molette et clavier joués par le background via le débogueur de Chrome
+// (événements isTrusted, comme une vraie main — cf. background.js « Vrais gestes »).
+// Ici on mesure la cible et on vérifie ; tout refus ou doute → gestes simulés comme avant.
+// Le runner (faux chrome.runtime, sans sendMessage) n'en a pas : gestes simulés.
+const canRealInput = () => typeof chrome !== "undefined" && !!(chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.id);
+
+async function realInput(cmd) {
+  if (!canRealInput()) return false;
+  try {
+    const r = await chrome.runtime.sendMessage({ type: "real-input", vw: window.innerWidth, vh: window.innerHeight, ...cmd });
+    return Boolean(r && r.ok);
+  } catch {
+    return false;
+  }
+}
+
+// Dernier survol réel : avant d'appuyer, le vrai curseur doit être sur la cible.
+let lastTrustedPath = [];
+document.addEventListener("mousemove", (e) => { if (e.isTrusted) lastTrustedPath = e.composedPath(); }, { capture: true, passive: true });
+
+/** Élément sous (x,y), descendu dans les shadow roots ouverts. */
+function deepElementFromPoint(x, y) {
+  let el = document.elementFromPoint(x, y);
+  while (el && el.shadowRoot) {
+    const inner = el.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === el) break;
+    el = inner;
+  }
+  return el;
+}
+
+/** `node` est-il `el` ou à l'intérieur (en traversant les shadow roots) ? */
+function composedContains(el, node) {
+  for (let n = node; n; n = n.parentNode || n.host) if (n === el) return true;
+  return false;
+}
+
+/** Amène `el` à l'écran à la molette, la main d'abord posée sur le contenu. Faux si la
+ *  molette n'a rien fait défiler (curseur sur un bandeau fixe, onglet caché…). */
+async function realScrollIntoView(el) {
+  for (let i = 0; i < 4; i++) {
+    const r = el.getBoundingClientRect();
+    if (r.top >= 70 && r.bottom <= window.innerHeight - 40) return true;
+    const x = Math.min(window.innerWidth - 20, Math.max(20, r.left + r.width / 2 + rand(-60, 60)));
+    if (!(await realInput({ op: "move", x, y: window.innerHeight * rand(0.4, 0.7) }))) return false;
+    if (!(await realInput({ op: "wheel", dy: r.top + r.height / 2 - window.innerHeight * rand(0.35, 0.6) }))) return false;
+    await sleep(rand(300, 650));
+    if (Math.abs(el.getBoundingClientRect().top - r.top) < 2) return false;
+  }
+  const r = el.getBoundingClientRect();
+  return r.top >= 0 && r.bottom <= window.innerHeight;
+}
+
+/** Vrai clic : défilement à la molette, trajectoire de main vers un point de la cible,
+ *  hésitation, appui. Avant d'appuyer, la cible doit être sous le curseur (survol réel
+ *  reçu ; onglet caché, où Chrome retient les survols : élément sous le point). Une fois
+ *  l'appui parti, jamais de second clic simulé (pas de double envoi). Faux = rien appuyé. */
+async function realClick(el) {
+  if (!canRealInput()) return false;
+  if (!(await realScrollIntoView(el))) {
+    try { el.scrollIntoView({ block: "center" }); } catch {}
+    await sleep(rand(300, 600));
+  }
+  const { x, y } = jitterPoint(el);
+  if (x < 1 || y < 1 || x > window.innerWidth - 1 || y > window.innerHeight - 1) return false;
+  if (!composedContains(el, deepElementFromPoint(x, y))) return false; // recouvert (fenêtre, bandeau)
+  if (!(await realInput({ op: "move", x, y }))) return false;
+  await sleep(rand(70, 220)); // hésitation avant d'appuyer
+  const onTarget = document.visibilityState === "hidden"
+    ? composedContains(el, deepElementFromPoint(x, y))
+    : lastTrustedPath.includes(el);
+  if (!onTarget) return false;
+  await realInput({ op: "press" });
+  return true;
+}
+
+/** Vraie frappe dans un champ vide : clic dedans si besoin, puis touche par touche. Vrai si
+ *  le champ contient exactement `text` ensuite (sinon l'appelant remplace par la saisie simulée). */
+async function realType(el, text) {
+  const fieldText = () => (el.tagName === "TEXTAREA" || el.tagName === "INPUT" ? el.value : el.innerText) || "";
+  if (!canRealInput() || normWords(fieldText())) return false; // brouillon déjà là : saisie simulée, qui remplace
+  const focused = () => composedContains(el, activeDeep());
+  if (!focused()) {
+    await realClick(el);
+    await sleep(rand(200, 500));
+  }
+  if (!focused()) return false;
+  if (!(await realInput({ op: "type", text }))) return false;
+  await sleep(rand(300, 700));
+  return normWords(fieldText()) === normWords(text);
+}
+
+/** Échap au vrai clavier, sinon simulé. */
+async function pressEscape() {
+  if (await realInput({ op: "key", key: "Escape" })) return;
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+}
+
+/** Avant d'agir sur un profil : le temps de le lire. Un arrêt sur le haut de la page,
+ *  un à trois défilements vers le bas, puis retour en haut (8 à 25 s en tout). À la vraie
+ *  molette ; à défaut, défilement direct (scrollTop), qui marche aussi dans un onglet caché. */
+async function glanceProfile() {
+  if (!/^\/in\//.test(location.pathname)) return;
+  await sleep(rand(3000, 7000));
+  const scroller = [document.scrollingElement, ...document.querySelectorAll("main")].find(
+    (el) => el && el.scrollHeight > el.clientHeight + 200 &&
+      (el === document.scrollingElement || /(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY))
+  );
+  if (!scroller) return;
+  const steps = 1 + Math.floor(rand(0, 3));
+  if (await realInput({ op: "move", x: window.innerWidth * rand(0.35, 0.65), y: window.innerHeight * rand(0.45, 0.75) })) {
+    let wheeled = true;
+    for (let i = 0; i < steps && wheeled; i++) {
+      const before = scroller.scrollTop;
+      wheeled = (await realInput({ op: "wheel", dy: window.innerHeight * rand(0.4, 0.9) })) && scroller.scrollTop !== before;
+      await sleep(rand(1500, 4500));
+    }
+    if (wheeled) {
+      for (let i = 0; i < 3 && scroller.scrollTop > 0; i++) {
+        await realInput({ op: "wheel", dy: -scroller.scrollTop - rand(50, 200) });
+        await sleep(rand(400, 900));
+      }
+      await sleep(rand(800, 2000));
+      return;
+    }
+  }
+  for (let i = 0; i < steps; i++) {
+    // par petits pas, comme une molette
+    const target = scroller.scrollTop + Math.round(window.innerHeight * rand(0.4, 0.9));
+    while (scroller.scrollTop < target - 5) {
+      const before = scroller.scrollTop;
+      scroller.scrollTop += Math.round(rand(60, 140));
+      if (scroller.scrollTop === before) break; // bas de page
+      await sleep(rand(30, 90));
+    }
+    await sleep(rand(1500, 4500));
+  }
+  while (scroller.scrollTop > 0) {
+    const before = scroller.scrollTop;
+    scroller.scrollTop -= Math.round(rand(150, 300));
+    if (scroller.scrollTop === before) break;
+    await sleep(rand(20, 60));
+  }
+  await sleep(rand(800, 2000));
 }
 
 /** Saisit du texte dans un textarea ou un contenteditable, en déclenchant les events React. */
@@ -369,7 +517,7 @@ async function dismissDialog() {
     (b) => isShown(b) && RE_DISMISS.test(b.getAttribute("aria-label") || "")
   );
   if (btn) await clickHuman(btn);
-  else document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+  else await pressEscape();
   await human();
 }
 
@@ -448,7 +596,7 @@ async function doInvite(note, target) {
   if (!invitePage && !connect) {
     if (already()) return skipped;
     // Menu « Plus » pas rendu dans un onglet caché : fenêtre de travail montrée, menu rouvert.
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+    await pressEscape();
     await showWorkWindow();
     await human();
     connect = await findConnectButton();
@@ -478,7 +626,7 @@ async function doInvite(note, target) {
         return deepQueryAll('textarea[name="message"], #custom-message').find(isShown) || null;
       }, 4000);
       if (box) {
-        await typeInto(box, clean);
+        if (!(await realType(box, clean))) await typeInto(box, clean);
         noted = true;
       } else {
         dropped = "plus de note personnalisée disponible sur ce compte (offre Premium affichée)";
@@ -653,8 +801,12 @@ async function doMessage(text, inThread, guard, meName) {
   // Clic dans le champ d'abord : sans curseur dedans (onglet en arrière-plan),
   // l'éditeur ignore le collage comme la saisie et Envoyer reste grisé.
   await clickHuman(editor);
-  await pasteInto(editor, text.trim());
-  let send = await waitFor(() => findSendButton(editor), 4000);
+  // Vraie frappe d'abord ; sinon collage, qui remplace ce qui a pu être tapé.
+  let send = (await realType(editor, text.trim())) ? await waitFor(() => findSendButton(editor), 4000) : null;
+  if (!send) {
+    await pasteInto(editor, text.trim());
+    send = await waitFor(() => findSendButton(editor), 4000);
+  }
   if (!send) {
     // Repli : saisie directe si le collage n'a pas réveillé l'éditeur.
     await typeInto(editor, text.trim());
@@ -1460,6 +1612,20 @@ function pictureUrl(profile) {
   return art && art.fileIdentifyingUrlPathSegment ? img.rootUrl + art.fileIdentifyingUrlPathSegment : null;
 }
 
+/** Profil connecté, gardé quelques heures par le background tant que la session LinkedIn
+ *  ne change pas (cf. background.js whoamiCache) : un appel d'API de moins par action. */
+async function cachedWhoami() {
+  if (canRealInput()) {
+    try {
+      const c = await chrome.runtime.sendMessage({ type: "whoami-cache-get" });
+      if (c && c.data) return { ok: true, data: c.data };
+    } catch {}
+  }
+  const me = await doWhoami();
+  if (me.ok && canRealInput()) chrome.runtime.sendMessage({ type: "whoami-cache-set", data: me.data }).catch(() => {});
+  return me;
+}
+
 async function doWhoami() {
   const m = document.cookie.match(/(?:^|;\s*)JSESSIONID="?([^";]+)"?/);
   if (!m) return { ok: false, error: "cookie JSESSIONID absent — pas connecté à LinkedIn ?" };
@@ -1511,7 +1677,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         // → refus ; profil illisible → refus aussi (dans le doute, on n'envoie pas).
         let member = null;
         if ("expect_member" in action) {
-          const me = await doWhoami();
+          const me = await cachedWhoami();
           if (!me.ok) {
             sendResponse({ ok: false, identity_unknown: true, error: me.error });
             return;
@@ -1559,6 +1725,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           return;
         }
         const inThread = !!action.thread; // action ciblant un fil (/messaging/thread/...)
+        if ((action.type === "invite" || (action.type === "message" && !inThread)) && action.linkedin) await glanceProfile();
         const r =
           action.type === "message" ? await doMessage(action.body, inThread, action.guard, member && member.name)
           : action.type === "read_messages" ? await doReadMessages(action.limit, inThread)
