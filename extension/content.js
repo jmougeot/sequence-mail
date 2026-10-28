@@ -228,8 +228,9 @@ async function realClick(el) {
     ? composedContains(el, deepElementFromPoint(x, y))
     : lastTrustedPath.includes(el);
   if (!onTarget) return false;
-  await realInput({ op: "press" });
-  return true;
+  // Appui refusé (débogueur détaché entre le déplacement et l'appui) : rien n'a été cliqué,
+  // l'appelant reprend en simulé. Avant, « vrai » quand même : ni clic réel ni repli.
+  return realInput({ op: "press" });
 }
 
 // Texte déposé d'un coup par le débogueur (événements de confiance, sans touche). Vrai : touche
@@ -353,8 +354,10 @@ function pageNotFound() {
   if (/^\/404\/?$/.test(location.pathname)) return true;
   if (/page not found|page introuvable|profil introuvable/i.test(document.title || "")) return true;
   const main = document.querySelector("main") || document.body;
-  return RE_NOT_FOUND.test(readableText(main).slice(0, 1500));
+  return RE_NOT_FOUND.test(readableText(main, 3000).slice(0, 1500));
 }
+// Contrôle de sécurité LinkedIn : /checkpoint/… (défi, captcha, vérification), /authwall.
+const RE_SECURITY_PATH = /^\/(checkpoint|authwall)(\/|$)/i;
 // Le marqueur « (404) » est reconnu par le serveur : pas de pause de sécurité.
 const NOT_FOUND_ERROR = "page LinkedIn introuvable (404) — l'URL n'existe pas, ou le profil a été supprimé/renommé";
 
@@ -400,7 +403,7 @@ function messagee(label) {
 /** Degré de relation affiché à côté du nom (« · 1st », « · 2e »…) : 1, 2, 3, ou null s'il n'est pas lu. */
 function profileDegree() {
   const main = document.querySelector("main") || document.body;
-  const m = /[·•]\s*(1st|2nd|3rd|1er|2e|3e)\b/i.exec(readableText(main).slice(0, 800));
+  const m = /[·•]\s*(1st|2nd|3rd|1er|2e|3e)\b/i.exec(readableText(main, 2000).slice(0, 800));
   return m ? Number(m[1][0]) : null;
 }
 
@@ -419,7 +422,7 @@ async function findMessageButton(timeout = 6000) {
   let btn = await waitFor(() => findProfileMessageBtn(), timeout);
   if (btn) return { btn, pending: notConnected() };
   if (notConnected()) return { btn: null, pending: true };
-  const more = findOwnClickable(RE_MORE);
+  const more = findProfileMore();
   if (!more) return { btn: null, pending: false };
   await clickHuman(more);
   await human();
@@ -498,11 +501,28 @@ function findOwnClickable(re) {
   return null;
 }
 
+/** Bouton « Plus » DU PROFIL, dans <main>. La barre de navigation du haut a aussi
+ *  son « More », placé avant dans la page : on ouvrait le menu de LinkedIn, où
+ *  « Se connecter » n'est jamais (« bouton introuvable » et pause de sécurité). */
+function findProfileMore() {
+  const main = document.querySelector("main");
+  const inMain = (el) => {
+    for (let n = el; n; n = n.parentNode || n.host) if (n === main) return true;
+    return false;
+  };
+  for (const el of deepQueryAll('button, a, [role="button"]')) {
+    if (el.disabled || !isShown(el) || el.closest("aside, header, nav, [role='navigation']")) continue;
+    if (main && !inMain(el)) continue;
+    if (RE_MORE.test(`${el.getAttribute("aria-label") || ""} ${el.textContent || ""}`.trim())) return el;
+  }
+  return null;
+}
+
 /** Bouton « Se connecter » du profil, éventuellement caché dans le menu « Plus ». */
 async function findConnectButton() {
   let btn = findOwnClickable(RE_CONNECT);
   if (btn) return btn;
-  const more = findOwnClickable(RE_MORE);
+  const more = findProfileMore();
   if (more) {
     await clickHuman(more);
     await human();
@@ -515,13 +535,22 @@ async function findConnectButton() {
 const NOTE_MAX = 200;
 const RE_DISMISS = /^(ignorer|fermer|dismiss|close)\b/i;
 
-/** Ferme la fenêtre affichée (bouton « Ignorer »/« Fermer », sinon Échap). */
+const SEL_OPEN = '[role="dialog"], dialog[open], .artdeco-modal, [role="menu"], .artdeco-dropdown__content--is-open';
+
+/** Ferme la fenêtre ou le menu affiché : Échap d'abord ; s'il reste ouvert, son bouton
+ *  « Fermer »/« Ignorer » À LUI. Avant, le premier bouton « Ignorer » visible de toute la page
+ *  était cliqué : celui d'une suggestion « Vous connaissez peut-être » de la colonne de droite
+ *  l'écartait pour de bon (un vrai geste, enregistré par LinkedIn). */
 async function dismissDialog() {
-  const btn = deepQueryAll("button[aria-label]").find(
-    (b) => isShown(b) && RE_DISMISS.test(b.getAttribute("aria-label") || "")
-  );
-  if (btn) await clickHuman(btn);
-  else await pressEscape();
+  await pressEscape();
+  await human();
+  const open = deepQueryAll(SEL_OPEN).find(isShown);
+  if (!open) return;
+  const btn = searchRoots(open)
+    .flatMap((r) => [...r.querySelectorAll("button[aria-label]")])
+    .find((b) => isShown(b) && RE_DISMISS.test(b.getAttribute("aria-label") || ""));
+  if (!btn) return;
+  await clickHuman(btn);
   await human();
 }
 
@@ -667,13 +696,14 @@ async function doInvite(note, target) {
 
 // --- Garde-fou d'un message servi par Sequence Mail ---------------------------
 // On relit la conversation ouverte juste avant d'écrire : c'est la seule source
-// sûre (la lecture de la messagerie ne passe que toutes les ~20 min, et rate une
+// sûre (la lecture de la messagerie ne passe qu'au plus toutes les 2 h, et rate une
 // réponse si l'utilisateur a lui-même répondu entre-temps).
 
 const normWords = (s) =>
   String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
-// Repère d'un message dans le fil : son début, espaces et accents normalisés.
-const textKey = (s) => normWords(s).slice(0, 60);
+// Repère d'un message dans le fil : ses 200 premiers caractères, espaces et accents normalisés
+// (60 confondaient deux étapes à la même phrase d'ouverture : la relance passait pour déjà envoyée).
+const textKey = (s) => normWords(s).slice(0, 200);
 
 /** Conversation qui contient l'éditeur (bulle de messagerie ou page /messaging). */
 function threadRoot(editor) {
@@ -981,8 +1011,8 @@ let connectionsApiWhy = null; // pourquoi l'API n'a pas servi : joint à l'éche
  *  null si l'API ne répond pas comme prévu : on se rabat alors sur la page. */
 async function connectionsFromApi(since) {
   connectionsApiWhy = null;
-  const m = document.cookie.match(/(?:^|;\s*)JSESSIONID="?([^";]+)"?/);
-  if (!m) {
+  const headers = voyagerHeaders();
+  if (!headers) {
     connectionsApiWhy = "cookie JSESSIONID illisible";
     return null;
   }
@@ -998,10 +1028,7 @@ async function connectionsFromApi(since) {
     try {
       const r = await fetch(
         `${location.origin}/voyager/api/relationships/dash/connections?decorationId=com.linkedin.voyager.dash.deco.web.mynetwork.ConnectionListWithProfile-16&count=40&q=search&sortType=RECENTLY_ADDED&start=${start}`,
-        {
-          credentials: "include",
-          headers: { "csrf-token": m[1], accept: "application/vnd.linkedin.normalized+json+2.1", "x-restli-protocol-version": "2.0.0" },
-        }
+        { credentials: "include", headers }
       );
       if (!r.ok) {
         connectionsApiWhy = `HTTP ${r.status} à la page ${start / 40 + 1}`;
@@ -1074,7 +1101,7 @@ async function doListConnections(since) {
     cards = connectionCards();
     stale = cards.size === before ? stale + 1 : 0;
   }
-  const head = readableText(document.querySelector("main") || document.body).slice(0, 400);
+  const head = readableText(document.querySelector("main") || document.body, 1200).slice(0, 400);
   const tm = /([\d][\d,.\s ]*)\s+(connections|relations)/i.exec(head);
   const total = tm ? Number(tm[1].replace(/\D/g, "")) : null;
   const o = oldest();
@@ -1102,18 +1129,15 @@ async function doListConnections(since) {
  *  `complete` = toute la liste lue, `reached` = lue jusqu'à `since`. Format inattendu →
  *  échec, on ne s'y fie pas. */
 async function doListSentInvitations(since) {
-  const m = document.cookie.match(/(?:^|;\s*)JSESSIONID="?([^";]+)"?/);
-  if (!m) return { ok: false, error: "invitations envoyées : session illisible" };
+  const headers = voyagerHeaders();
+  if (!headers) return { ok: false, error: "invitations envoyées : session illisible" };
   const out = [];
   for (let start = 0; start < 2000; start += 100) {
     let j;
     try {
       const r = await fetch(
         `${location.origin}/voyager/api/relationships/sentInvitationViewsV2?count=100&invitationType=CONNECTION&q=invitationType&start=${start}`,
-        {
-          credentials: "include",
-          headers: { "csrf-token": m[1], accept: "application/vnd.linkedin.normalized+json+2.1", "x-restli-protocol-version": "2.0.0" },
-        }
+        { credentials: "include", headers }
       );
       if (!r.ok) return { ok: false, error: `invitations envoyées : HTTP ${r.status}` };
       j = await r.json();
@@ -1200,14 +1224,18 @@ function sectionItems(section, max = 10) {
  *  les lignes qu'innerText donnait — parseProfileText repère les titres de
  *  sections par LIGNE ENTIÈRE. Lignes vides et doublons consécutifs retirés
  *  (LinkedIn duplique beaucoup de texte pour l'accessibilité). */
-function readableText(node) {
+function readableText(node, limit = Infinity) {
   if (!node) return "";
   const SKIP_TAG = /^(STYLE|SCRIPT|NOSCRIPT|TEMPLATE|IFRAME|SVG|CANVAS|VIDEO|AUDIO|CODE)$/i;
   const parts = [];
+  // `limit` : on s'arrête dès que ce nombre de caractères est lu (texte brut, doublons compris).
+  // Les appelants qui ne regardent que le haut de la page (404, degré de relation, en-tête)
+  // scrutaient tout <main>, getComputedStyle sur chaque nœud, toutes les 300 ms.
+  let count = 0;
   const nl = () => { if (parts.length && parts[parts.length - 1] !== "\n") parts.push("\n"); };
   const walk = (n, depth) => {
-    if (!n || depth > 80) return;
-    if (n.nodeType === Node.TEXT_NODE) { if (n.data) parts.push(n.data); return; }
+    if (!n || depth > 80 || count >= limit) return;
+    if (n.nodeType === Node.TEXT_NODE) { if (n.data) { parts.push(n.data); count += n.data.length; } return; }
     if (n.nodeType === Node.DOCUMENT_FRAGMENT_NODE) { // shadow root passé en racine
       for (const c of n.childNodes) walk(c, depth + 1);
       return;
@@ -1341,8 +1369,8 @@ function parseProfileText(raw) {
 window.__liParseProfileText = parseProfileText; // exposé pour les tests hors navigateur
 
 async function doViewProfile() {
-  // Diagnostic temporaire : langue/visibilité/session pour comprendre les
-  // lectures incomplètes. À retirer une fois la fonctionnalité stabilisée.
+  // Diagnostic joint aux seules lectures incomplètes (langue, visibilité, défilement) :
+  // de quoi comprendre une lecture partielle sans voir l'onglet. Gardé à dessein.
   const debug = {
     url: location.href,
     lang: document.documentElement.lang || null,
@@ -1353,7 +1381,7 @@ async function doViewProfile() {
   const contentReady = () => {
     if (pageNotFound()) return { notFound: true }; // 404 rendue en cours d'attente → abandon immédiat
     const main = document.querySelector("main") || document.body;
-    const text = readableText(main);
+    const text = readableText(main, 1500);
     return text.length > 600 ? { main, text } : null;
   };
   const ready = await waitFor(contentReady, 20000);
@@ -1623,6 +1651,60 @@ async function openConversationByName(name) {
 // attendu. Lecture par l'API interne que la page LinkedIn appelle elle-même au
 // chargement (/voyager/api/me) — aucun clic, rien de visible.
 
+// Instance de page imitée, une par page affichée (le client web en tire une par vue).
+let pageInstance = { path: null, urn: null };
+
+/** En-têtes des appels à l'API interne, calqués sur ceux que la page LinkedIn envoie elle-même :
+ *  jeton CSRF, langue, version du client lue dans la page (<meta name="applicationInstance">),
+ *  suivi d'écran (x-li-track) et instance de page (clé selon la page, identifiant tiré au hasard).
+ *  Sans ces en-têtes, nos requêtes se distinguaient de celles du client. Imitation : les valeurs
+ *  suivent le format observé, pas une spécification. null si la session est illisible. */
+function voyagerHeaders() {
+  const m = document.cookie.match(/(?:^|;\s*)JSESSIONID="?([^";]+)"?/);
+  if (!m) return null;
+  const h = {
+    "csrf-token": m[1],
+    accept: "application/vnd.linkedin.normalized+json+2.1",
+    "x-restli-protocol-version": "2.0.0",
+  };
+  const lang = (document.documentElement.lang || navigator.language || "en-US").replace("-", "_");
+  h["x-li-lang"] = /_/.test(lang)
+    ? lang
+    : { fr: "fr_FR", en: "en_US", de: "de_DE", es: "es_ES", it: "it_IT", pt: "pt_BR", nl: "nl_NL" }[lang] || "en_US";
+  let version = null;
+  try {
+    version = JSON.parse(document.querySelector('meta[name="applicationInstance"]')?.content || "null")?.version || null;
+  } catch {
+    // méta absente ou illisible : pas de x-li-track plutôt qu'une version inventée
+  }
+  if (version) {
+    const dpr = window.devicePixelRatio || 1;
+    h["x-li-track"] = JSON.stringify({
+      clientVersion: version,
+      mpVersion: version,
+      osName: "web",
+      timezoneOffset: -new Date().getTimezoneOffset() / 60,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      deviceFormFactor: "DESKTOP",
+      mpName: "voyager-web",
+      displayDensity: dpr,
+      displayWidth: Math.round(screen.width * dpr),
+      displayHeight: Math.round(screen.height * dpr),
+    });
+  }
+  if (pageInstance.path !== location.pathname) {
+    const key = /^\/in\//.test(location.pathname) ? "d_flagship3_profile_view_base"
+      : /^\/messaging/.test(location.pathname) ? "d_flagship3_messaging"
+      : /connections/.test(location.pathname) ? "d_flagship3_people_connections"
+      : /^\/mynetwork/.test(location.pathname) ? "d_flagship3_people"
+      : "d_flagship3_feed";
+    const id = crypto.getRandomValues(new Uint8Array(16));
+    pageInstance = { path: location.pathname, urn: `urn:li:page:${key};${btoa(String.fromCharCode(...id))}` };
+  }
+  h["x-li-page-instance"] = pageInstance.urn;
+  return h;
+}
+
 /** Slug canonique (« jean-dupont-123 ») : décodé, en minuscules. */
 function normSlug(s) {
   let out = String(s || "").trim();
@@ -1677,18 +1759,11 @@ async function cachedWhoami() {
 }
 
 async function doWhoami() {
-  const m = document.cookie.match(/(?:^|;\s*)JSESSIONID="?([^";]+)"?/);
-  if (!m) return { ok: false, error: "cookie JSESSIONID absent — pas connecté à LinkedIn ?" };
+  const headers = voyagerHeaders();
+  if (!headers) return { ok: false, error: "cookie JSESSIONID absent — pas connecté à LinkedIn ?" };
   let r;
   try {
-    r = await fetch(`${location.origin}/voyager/api/me`, {
-      credentials: "include",
-      headers: {
-        "csrf-token": m[1],
-        accept: "application/vnd.linkedin.normalized+json+2.1",
-        "x-restli-protocol-version": "2.0.0",
-      },
-    });
+    r = await fetch(`${location.origin}/voyager/api/me`, { credentials: "include", headers });
   } catch (e) {
     return { ok: false, error: `lecture du profil connecté impossible (${e && e.message ? e.message : e})` };
   }
@@ -1714,7 +1789,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     (async () => {
       try {
         // Sécurité : si LinkedIn affiche un contrôle de sécurité / captcha, on s'arrête net.
-        if (/checkpoint|captcha|challenge/i.test(location.href)) {
+        // Chemin seulement : un slug de profil contenant « challenge » n'est pas un contrôle.
+        if (RE_SECURITY_PATH.test(location.pathname)) {
           sendResponse({ ok: false, error: "contrôle de sécurité LinkedIn détecté — pause" });
           return;
         }

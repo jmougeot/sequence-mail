@@ -28,3 +28,6 @@ dist/
 # Rendered by setup.sh (contains the password hash); the template is Caddyfile.template.
 Caddyfile
 data/
+
+# Build de développement de l'extension (make-dev.sh)
+extension-dev/

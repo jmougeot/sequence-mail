@@ -17,8 +17,15 @@
  */
 const DEFAULT_SERVER = "https://sequence.example.com"; // prod partagée Sequence Mail (réglable dans le popup — ex. http://localhost:3000 en local)
 const ALARM = "li-tick";
+// Build de développement (make-dev.sh) : Azerit et Sequence Mail en local sont aussi acceptés.
+// Jamais dans l'extension distribuée : une page servie en local pourrait sinon demander, par le
+// pont, la remise de la session LinkedIn de la personne (cookies compris).
+const DEV_ORIGINS = false;
+const LOCAL_URLS = DEV_ORIGINS ? ["http://localhost/*", "http://127.0.0.1/*"] : [];
 // Origines de l'app Azerit autorisées à demander la remise de session.
-const AZERIT_ORIGIN = /^(https:\/\/app\.azerit\.tech|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)$/;
+const AZERIT_ORIGIN = DEV_ORIGINS
+  ? /^(https:\/\/app\.azerit\.tech|http:\/\/(localhost|127\.0\.0\.1)(:\d+)?)$/
+  : /^https:\/\/app\.azerit\.tech$/;
 
 let busy = false; // garde-fou : jamais deux actions en parallèle
 let reloadPending = false; // rechargement demandé depuis le popup pendant une action
@@ -68,7 +75,7 @@ chrome.runtime.onInstalled.addListener(() => {
  */
 async function injectAzeritBridge() {
   const tabs = await chrome.tabs.query({
-    url: ["https://app.azerit.tech/*", "http://localhost/*", "http://127.0.0.1/*"],
+    url: ["https://app.azerit.tech/*", ...LOCAL_URLS],
   });
   for (const tab of tabs) {
     chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["azerit-bridge.js"] }).catch(() => {});
@@ -258,7 +265,7 @@ async function ensureTab() {
   const tab = win.tabs[0];
   await chrome.storage.local.set({ [WORK_TAB]: { tabId: tab.id, windowId: win.id, v: WORK_WINDOW.v } });
   await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
-  if ((await chrome.tabs.get(tab.id)).status !== "complete") await waitForLoad(tab.id);
+  await waitForLoad(tab.id, true);
   await placeInCorner(win.id, tab.id);
   return tab;
 }
@@ -328,21 +335,24 @@ async function screenArea(tabId) {
   return { left: 0, top: 0, width: 1440, height: 900 };
 }
 
-/** Attend que l'onglet ait fini de charger l'URL demandée. */
-function waitForLoad(tabId) {
+/** Attend que l'onglet ait fini de charger. À appeler AVANT la navigation (tabs.update, reload)
+ *  puis à attendre : posé après, l'écouteur manquait le « complete » d'un chargement rapide et
+ *  l'on attendait les 25 s de secours. `settled` : l'onglet vient d'être créé, s'il est déjà
+ *  chargé il n'y a rien à attendre. */
+function waitForLoad(tabId, settled = false) {
   return new Promise((resolve) => {
+    const finish = () => {
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      clearTimeout(timer);
+      resolve();
+    };
     const onUpdated = (id, info) => {
-      if (id === tabId && info.status === "complete") {
-        chrome.tabs.onUpdated.removeListener(onUpdated);
-        resolve();
-      }
+      if (id === tabId && info.status === "complete") finish();
     };
     chrome.tabs.onUpdated.addListener(onUpdated);
     // filet de sécurité : on ne reste pas bloqué si l'événement manque
-    setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(onUpdated);
-      resolve();
-    }, 25000);
+    const timer = setTimeout(finish, 25000);
+    if (settled) chrome.tabs.get(tabId).then((t) => { if (t && t.status === "complete") finish(); }, () => {});
   });
 }
 
@@ -486,19 +496,29 @@ async function wheel(tabId, dy, vw, vh) {
   }
 }
 
-// Touches d'un clavier : code et keyCode des caractères courants (les autres arrivent
-// comme d'un sélecteur de caractères, sans touche).
+// Touches d'un clavier US (QWERTY), une seule disposition d'un bout à l'autre (la table mêlait
+// AZERTY et QWERTY) : code physique, keyCode et touche de base (`unshifted` : ce que donne la
+// touche sans Maj). Les autres caractères (accents…) arrivent comme d'un sélecteur de
+// caractères, sans touche.
 function keyFor(ch) {
   const up = ch.toUpperCase();
-  if (/^[a-z]$/i.test(ch)) return { code: `Key${up}`, vk: up.charCodeAt(0), shift: ch !== ch.toLowerCase() };
-  if (/^[0-9]$/.test(ch)) return { code: `Digit${ch}`, vk: ch.charCodeAt(0), shift: false };
-  const map = {
+  if (/^[a-z]$/i.test(ch)) return { code: `Key${up}`, vk: up.charCodeAt(0), shift: ch !== ch.toLowerCase(), unshifted: ch.toLowerCase() };
+  if (/^[0-9]$/.test(ch)) return { code: `Digit${ch}`, vk: ch.charCodeAt(0), shift: false, unshifted: ch };
+  const plain = {
     " ": ["Space", 32], ",": ["Comma", 188], ".": ["Period", 190], "-": ["Minus", 189], "'": ["Quote", 222],
-    ";": ["Semicolon", 186], "/": ["Slash", 191], "é": ["Digit2", 50], "è": ["Digit7", 55], "à": ["Digit0", 48],
-    "ç": ["Digit9", 57], "ù": ["Quote", 192], "(": ["Digit5", 53], ")": ["Minus", 219], "!": ["Digit8", 56],
+    ";": ["Semicolon", 186], "/": ["Slash", 191], "=": ["Equal", 187], "[": ["BracketLeft", 219], "]": ["BracketRight", 221],
+    "\\": ["Backslash", 220], "`": ["Backquote", 192],
   };
-  const m = map[ch];
-  return m ? { code: m[0], vk: m[1], shift: false } : null;
+  // caractères tapés avec Maj : [code, keyCode, touche de base]
+  const shifted = {
+    "!": ["Digit1", 49, "1"], "@": ["Digit2", 50, "2"], "#": ["Digit3", 51, "3"], "$": ["Digit4", 52, "4"], "%": ["Digit5", 53, "5"],
+    "^": ["Digit6", 54, "6"], "&": ["Digit7", 55, "7"], "*": ["Digit8", 56, "8"], "(": ["Digit9", 57, "9"], ")": ["Digit0", 48, "0"],
+    "_": ["Minus", 189, "-"], "+": ["Equal", 187, "="], ":": ["Semicolon", 186, ";"], '"': ["Quote", 222, "'"], "<": ["Comma", 188, ","],
+    ">": ["Period", 190, "."], "?": ["Slash", 191, "/"], "{": ["BracketLeft", 219, "["], "}": ["BracketRight", 221, "]"], "~": ["Backquote", 192, "`"],
+  };
+  if (plain[ch]) return { code: plain[ch][0], vk: plain[ch][1], shift: false, unshifted: ch };
+  if (shifted[ch]) return { code: shifted[ch][0], vk: shifted[ch][1], shift: true, unshifted: shifted[ch][2] };
+  return null;
 }
 
 async function key(tabId, type, k, extra = {}) {
@@ -533,7 +553,7 @@ async function typeText(tabId, text) {
           await sleepMs(between(40, 120));
         }
         const kk = { key: ch, code: k.code, vk: k.vk };
-        await key(tabId, "keyDown", kk, { modifiers: mods, text: ch, unmodifiedText: k.shift ? ch.toLowerCase() : ch });
+        await key(tabId, "keyDown", kk, { modifiers: mods, text: ch, unmodifiedText: k.unshifted });
         await sleepMs(hold);
         await key(tabId, "keyUp", kk, { modifiers: mods });
         if (k.shift) {
@@ -632,15 +652,17 @@ async function runAction(action) {
   try {
     const tab = await ensureTab();
     await attachDebugger(tab.id); // avant la navigation : la page naît avec le bandeau
+    let loaded = waitForLoad(tab.id);
     await chrome.tabs.update(tab.id, { url: profileUrl(action.linkedin) });
-    await waitForLoad(tab.id);
+    await loaded;
     await new Promise((r) => setTimeout(r, 3500 + Math.random() * 4500)); // laisse l'UI se stabiliser
     const res = await sendToTab(tab.id, { type: "li-action", action });
     if (res.ok || res.error !== "content script injoignable") return res;
     // content.js absent de la page (onglet déchargé, ou extension rechargée) :
     // rien n'a été joué, un rechargement l'y remet.
+    loaded = waitForLoad(tab.id);
     await chrome.tabs.reload(tab.id);
-    await waitForLoad(tab.id);
+    await loaded;
     await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500));
     return await sendToTab(tab.id, { type: "li-action", action }, 10);
   } catch (e) {
@@ -655,8 +677,9 @@ async function runAction(action) {
  *  avalé : il part au serveur (`connections_error`), qui le garde et l'affiche dans l'état du compte. */
 async function addConnections(tabId, action, r) {
   try {
+    const loaded = waitForLoad(tabId);
     await chrome.tabs.update(tabId, { url: "https://www.linkedin.com/mynetwork/invite-connect/connections/" });
-    await waitForLoad(tabId);
+    await loaded;
     await new Promise((res) => setTimeout(res, 2500 + Math.random() * 2500));
     const c = await sendToTab(tabId, {
       type: "li-action",
@@ -696,8 +719,9 @@ async function runInbox(action) {
       r.error = r.connections_error;
       return r;
     }
+    const loaded = waitForLoad(tab.id);
     await chrome.tabs.update(tab.id, { url: "https://www.linkedin.com/messaging/" });
-    await waitForLoad(tab.id);
+    await loaded;
     await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500));
     const r = await sendToTab(tab.id, {
       type: "li-action",
@@ -756,22 +780,33 @@ async function captureLinkedIn() {
   if (!cookies.some((c) => c.name === "li_at")) {
     return { ok: false, error: "Vous n'êtes pas connecté à LinkedIn dans ce navigateur : connectez-vous sur linkedin.com puis réessayez." };
   }
+  // Exécutant : son onglet de travail. Sinon (utilisateur d'Azerit qui ne fait que relier son
+  // LinkedIn) : un onglet temporaire en arrière-plan, refermé aussitôt — avant, la fenêtre de
+  // travail était créée pour lui et restait ouverte dans un coin de l'écran.
+  const executor = await isExecutor();
+  let temp = null;
   try {
-    const tab = await ensureTab();
+    const tab = executor
+      ? await ensureTab()
+      : (temp = await chrome.tabs.create({ url: "https://www.linkedin.com/feed/", active: false }));
+    if (temp) await waitForLoad(temp.id, true);
     const whoami = { type: "li-action", action: { type: "whoami" } };
     let me = await sendToTab(tab.id, whoami, 3);
     if (!me.ok && me.error === "content script injoignable") {
       // Onglet LinkedIn ouvert avant l'installation (ou le rechargement) de
       // l'extension : content.js n'y est pas. Un rechargement l'y remet (pas de
       // ré-injection : content.js, partagé avec le runner, déclare des globales).
+      const loaded = waitForLoad(tab.id);
       await chrome.tabs.reload(tab.id);
-      await waitForLoad(tab.id);
+      await loaded;
       me = await sendToTab(tab.id, whoami, 10);
     }
     if (!me.ok) return { ok: false, error: `Profil LinkedIn connecté illisible : ${me.error}` };
     return { ok: true, cookies, user_agent: navigator.userAgent, member: me.data };
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
+  } finally {
+    if (temp) chrome.tabs.remove(temp.id).catch(() => {});
   }
 }
 
@@ -805,9 +840,10 @@ async function connectToAzerit(origin, code, replace) {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || typeof msg !== "object") return;
   // Vrai geste demandé par le content script : seulement depuis l'onglet de travail
   // (jamais un onglet LinkedIn de la personne), cadre principal.
-  if (msg && msg.type === "real-input" && sender.id === chrome.runtime.id && sender.tab && sender.frameId === 0) {
+  if (msg.type === "real-input" && sender.id === chrome.runtime.id && sender.tab && sender.frameId === 0) {
     chrome.storage.local
       .get(WORK_TAB)
       .then(({ [WORK_TAB]: saved }) =>
@@ -816,7 +852,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(sendResponse, (e) => sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }));
     return true;
   }
-  if (msg && (msg.type === "whoami-cache-get" || msg.type === "whoami-cache-set") && sender.id === chrome.runtime.id && sender.tab) {
+  if ((msg.type === "whoami-cache-get" || msg.type === "whoami-cache-set") && sender.id === chrome.runtime.id && sender.tab) {
     whoamiCache(msg).then(sendResponse, () => sendResponse({ data: null }));
     return true;
   }
@@ -828,7 +864,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     );
     return true;
   }
-  if (!msg || typeof msg !== "object") return;
   if (msg.type === "reload-extension" && sender.id === chrome.runtime.id && !sender.tab) {
     // jamais au milieu d'une action : on attend sa fin
     sendResponse({ ok: true, deferred: busy });

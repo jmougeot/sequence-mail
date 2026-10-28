@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Azerit — LinkedIn",
-  "version": "0.5.5",
+  "version": "0.6.0",
   "description": "Relie votre LinkedIn à Azerit. Les invitations et messages partent de VOTRE profil, vérifié avant chaque action, au rythme imposé par le serveur (quotas, horaires, délais).",
   "permissions": [
     "storage",
@@ -14,9 +14,7 @@
   "host_permissions": [
     "https://www.linkedin.com/*",
     "https://app.azerit.tech/*",
-    "https://sequence.example.com/*",
-    "http://localhost/*",
-    "http://127.0.0.1/*"
+    "https://sequence.example.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -33,9 +31,7 @@
     },
     {
       "matches": [
-        "https://app.azerit.tech/*",
-        "http://localhost/*",
-        "http://127.0.0.1/*"
+        "https://app.azerit.tech/*"
       ],
       "js": [
         "azerit-bridge.js"

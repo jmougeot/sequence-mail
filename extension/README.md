@@ -12,8 +12,8 @@ La règle d'or : **l'extension n'envoie jamais quand elle veut.** À chaque tick
 Le serveur (`outreach.ts`) répond en appliquant :
 
 - **plafonds journaliers** par type (par défaut 20 invitations, 40 messages),
-  tirés chaque jour entre 60 et 100 % du plafond, et **80 invitations sur 7 jours
-  glissants** au plus ;
+  tirés chaque jour entre 60 et 100 % du plafond (pas de plafond hebdomadaire :
+  seul le quota du jour compte) ;
 - **plage horaire** décalée chaque jour (début plus tard, fin plus tôt, jusqu'à 75 min) ;
 - **sessions courtes** : 2 à 5 actions espacées de 2 à 7 min, puis **1 h à 2 h 30 de
   repos** ; la messagerie n'est lue qu'au plus toutes les 2 h, hors repos, une fois
@@ -65,9 +65,13 @@ c'est plus lent mais beaucoup moins détectable.
    actions et des pauses de sécurité communs (dès que le profil de chacun est
    connu, c'est-à-dire après sa première action).
 4. **Adresse du serveur** (champ en bas du popup) : par défaut l'extension vise la
-   prod partagée `https://sequence.example.com`. Pour développer en local, lancez
-   `cd Sequence-mail && npm run dev` (sert sur `localhost:3000`) et mettez
-   `http://localhost:3000` dans ce champ, puis **OK**.
+   prod partagée `https://sequence.example.com`. Pour développer en local, construisez
+   le **build de développement** (`./make-dev.sh` → dossier `extension-dev`, à charger
+   à la place de `extension`), lancez `cd Sequence-mail && npm run dev` (sert sur
+   `localhost:3000`) et mettez `http://localhost:3000` dans ce champ, puis **OK**.
+   L'extension distribuée ne connaît ni `localhost` ni `127.0.0.1` : ni pont
+   d'appairage ni remise de session vers une page servie en local (elle obtiendrait
+   sinon les cookies LinkedIn de la personne), ni requêtes vers un serveur local.
 5. **Mot de passe d'accès** (prod uniquement) : la prod est protégée par mot de
    passe (Caddy `basic_auth`). Saisissez l'utilisateur (`admin` par défaut) et le
    **même mot de passe** que pour ouvrir le dashboard, puis **OK**. Sans lui,
@@ -77,7 +81,7 @@ c'est plus lent mais beaucoup moins détectable.
 > qu'une fois qu'elle l'a interrogé — c'est-à-dire au prochain tick (~1 min) après
 > l'avoir fait pointer vers le bon serveur (avec le mot de passe si prod). Le domaine
 > doit aussi figurer dans `host_permissions` du `manifest.json` (déjà le cas pour
-> `sequence.example.com` et `localhost`).
+> `sequence.example.com` ; `localhost` seulement dans le build de développement).
 
 ## Usage
 
