@@ -410,6 +410,8 @@ $("#varPanel").addEventListener("input", e => {
   const card = e.target.closest(".var-card");
   if (card) varInstructions[card.dataset.var] = e.target.value;
 });
+// Une seule liste de consignes, pour toutes les campagnes ; la page Séquence d'Azerit montre
+// et écrit les mêmes.
 async function loadVarInstructions() {
   varInstructions = await api("/api/variable-instructions");
   savedVarInstructions = { ...varInstructions };
@@ -756,6 +758,7 @@ async function selectCampaign(id, tab = "seq") {
   $("#descMsg").textContent = "";
   $("#campMsg").textContent = "";
   campaignOwner = c.owner_ref ?? null;
+  await loadVarInstructions(); // une modification faite dans Azerit depuis l'ouverture se voit
   renderManagedNote(c);
   renderSenders(c.account_ids);
   renderLiSenders(c);

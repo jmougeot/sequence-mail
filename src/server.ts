@@ -22,6 +22,7 @@ import { registerVisitRoutes } from "./services/visits.js";
 import { registerUnsubscribeRoutes } from "./services/unsubscribe.js";
 import { registerInboxRoutes } from "./services/inbox-routes.js";
 import { normalizeLinkedin } from "./services/linkedin-url.js";
+import { listInstructions, setInstruction } from "./services/variables.js";
 
 export function createServer(): express.Express {
   const app = express();
@@ -227,23 +228,18 @@ export function createServer(): express.Express {
     res.json({ id: result });
   });
 
-  // --- Personalization variable instructions: one per variable name, shared by all campaigns ---
+  // --- Personalization variable instructions: one per variable name, shared by all campaigns
+  // (and by Azerit's Sequence page) ---
   app.get("/api/variable-instructions", (_req, res) => {
-    const rows = db.prepare("SELECT name, instruction FROM variable_instructions ORDER BY name").all() as Array<{ name: string; instruction: string }>;
-    res.json(Object.fromEntries(rows.map((r) => [r.name, r.instruction])));
+    res.json(listInstructions());
   });
 
   // Empty text = instruction removed
   app.put("/api/variable-instructions/:name", (req, res) => {
-    const { name } = req.params;
-    if (!/^[\p{L}\p{N}_]+$/u.test(name)) return res.status(400).json({ error: `"${name}" is not a valid variable name` });
     const instruction = req.body?.instruction;
     if (typeof instruction !== "string") return res.status(400).json({ error: "instruction must be a string" });
-    if (instruction.trim()) {
-      db.prepare("INSERT INTO variable_instructions (name, instruction) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET instruction = excluded.instruction").run(name, instruction.trim());
-    } else {
-      db.prepare("DELETE FROM variable_instructions WHERE name = ?").run(name);
-    }
+    const err = setInstruction(req.params.name, instruction);
+    if (err) return res.status(400).json({ error: err });
     res.json({ ok: true });
   });
 
@@ -319,9 +315,7 @@ export function createServer(): express.Express {
     const steps = campaignStepRows(req.params.id as unknown as number);
     // The sequence's personalization variables (excluding built-ins), with their instruction: to
     // read before filling them
-    const instructions = new Map(
-      (db.prepare("SELECT name, instruction FROM variable_instructions").all() as Array<{ name: string; instruction: string }>).map((r) => [r.name, r.instruction])
-    );
+    const instructions = new Map(Object.entries(listInstructions()));
     const names = new Set<string>();
     for (const s of steps as Array<{ subject: string; subject_b: string | null; body: string }>) {
       for (const text of [s.subject, s.subject_b, s.body]) {

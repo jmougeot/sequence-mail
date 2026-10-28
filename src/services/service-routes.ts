@@ -22,6 +22,7 @@ import { normalizeLinkedin } from "./linkedin-url.js";
 import { consolidateProfiles } from "./li-consolidate.js";
 import { applyWithPrevious } from "./outreach.js";
 import { campaignStepRows, replaceSteps, validateSteps, type StepInput } from "./steps.js";
+import { listInstructions, setInstruction } from "./variables.js";
 import {
   accountStatus,
   cancelLinkedInActions,
@@ -358,7 +359,9 @@ export function registerServiceRoutes(app: express.Express): void {
 
   /**
    * The campaign as Azerit's Sequence page shows it: its steps in the dashboard's shape, its
-   * sending accounts, its state. These steps are the sequence: Azerit keeps no copy.
+   * sending accounts, its state, and each enrolled candidate's variables (the ones Azerit sent,
+   * plus any set here — Azerit shows and counts them). These steps are the sequence: Azerit keeps
+   * no copy.
    */
   app.get("/api/svc/campaigns/:id", (req, res) => {
     const owner = ownerOf(req)!;
@@ -377,7 +380,29 @@ export function registerServiceRoutes(app: express.Express): void {
       steps: campaignStepRows(campaign.id).map((s) => ({ ...s, with_previous: Boolean(s.with_previous) })),
       li_account_ids: campaign.li_account_ids ? JSON.parse(campaign.li_account_ids) : null,
       account_ids: campaign.account_ids ? JSON.parse(campaign.account_ids) : null,
+      contacts: (
+        db
+          .prepare("SELECT external_key AS key, vars FROM campaign_contacts WHERE campaign_id = ? AND external_key IS NOT NULL")
+          .all(campaign.id) as Array<{ key: string; vars: string | null }>
+      ).map((c) => ({ key: c.key, vars: c.vars ? (JSON.parse(c.vars) as Record<string, string>) : {} })),
     });
+  });
+
+  /**
+   * The variable instructions ({{perso}}: what it contains, length, tone), by name — the very ones
+   * the dashboard's Variables panel shows and edits. Set one with PUT (empty text removes it).
+   */
+  app.get("/api/svc/variables", (_req, res) => {
+    res.json({ variables: listInstructions() });
+  });
+  app.put("/api/svc/variables/:name", (req, res) => {
+    const instruction = (req.body as { instruction?: unknown }).instruction;
+    if (typeof instruction !== "string" || instruction.length > MESSAGE_MAX) {
+      return res.status(400).json({ error: "instruction : texte attendu" });
+    }
+    const err = setInstruction(req.params.name, instruction);
+    if (err) return res.status(400).json({ error: err });
+    res.json({ variables: listInstructions() });
   });
 
   /**
