@@ -58,8 +58,6 @@ export const config = {
     inviteUntil: process.env.LI_INVITE_UNTIL || "21:30",
     // Messages every day but Saturday (invites run every day)
     workdaysOnly: (process.env.LI_WORKDAYS_ONLY ?? "1") !== "0",
-    // Rolling 7-day invite cap per LinkedIn profile, on top of the daily one (LinkedIn counts by week).
-    invitesPerWeek: int("LI_INVITES_PER_WEEK", 80),
     // Each day's cap is drawn between this share and 100 % of the cap above (no flat daily volume).
     capFloorPct: int("LI_CAP_FLOOR_PCT", 60),
     // Hours move each day: start up to N min later, stop up to N min earlier.

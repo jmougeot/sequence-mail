@@ -1151,12 +1151,11 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
     return { wait: Math.ceil((nextAllowed - now) / 1000), reason: resting ? "Repos entre deux sessions" : "Délai entre deux actions" };
   }
 
-  // Today's cap moves each day under the configured one; invites also have a rolling weekly cap.
+  // Today's cap moves each day under the configured one.
   const slug = account.member_slug ?? `account-${account.id}`;
   const underCap = types.filter(
     (t) =>
-      sentToday(ids, t) < todayCap(Math.min(...profile.map((a) => dailyCap(a, t))), now, `${slug}:${t}`) &&
-      (t !== "invite" || sentSince(ids, t, now - 7 * DAY_MS) < L.invitesPerWeek)
+      sentToday(ids, t) < todayCap(Math.min(...profile.map((a) => dailyCap(a, t))), now, `${slug}:${t}`)
   );
   const untilTomorrow = Math.ceil((startOfLocalDay(now) + DAY_MS - now) / 1000);
   if (!underCap.length) return { wait: untilTomorrow, reason: "Quota du jour atteint" };
