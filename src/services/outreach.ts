@@ -52,6 +52,7 @@ export interface LiAccount {
   id: number;
   name: string;
   owner_ref: string | null;
+  serves_dashboard: number; // 1 = also takes the dashboard's (ownerless) campaigns
   member_slug: string | null;
   member_name: string | null;
   member_avatar: string | null;
@@ -101,7 +102,7 @@ function unseal(sealed: string): string {
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 const newToken = () => "li_" + randomBytes(24).toString("base64url");
 
-const ACCOUNT_COLS = `id, name, owner_ref, member_slug, member_name, member_avatar, member_checked_at, active, mode, invites_per_day, messages_per_day, next_allowed_at,
+const ACCOUNT_COLS = `id, name, owner_ref, serves_dashboard, member_slug, member_name, member_avatar, member_checked_at, active, mode, invites_per_day, messages_per_day, next_allowed_at,
   session_left, paused_until, last_seen_at, last_inbox_at, session_state, session_error, session_updated_at,
   proxy_enc IS NOT NULL AS has_proxy, session_enc IS NOT NULL AS has_session, created_at`;
 
@@ -116,15 +117,21 @@ export function getAccount(id: number): LiAccount | undefined {
 /**
  * Calling account, from the X-LI-Account token. Without a token, serves the oldest
  * dashboard (ownerless) account: the extension installed before multi-account keeps
- * working unconfigured. Never a client's account.
+ * working unconfigured. Never a client's account (but for one that serves the dashboard).
+ * A token of an account merged into another resolves to that other one (li_token_aliases).
  */
 export function resolveAccount(token: string | undefined): LiAccount | null | "invalid" {
   if (token) {
-    const row = db.prepare(`SELECT ${ACCOUNT_COLS} FROM li_accounts WHERE token_hash = ?`).get(hashToken(token));
+    const hash = hashToken(token);
+    const row =
+      db.prepare(`SELECT ${ACCOUNT_COLS} FROM li_accounts WHERE token_hash = ?`).get(hash) ??
+      db
+        .prepare(`SELECT ${ACCOUNT_COLS} FROM li_accounts WHERE id = (SELECT li_account_id FROM li_token_aliases WHERE token_hash = ?)`)
+        .get(hash);
     return (row as LiAccount | undefined) ?? "invalid";
   }
   return (
-    (db.prepare(`SELECT ${ACCOUNT_COLS} FROM li_accounts WHERE owner_ref IS NULL ORDER BY id LIMIT 1`).get() as
+    (db.prepare(`SELECT ${ACCOUNT_COLS} FROM li_accounts WHERE owner_ref IS NULL OR serves_dashboard = 1 ORDER BY id LIMIT 1`).get() as
       | LiAccount
       | undefined) ?? null
   );
@@ -1048,7 +1055,8 @@ function recordConnectionsError(account: LiAccount, why: string, now: number): v
 // (a message queued alongside the invite, before the invite bound the contact), or free ones
 // (contact not bound yet) of a campaign that allows it. Only for active campaigns and contacts
 // still waiting (not stopped, no reply meanwhile; a detached action, for a contact still in
-// the sequence), and ALWAYS of the same owner as the account.
+// the sequence), and ALWAYS of the same owner as the account (the dashboard's ownerless campaigns
+// also go to an account that serves the dashboard).
 const ELIGIBLE = `
   FROM li_actions la
   JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
@@ -1056,7 +1064,7 @@ const ELIGIBLE = `
   WHERE la.status = 'pending'
     AND (cc.status = 'awaiting_li' OR (la.detached = 1 AND cc.status IN ('in_progress', 'completed')))
     AND cp.status = 'active'
-    AND cp.owner_ref IS @owner
+    AND (cp.owner_ref IS @owner OR (cp.owner_ref IS NULL AND @dash = 1))
     AND (la.li_account_id = @acc
          OR (la.li_account_id IS NULL AND cc.li_account_id = @acc)
          OR (la.li_account_id IS NULL AND cc.li_account_id IS NULL
@@ -1172,7 +1180,7 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   );
   let row: ActionRow | undefined;
   for (let i = 0; i < 50; i++) {
-    row = pick.get({ acc: account.id, owner: account.owner_ref, now }) as ActionRow | undefined;
+    row = pick.get({ acc: account.id, owner: account.owner_ref, dash: account.serves_dashboard, now }) as ActionRow | undefined;
     if (!row) break;
     const state = inviteState(account, row, now);
     if (state === "stale") {
@@ -1191,7 +1199,7 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   }
 
   if (!row) {
-    const blocked = db.prepare(`SELECT 1 ${ELIGIBLE} LIMIT 1`).get({ acc: account.id, owner: account.owner_ref });
+    const blocked = db.prepare(`SELECT 1 ${ELIGIBLE} LIMIT 1`).get({ acc: account.id, owner: account.owner_ref, dash: account.serves_dashboard });
     if (blocked) return { wait: untilTomorrow, reason: "Quota du jour atteint ou actions reportées" };
     return { idle: true, reason: "File LinkedIn vide" };
   }
@@ -1246,12 +1254,15 @@ export function nextForAccounts(accounts: LiAccount[], via: LiMode): NextResult 
   for (const a of accounts) if (a.mode === via) db.prepare("UPDATE li_accounts SET last_seen_at = ? WHERE id = ?").run(now, a.id);
   const topPriority = (a: LiAccount) =>
     (
-      db.prepare(`SELECT MAX(cp.priority * 2 + (la.type = 'message')) AS p ${ELIGIBLE} ${READY}`).get({ acc: a.id, owner: a.owner_ref, now }) as {
+      db.prepare(`SELECT MAX(cp.priority * 2 + (la.type = 'message')) AS p ${ELIGIBLE} ${READY}`).get({ acc: a.id, owner: a.owner_ref, dash: a.serves_dashboard, now }) as {
         p: number | null;
       }
     ).p ?? 0;
+  // Two tokens of the header may resolve to one account (a merged account's old token): polled once,
+  // at the first index.
   const order = accounts
     .map((a, i) => ({ i, p: topPriority(a), t: lastSent(a) }))
+    .filter(({ i }) => accounts.findIndex((a) => a.id === accounts[i].id) === i)
     .sort((x, y) => y.p - x.p || x.t - y.t || x.i - y.i);
   const results: NextResult[] = [];
   for (const { i } of order) {
@@ -1479,6 +1490,7 @@ export function accountStatus(a: LiAccount) {
     id: a.id,
     name: a.name,
     owner_ref: a.owner_ref,
+    serves_dashboard: Boolean(a.serves_dashboard),
     member: a.member_slug
       ? {
           slug: a.member_slug,

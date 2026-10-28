@@ -354,6 +354,12 @@ db.exec(
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_campaigns_external ON campaigns (owner_ref, external_ref) WHERE external_ref IS NOT NULL"
 );
 db.exec("CREATE INDEX IF NOT EXISTS idx_li_accounts_owner ON li_accounts (owner_ref)");
+// One account per LinkedIn profile: an owner's account with serves_dashboard = 1 also takes the
+// dashboard's (ownerless) campaigns. The token of an account merged into it stays valid as an alias.
+addColumnIfMissing("li_accounts", "serves_dashboard", "serves_dashboard INTEGER NOT NULL DEFAULT 0");
+db.exec(
+  "CREATE TABLE IF NOT EXISTS li_token_aliases (token_hash TEXT PRIMARY KEY, li_account_id INTEGER NOT NULL REFERENCES li_accounts(id))"
+);
 // Gmail accounts have an owner too (NULL = the dashboard): an Azerit user's Gmail only sends its
 // own campaigns, and the dashboard's campaigns only use the dashboard's (scheduler.ts pickAccount).
 addColumnIfMissing("accounts", "owner_ref", "owner_ref TEXT");

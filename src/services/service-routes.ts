@@ -19,6 +19,7 @@ import { db } from "../db.js";
 import { MERGED_EXTRA, importContacts, renderTemplate } from "./contacts.js";
 import { authUrl, signOwnerState } from "./google.js";
 import { normalizeLinkedin } from "./linkedin-url.js";
+import { consolidateProfiles } from "./li-consolidate.js";
 import { applyWithPrevious } from "./outreach.js";
 import { campaignStepRows, replaceSteps, validateSteps, type StepInput } from "./steps.js";
 import {
@@ -257,6 +258,8 @@ export function registerServiceRoutes(app: express.Express): void {
     const r = storeSession(account.id, b.cookies, b.user_agent, member, byExtension ? "extension" : "server");
     if ("error" in r) return res.status(r.code === "other_member" ? 409 : 400).json(r);
     console.log(`[svc] LinkedIn session received for ${owner} (profile ${member.slug}, account #${account.id})`);
+    // A dashboard account on this profile (linked before) is merged into the owner's account right away.
+    consolidateProfiles({ profile: member.slug });
     res.json({
       account: accountStatus(getAccount(account.id)!),
       ...(byExtension ? { token: rotateToken(account.id) } : {}),

@@ -524,7 +524,7 @@ function removeStep(btn) {
 // --- Comptes d'envoi de la campagne : un bouton qui résume la sélection, un menu à cocher ; tous cochés par défaut (null = tous) ---
 // Seulement ceux du propriétaire de la campagne : le tableau de bord (null) ou un client Azerit.
 let campaignOwner = null;
-const ownedBy = (a) => (a.owner_ref ?? null) === campaignOwner;
+const ownedBy = (a) => (a.owner_ref ?? null) === campaignOwner || (campaignOwner === null && Boolean(a.serves_dashboard));
 function renderSenders(selectedIds) {
   $("#senderList").innerHTML = accounts.filter(ownedBy).map(a => `
     <label class="sender-row ${a.active ? "" : "inactive"}">

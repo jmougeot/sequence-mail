@@ -92,6 +92,12 @@ export const config = {
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
+    // Owners whose account also sends the dashboard's campaigns: a dashboard account on the same LinkedIn
+    // profile is merged into it (li-consolidate.ts). Empty = never merged.
+    dashboardOwners: (process.env.LI_DASHBOARD_OWNERS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
   },
   // Where a Gmail connection started from Azerit returns (its settings page, e.g.
   // https://app.azerit.tech/#/settings). Empty: the dashboard's settings page.

@@ -173,7 +173,7 @@ async function loadLi() {
     return `<tr>
       <td><input value="${esc(a.name)}" style="width:150px" onchange="patchLi(${a.id}, {name: this.value})">
         ${a.member ? `<div><a href="${esc(a.member.url)}" target="_blank" rel="noopener" title="Profile checked before each action">✓ ${esc(a.member.name || a.member.slug)}</a></div>` : `<div class="muted">profile not verified</div>`}
-        ${a.owner_ref ? `<div class="muted" title="Azerit user account: their campaigns only">client ${esc(a.owner_ref)}</div>` : ""}
+        ${a.owner_ref && !a.serves_dashboard ? `<div class="muted" title="Azerit user account: their campaigns only">client ${esc(a.owner_ref)}</div>` : ""}
         ${linked.length ? `<div class="muted" title="Same LinkedIn profile, also linked from Azerit: invites, messages and quotas are shared">+ Azerit (${esc([...new Set(linked.map(l => l.owner_ref))].join(", "))})</div>` : ""}</td>
       <td><select style="width:170px" onchange="patchLi(${a.id}, {mode: this.value})">
           <option value="extension" ${server ? "" : "selected"}>Chrome extension</option>

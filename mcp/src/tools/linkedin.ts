@@ -84,7 +84,7 @@ export function registerLinkedinTools(server: McpServer): void {
     {
       title: "LinkedIn accounts",
       description:
-        "Lists LinkedIn accounts: id (for campaigns' li_account_ids and the *_linkedin_account tools), name, detected LinkedIn profile (member), active, mode (extension|server), connected (runner seen within 2 min), session (server mode: state, stored or not), proxy, caps and today's sends, queue, attached contacts. Non-null owner_ref = an Azerit client's account (managed from Azerit). Dates in ISO 8601 (UTC).",
+        "Lists LinkedIn accounts: id (for campaigns' li_account_ids and the *_linkedin_account tools), name, detected LinkedIn profile (member), active, mode (extension|server), connected (runner seen within 2 min), session (server mode: state, stored or not), proxy, caps and today's sends, queue, attached contacts. Non-null owner_ref = an Azerit user account (managed from Azerit); serves_dashboard true = it also sends the dashboard campaigns (one account per LinkedIn profile). Dates in ISO 8601 (UTC).",
       inputSchema: {},
       annotations: READ,
     },
