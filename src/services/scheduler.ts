@@ -310,7 +310,7 @@ function pickAccount(now: number, allowedIds: number[] | null, owner: string | n
       `SELECT * FROM accounts
        WHERE active = 1 AND owner_ref IS NOT DISTINCT FROM ?
          AND (next_allowed_at IS NULL OR next_allowed_at <= ?)
-       ORDER BY sent_today ASC, COALESCE(last_sent_at, 0) ASC`
+       ORDER BY sent_today ASC, COALESCE(last_sent_at, 0) ASC, id ASC`
     )
     .all(owner, now) as AccountRow[];
   return candidates.find(
@@ -613,7 +613,7 @@ export async function sendTick(): Promise<void> {
 
   if (!inSendWindow()) return;
   const due = db
-    .prepare(`${DUE_SELECT} AND NOT ${NOT_EMAIL_WORK} ORDER BY cp.priority DESC, COALESCE(cc.next_send_at, 0) ASC LIMIT 5`)
+    .prepare(`${DUE_SELECT} AND NOT ${NOT_EMAIL_WORK} ORDER BY cp.priority DESC, COALESCE(cc.next_send_at, 0) ASC, cc.id ASC LIMIT 5`)
     .all({ now }) as DueRow[];
 
   for (const row of due) {

@@ -280,7 +280,7 @@ export function createServer(): express.Express {
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.variant = 'A' AND cc.status = 'replied') AS replied_a,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.variant = 'B' AND cc.current_step > 0) AS contacted_b,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.variant = 'B' AND cc.status = 'replied') AS replied_b
-         FROM campaigns cp ORDER BY cp.created_at DESC`
+         FROM campaigns cp ORDER BY cp.created_at DESC, cp.id DESC`
       )
       .all() as Array<Record<string, number | string | null>>;
 
