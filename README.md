@@ -41,7 +41,7 @@ See reply rate, A/B results, bounces and opt-outs for each campaign, plus today'
 
 ![Contacts](docs/contacts.jpg)
 
-For each contact you see their status, current step, sending account and next send, plus visits to their personal tracked link (`{{link}}`). You can launch, stop or move contacts in bulk.
+For each contact you see their status, current step, sending account and next send. You can launch, stop or move contacts in bulk.
 
 ## One inbox for all replies
 

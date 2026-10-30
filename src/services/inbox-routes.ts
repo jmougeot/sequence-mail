@@ -18,7 +18,6 @@ import {
   type ThreadMessage,
 } from "./google.js";
 import { isAutoReply, isBounce, parseAccountIds, stripQuoted } from "./scheduler.js";
-import { visitLink } from "./visits.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 const INBOX_STATUSES = ["replied", "opted_out", "bounced"];
@@ -30,7 +29,7 @@ const EVENTS_MAX = 300;
 const PREVIEW_STATUSES = ["held", "pending", "in_progress", "awaiting_li"];
 const CC_STATUSES = [...PREVIEW_STATUSES, "replied", "opted_out", "bounced", "completed", "stopped", "failed"];
 // Variables provided by the sender account, not the contact
-const SENDER_VARS = new Set(["sender_name", "link", "signature"]);
+const SENDER_VARS = new Set(["sender_name", "signature"]);
 
 const SAMPLE_CONTACT = {
   email: "marie.dupont@exemple.fr",
@@ -81,17 +80,15 @@ function fromLabel(account: Pick<AccountRow, "email" | "from_name">): string {
   return account.from_name ? `${account.from_name} <${account.email}>` : account.email;
 }
 
-/** An account's {{sender_name}}, {{link}}, {{signature}}, rendered as by the scheduler. */
+/** An account's {{sender_name}}, {{signature}}, rendered as by the scheduler. */
 function senderVars(
   account: Pick<AccountRow, "email" | "from_name" | "signature"> | undefined,
-  contact: ContactVars,
-  link: string
+  contact: ContactVars
 ): Record<string, string> {
   const senderName = account?.from_name ?? account?.email ?? "Votre nom";
   return {
     sender_name: senderName,
-    link,
-    signature: account?.signature ? renderTemplate(account.signature, contact, { sender_name: senderName, link }) : "",
+    signature: account?.signature ? renderTemplate(account.signature, contact, { sender_name: senderName }) : "",
   };
 }
 
@@ -449,7 +446,7 @@ export function registerInboxRoutes(app: express.Express): void {
       // NDR) when there is another one
       const last = msgs.filter((m) => kindOf(m) === "sent" || kindOf(m) === "reply").at(-1) ?? msgs.at(-1);
 
-      const vars = senderVars(account, cc, config.visit.enabled ? visitLink(cc.cc_id) : "");
+      const vars = senderVars(account, cc);
       let baseSubject = last ? stripReplyPrefixes(last.subject) : "";
       if (!baseSubject) {
         // Thread without a readable subject: step 1's subject as actually received (A/B variant)
@@ -535,7 +532,7 @@ export function registerInboxRoutes(app: express.Express): void {
     );
   });
 
-  // --- Activity log: sends, replies, LinkedIn actions, visits (excluding bots) ---
+  // --- Activity log: sends, replies, LinkedIn actions ---
   app.get("/api/activity", (req, res) => {
     const days = optInt(req.query.days) ?? 7;
     const campaignId = optInt(req.query.campaign_id);
@@ -565,10 +562,6 @@ export function registerInboxRoutes(app: express.Express): void {
         JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
         LEFT JOIN li_accounts li ON li.id = la.li_account_id
         WHERE la.status = 'sent' AND la.sent_at >= @since
-        UNION ALL
-        SELECT v.at, 'visit', cc.campaign_id, cc.id, cc.contact_id, NULL, NULL
-        FROM visits v JOIN campaign_contacts cc ON cc.id = v.cc_id
-        WHERE v.is_bot = 0 AND v.at >= @since
       )`;
     const params = { since, campaign: campaignId ?? null };
     const counts = db
@@ -598,9 +591,8 @@ export function registerInboxRoutes(app: express.Express): void {
         bounced: n("bounced"),
         li_invites: n("li_invite"),
         li_messages: n("li_message"),
-        visits: n("visit"),
       },
-      // step_number / account omitted when irrelevant (visits)
+      // step_number / account omitted when absent
       events: events.map(({ step_number, account, ...e }) => ({
         ...e,
         ...(step_number != null ? { step_number } : {}),
@@ -686,7 +678,7 @@ export function registerInboxRoutes(app: express.Express): void {
         return res.status(400).json({ error: "No active Google account: connect one via /auth/google" });
       }
 
-      const vars = senderVars(account, sample, config.visit.enabled ? `${config.visit.baseUrl}/p/exemple` : "");
+      const vars = senderVars(account, sample);
       const subjectFor = (s: { subject: string; subject_b: string | null }) =>
         variant === "B" && s.subject_b ? s.subject_b : s.subject;
       const first = steps.find((s) => s.step_number === 1);
@@ -824,9 +816,6 @@ export function registerInboxRoutes(app: express.Express): void {
     if (usedIn(emailSteps, "signature").length && unsigned.length) {
       warnings.push(`{{signature}} will be empty for ${unsigned.join(", ")} (account without a signature).`);
     }
-    if (usedIn(emailSteps, "link").length && !config.visit.enabled) {
-      warnings.push("{{link}} will be empty: the tracked link is disabled (VISIT_ENABLED=false).");
-    }
     for (const s of steps) {
       // an {{if …}} left after resolution has no {{end}}: it would go out verbatim
       if (UNCLOSED_SECTION.test(resolveSections(stepText(s), {}))) warnings.push(`Step ${s.step_number}: {{if …}} block without {{end}}.`);
@@ -839,11 +828,10 @@ export function registerInboxRoutes(app: express.Express): void {
     }
 
     // Remaining steps rendered for the first contacts, as they will be sent
-    const link = config.visit.enabled ? `${config.visit.baseUrl}/p/exemple` : "";
     const firstEmail = emailSteps[0];
     const rendered = rows.slice(0, Math.min(Math.max(samples, 0), 5)).map((r) => {
       const account = r.account_id != null ? accountById(r.account_id) : senders[0];
-      const vars = senderVars(account, r, link);
+      const vars = senderVars(account, r);
       const subjectOf = (s: Step) => (r.variant === "B" && s.subject_b ? s.subject_b : s.subject);
       return {
         cc_id: r.cc_id,

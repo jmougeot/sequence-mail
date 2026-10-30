@@ -25,7 +25,7 @@ export function toPg(sql: string): PgStatement {
 
 // Tables with an `id` column: their INSERTs report the new id (lastInsertRowid)
 const ID_TABLES = new Set([
-  "accounts", "campaigns", "steps", "contacts", "campaign_contacts", "messages", "li_actions", "li_accounts", "li_log", "visits",
+  "accounts", "campaigns", "steps", "contacts", "campaign_contacts", "messages", "li_actions", "li_accounts", "li_log",
 ]);
 
 // The table an INSERT adds ids to

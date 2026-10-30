@@ -13,17 +13,6 @@ export const config = {
     clientId: process.env.GOOGLE_CLIENT_ID ?? "",
     clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   },
-  // Per-prospect link, placed in the email via {{link}}. It points to VISIT_BASE_URL (ideally a
-  // subdomain like sequence.example.com serving this app), logs the visit server-side (reliable), then
-  // 302-redirects to VISIT_DEST_URL (your public page). VISIT_BASE_URL must be PUBLIC.
-  visit: {
-    enabled: (process.env.VISIT_ENABLED ?? "true") !== "false",
-    baseUrl: (process.env.VISIT_BASE_URL || process.env.BASE_URL || "http://localhost:3000").replace(/\/+$/, ""),
-    destUrl: (process.env.VISIT_DEST_URL || "https://www.example.com").replace(/\/+$/, ""),
-    // Bot filter: a click less than N seconds after sending is a security scanner (Safe Links…),
-    // not a human. 0 disables the timing check.
-    botMinDelaySeconds: int("VISIT_BOT_MIN_DELAY_SECONDS", 60),
-  },
   deliverability: {
     defaultDailyLimit: int("DEFAULT_DAILY_LIMIT", 40),
     sendWindowStart: int("SEND_WINDOW_START", 9),

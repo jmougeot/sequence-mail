@@ -5,7 +5,6 @@ import { getForeignMessages, sendEmail, type AccountRow, type ForeignMessage } f
 import { firstAccepted, nextStep, unreachable } from "./branches.js";
 import { cancelLinkedInActions, enqueueStep } from "./outreach.js";
 import { NOT_OPTED_OUT, optOutFromCampaignOf } from "./opt-out.js";
-import { visitLink } from "./visits.js";
 import { unsubLink } from "./unsubscribe.js";
 
 const OPT_OUT_PATTERNS = [
@@ -424,13 +423,10 @@ async function processOne(row: DueRow): Promise<void> {
     extra: row.extra,
   };
   const senderName = account.from_name ?? account.email;
-  // {{link}}: the prospect's stable personal link (server-side visit tracking)
-  const link = config.visit.enabled ? visitLink(row.cc_id) : "";
   const senderVars = {
     sender_name: senderName,
-    link,
     // {{signature}}: account signature, placed anywhere in the template
-    signature: account.signature ? renderTemplate(account.signature, contact, { sender_name: senderName, link }) : "",
+    signature: account.signature ? renderTemplate(account.signature, contact, { sender_name: senderName }) : "",
   };
   const isFollowUp = row.current_step > 0 && !!row.thread_id;
 

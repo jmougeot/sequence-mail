@@ -28,10 +28,9 @@ Mise à jour : `cd /opt/sequence-mail && docker compose pull && docker compose u
 docker run -d --name sequence-mail -p 127.0.0.1:3000:3000 -v sequence-data:/data ghcr.io/jmougeot/sequence-mail
 ```
 
-puis ouvrir http://localhost:3000. Le lien `{{link}}` et le suivi des visites ont
-besoin d'une adresse publique : ils ne marchent qu'avec l'installation serveur.
+puis ouvrir http://localhost:3000.
 
-Le suivi (`/p/`, `/t/`) est public ; tout le reste est protégé par le mot de passe
+La désinscription (`/u/`) est publique ; tout le reste est protégé par le mot de passe
 (utilisateur `admin`).
 
 ### Configuration Google (la seule étape manuelle)

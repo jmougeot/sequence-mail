@@ -242,7 +242,7 @@ export function renderTemplate(
 }
 
 /** Variables the app fills itself; the others are contact fields or campaign variables. */
-export const BUILT_IN_VARIABLES = new Set(["email", "first_name", "last_name", "company", "sender_name", "signature", "link"]);
+export const BUILT_IN_VARIABLES = new Set(["email", "first_name", "last_name", "company", "sender_name", "signature"]);
 
 /**
  * Variables referenced by a template, with the same patterns as renderTemplate. The value tells

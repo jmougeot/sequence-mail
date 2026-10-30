@@ -77,7 +77,6 @@ const DATE_KEYS = new Set([
   "replied_at",
   "reply_at",
   "next_send_at",
-  "last_visit_at",
   "created_at",
   "updated_at",
   "checked_at",
@@ -209,7 +208,7 @@ export type CampaignContactRow = Record<string, unknown> & { cc_id: number; stat
 
 /**
  * list_campaign_contacts row: custom fields as objects (extra = the contact's,
- * vars = this campaign enrollment's), zero visit counters omitted.
+ * vars = this campaign enrollment's).
  */
 export function contactSummary(row: CampaignContactRow): Record<string, unknown> {
   return { ...omitZeros(row, ["current_step"]), extra: parseExtra(row.extra), vars: parseExtra(row.vars) };
@@ -267,7 +266,6 @@ export const EXPORT_COLUMNS = [
   "li_sender",
   "replied_at",
   "next_send_at",
-  "visit_count",
   "error",
 ];
 const EXPORT_DATE_COLUMNS = new Set(["replied_at", "next_send_at"]);

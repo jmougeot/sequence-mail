@@ -110,7 +110,7 @@ send window open or not, estimated next send).
   quotas and warm-up.
 - **Compact results.** Single-line JSON without empty fields (`null`, `""`, empty array
   or object): a missing field is empty. `false` and `0` are kept, except `list_campaigns`
-  counters and rates and `list_campaign_contacts` visit counters, omitted when 0.
+  counters and rates, omitted when 0.
 - **Campaign variables.** A custom field belongs to the contact and applies in all its
   campaigns. `campaign_vars` (on `create_campaign`, `import_contacts`,
   `import_contacts_csv`) attaches the named fields to the enrollment instead: `{{hook}}`

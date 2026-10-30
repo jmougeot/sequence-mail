@@ -17,7 +17,6 @@ import { registerServiceRoutes, setEnrollmentVars } from "./services/service-rou
 import { campaignStepRows, replaceSteps, validateSteps as validateStepList, insertSteps, type StepInput } from "./services/steps.js";
 import { applyWithPrevious, cancelLinkedInActions } from "./services/outreach.js";
 import { optOutFromCampaignOf } from "./services/opt-out.js";
-import { registerVisitRoutes } from "./services/visits.js";
 import { registerUnsubscribeRoutes } from "./services/unsubscribe.js";
 import { registerInboxRoutes } from "./services/inbox-routes.js";
 import { normalizeLinkedin } from "./services/linkedin-url.js";
@@ -43,9 +42,6 @@ export function createServer(): express.Express {
 
   // --- Service API (Azerit, internal network) ---
   registerServiceRoutes(app);
-
-  // --- Personalized {{link}} + visit tracking ---
-  registerVisitRoutes(app);
 
   // --- One-click unsubscribe (List-Unsubscribe) ---
   registerUnsubscribeRoutes(app);
@@ -266,9 +262,6 @@ export function createServer(): express.Express {
               AND cc.status <> 'bounced') AS contacted,
            (SELECT COUNT(*) FROM messages m JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
               WHERE cc.campaign_id = cp.id) AS emails_sent,
-           (SELECT COUNT(DISTINCT v.cc_id) FROM visits v
-              JOIN campaign_contacts cc ON cc.id = v.cc_id
-              WHERE cc.campaign_id = cp.id AND v.is_bot = 0) AS visited,
            (SELECT COUNT(*) FROM steps s WHERE s.campaign_id = cp.id AND s.channel = 'linkedin') AS li_steps,
            (SELECT COUNT(*) FROM li_actions la JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
               WHERE cc.campaign_id = cp.id AND la.type = 'invite' AND la.status = 'sent') AS li_invites_sent,
@@ -502,11 +495,9 @@ export function createServer(): express.Express {
       | { email: string; from_name: string | null; signature: string | null }
       | undefined;
     const senderName = account?.from_name ?? account?.email ?? "Votre nom";
-    const link = `${config.visit.baseUrl}/p/exemple`;
     const senderVars = {
       sender_name: senderName,
-      link,
-      signature: account?.signature ? renderTemplate(account.signature, sample, { sender_name: senderName, link }) : "",
+      signature: account?.signature ? renderTemplate(account.signature, sample, { sender_name: senderName }) : "",
     };
     const renderedBody = renderTemplate(body ?? "", sample, senderVars);
     res.json({
@@ -761,10 +752,7 @@ export function createServer(): express.Express {
         `SELECT c.id AS contact_id, c.email, c.first_name, c.last_name, c.company, c.linkedin, c.extra,
                 cc.id AS cc_id, cc.vars, cc.status, cc.current_step, cc.variant, cc.account_id,
                 cc.next_send_at, cc.replied_at, cc.error, a.email AS sender,
-                li.name AS li_sender, cc.li_thread_url,
-                (SELECT COUNT(*) FROM visits v WHERE v.cc_id = cc.id AND v.is_bot = 0) AS visit_count,
-                (SELECT MAX(v.at) FROM visits v WHERE v.cc_id = cc.id AND v.is_bot = 0) AS last_visit_at,
-                (SELECT COUNT(*) FROM visits v WHERE v.cc_id = cc.id AND v.is_bot = 1) AS bot_visit_count
+                li.name AS li_sender, cc.li_thread_url
          FROM campaign_contacts cc
          JOIN contacts c ON c.id = cc.contact_id
          LEFT JOIN accounts a ON a.id = cc.account_id

@@ -44,7 +44,7 @@ const replyShape = {
     .string()
     .min(1)
     .describe(
-      "Reply body, as a template: {{first_name}}, {{company}}, custom fields, {{sender_name}}, {{link}}, {{signature}} (the thread account's signature, include if wanted)."
+      "Reply body, as a template: {{first_name}}, {{company}}, custom fields, {{sender_name}}, {{signature}} (the thread account's signature, include if wanted)."
     ),
   subject: z.string().optional().describe("Subject. Default: \"Re: \" + last message's subject (keep the default to stay in the thread)."),
   dry_run: z

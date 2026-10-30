@@ -3,7 +3,6 @@ import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { classifyVisit } from "./services/botFilter.js";
 import { normalizeLinkedin } from "./services/linkedin-url.js";
 
 // Relative to the project (src/../data), not the working directory; override with DATA_DIR
@@ -141,7 +140,6 @@ addColumnIfMissing("accounts", "warmup", "warmup INTEGER NOT NULL DEFAULT 1");
 addColumnIfMissing("steps", "channel", "channel TEXT NOT NULL DEFAULT 'email'");
 addColumnIfMissing("steps", "li_action", "li_action TEXT");
 addColumnIfMissing("contacts", "linkedin", "linkedin TEXT");
-addColumnIfMissing("campaign_contacts", "visit_token", "visit_token TEXT");
 // Warm-up ramps from this date, not account creation, so enabling it on an old account starts low again.
 addColumnIfMissing("accounts", "warmup_started_at", "warmup_started_at INTEGER");
 // Stable unsubscribe token per campaign contact (List-Unsubscribe header).
@@ -152,7 +150,7 @@ db.exec(
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_unsub_token ON campaign_contacts (unsub_token) WHERE unsub_token IS NOT NULL"
 );
 
-// Drop the old open/click tracking (pixel + rewritten links), replaced by the {{link}} visit link.
+// Drop the old open/click tracking (pixel + rewritten links).
 db.exec(`
 DROP INDEX IF EXISTS idx_messages_track;
 DROP INDEX IF EXISTS idx_email_events_track;
@@ -166,24 +164,17 @@ try {
   // column already gone (recent database)
 }
 
+// Drop the {{link}} visit tracking.
 db.exec(`
--- Visits of the personal {{link}}: one stable token per campaign_contact
--- (campaign_contacts.visit_token); one row per opening.
-CREATE TABLE IF NOT EXISTS visits (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  cc_id INTEGER NOT NULL REFERENCES campaign_contacts(id) ON DELETE CASCADE,
-  at INTEGER NOT NULL,
-  user_agent TEXT,
-  ip TEXT,
-  is_bot INTEGER NOT NULL DEFAULT 0,   -- 1 = bot/scanner visit, excluded from counts
-  bot_reason TEXT                       -- classification reason (see services/botFilter.ts)
-);
-CREATE INDEX IF NOT EXISTS idx_visits_cc ON visits (cc_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_cc_visit_token ON campaign_contacts (visit_token) WHERE visit_token IS NOT NULL;
+DROP INDEX IF EXISTS idx_cc_visit_token;
+DROP INDEX IF EXISTS idx_visits_cc;
+DROP TABLE IF EXISTS visits;
 `);
-// Databases created before bot filtering.
-addColumnIfMissing("visits", "is_bot", "is_bot INTEGER NOT NULL DEFAULT 0");
-addColumnIfMissing("visits", "bot_reason", "bot_reason TEXT");
+try {
+  db.exec("ALTER TABLE campaign_contacts DROP COLUMN visit_token");
+} catch {
+  // column already gone (recent database)
+}
 
 // v1: the signature is no longer appended automatically but placed via {{signature}};
 // existing steps get it at the end of the body to keep their exact rendering.
@@ -192,42 +183,6 @@ if ((db.pragma("user_version", { simple: true }) as number) < 1) {
     "UPDATE steps SET body = body || char(10) || char(10) || '{{signature}}' WHERE body NOT LIKE '%{{signature}}%'"
   );
   db.pragma("user_version = 1");
-}
-
-// Reclassifies all existing visits (bot vs human) with the current logic: run it when the
-// botFilter heuristics change, so "visited" counts stay consistent with new visits.
-function reclassifyAllVisits(): void {
-  const rows = db.prepare("SELECT id, cc_id, at, user_agent, ip FROM visits").all() as Array<{
-    id: number;
-    cc_id: number;
-    at: number;
-    user_agent: string | null;
-    ip: string | null;
-  }>;
-  const prevSend = db.prepare(
-    "SELECT MAX(sent_at) AS t FROM messages WHERE campaign_contact_id = ? AND sent_at <= ?"
-  );
-  const upd = db.prepare("UPDATE visits SET is_bot = ?, bot_reason = ? WHERE id = ?");
-  db.transaction(() => {
-    for (const r of rows) {
-      const sent = (prevSend.get(r.cc_id, r.at) as { t: number | null }).t;
-      const delaySeconds = sent != null ? Math.round((r.at - sent) / 1000) : null;
-      const v = classifyVisit(r.user_agent, r.ip, delaySeconds);
-      upd.run(v.bot ? 1 : 0, v.reason || null, r.id);
-    }
-  })();
-}
-
-// v2: first retroactive classification (user agent + datacenter IP + send-to-click delay).
-if ((db.pragma("user_version", { simple: true }) as number) < 2) {
-  reclassifyAllVisits();
-  db.pragma("user_version = 2");
-}
-
-// v3: wider datacenter IP ranges (DigitalOcean, Hetzner, OVH, Linode, Vultr, Scaleway, Oracle).
-if ((db.pragma("user_version", { simple: true }) as number) < 3) {
-  reclassifyAllVisits();
-  db.pragma("user_version = 3");
 }
 
 // Multiple LinkedIn accounts, each with its own session (extension or server browser),

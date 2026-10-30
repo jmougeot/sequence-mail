@@ -86,7 +86,7 @@
       </div>
       <table id="contacts"><thead><tr>
         <th style="width:36px"><input type="checkbox" id="selectAll" title="Select all" onchange="toggleSelectAll(this)"></th>
-        <th>Contact</th><th>Status</th><th>Step</th><th title="Opened their personalized link {{link}}">Visit</th><th>Variant</th><th>Sending account</th><th>Next send</th>
+        <th>Contact</th><th>Status</th><th>Step</th><th>Variant</th><th>Sending account</th><th>Next send</th>
       </tr></thead><tbody></tbody></table>
     </div>
   </div>
@@ -656,7 +656,6 @@ function renderStats(c) {
     n(c.emails_sent) && plural(n(c.emails_sent), "email", "emails"),
     n(c.li_invites_sent) && plural(n(c.li_invites_sent), "connection request", "connection requests"),
     n(c.li_messages_sent) && plural(n(c.li_messages_sent), "LinkedIn message", "LinkedIn messages"),
-    n(c.visited) && plural(n(c.visited), "link visit", "link visits"),
   ].filter(Boolean);
   // répartition, dans l'ordre de la séquence ; seuls les statuts présents
   const parts = [
@@ -1083,12 +1082,11 @@ function renderContacts() {
       </td>
       <td>${pill(r.status)}${r.status === "replied" || r.status === "opted_out" ? ` <a href="/replies#cc=${r.cc_id}" title="Read the reply and answer it" onclick="event.stopPropagation()">💬</a>` : r.li_thread_url ? ` <a href="${esc(r.li_thread_url)}" target="_blank" rel="noopener" title="LinkedIn conversation" onclick="event.stopPropagation()">💬</a>` : ""}${r.error ? ` <span class="err" title="${esc(r.error)}">!</span>` : ""}</td>
       <td>${r.current_step || "—"}</td>
-      <td>${r.visit_count ? `<span title="${new Date(r.last_visit_at).toLocaleString("en-GB")} — ${r.visit_count} visit(s)">🌐 ${r.visit_count}</span>` : "—"}</td>
       <td>${r.variant || "—"}</td>
       <td class="muted">${esc([r.sender, r.li_sender && `in: ${r.li_sender}`].filter(Boolean).join(" · ") || "—")}</td>
       <td class="muted">${r.next_send_at ? new Date(r.next_send_at).toLocaleString("en-GB") : "—"}</td>
     </tr>
-  `).join("") || `<tr><td colspan="8" class="muted">${contactRows.length
+  `).join("") || `<tr><td colspan="7" class="muted">${contactRows.length
     ? "No contact matches the search."
     : `No contacts — <a href="#" onclick="showTab('import');return false">add some from the Import tab</a>.`}</td></tr>`;
   updateSelection();
@@ -1225,7 +1223,7 @@ document.addEventListener("keydown", e => {
 });
 
 // --- Autocomplétion des variables : taper {{ propose les choix disponibles ---
-const BASE_VARS = ["first_name", "last_name", "company", "email", "sender_name", "signature", "link"];
+const BASE_VARS = ["first_name", "last_name", "company", "email", "sender_name", "signature"];
 let acBox = null, acItems = [], acIndex = 0, acField = null;
 
 function availableVars() {
