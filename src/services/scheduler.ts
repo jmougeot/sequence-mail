@@ -652,6 +652,10 @@ export function terminate(
  * - refusal / opt-out    -> 'opted_out' + opted out with the campaign's owner
  * - real reply           -> 'replied', removed from the workflow
  */
+// More threads are open than one round reads: each round takes up where the last one stopped
+const REPLY_BATCH = 100;
+let replyCursor = 0;
+
 export async function checkRepliesTick(): Promise<void> {
   const rows = db
     .prepare(
@@ -662,9 +666,11 @@ export async function checkRepliesTick(): Promise<void> {
        WHERE cc.status IN ('in_progress', 'completed', 'awaiting_li')
          AND cc.thread_id IS NOT NULL
          AND cc.replied_at IS NULL
-       LIMIT 100`
+         AND cc.id > ?
+       ORDER BY cc.id
+       LIMIT ${REPLY_BATCH}`
     )
-    .all() as Array<{
+    .all(replyCursor) as Array<{
       cc_id: number;
       thread_id: string;
       account_id: number;
@@ -675,6 +681,7 @@ export async function checkRepliesTick(): Promise<void> {
       attio_record_id: string | null;
     }>;
 
+  replyCursor = rows.length === REPLY_BATCH ? rows[rows.length - 1].cc_id : 0;
   const badAccounts = new Set<number>();
   for (const row of rows) {
     if (badAccounts.has(row.account_id)) continue;

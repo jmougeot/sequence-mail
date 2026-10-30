@@ -32,6 +32,7 @@ function resolve(s: Stmt, shared: Map<string, string>): string {
 const FRAGMENTS: Record<string, string> = {
   EVENTS_MAX: "500",
   ACCEPT_CHECK_MS: "18000000",
+  REPLY_BATCH: "100",
   table: "li_actions",
   where: "id = ?",
   'opts.profile ? "AND member_slug = ?" : ""': "AND member_slug = ?",
