@@ -285,7 +285,7 @@ interface StepRow {
 /** Resets the daily counters when the date has changed. */
 function resetDailyCounters(): void {
   db.prepare(
-    "UPDATE accounts SET sent_today = 0, sent_today_date = ? WHERE sent_today_date IS NOT ? "
+    "UPDATE accounts SET sent_today = 0, sent_today_date = ? WHERE sent_today_date IS DISTINCT FROM ? "
   ).run(today(), today());
 }
 
@@ -308,7 +308,7 @@ function pickAccount(now: number, allowedIds: number[] | null, owner: string | n
   const candidates = db
     .prepare(
       `SELECT * FROM accounts
-       WHERE active = 1 AND owner_ref IS ?
+       WHERE active = 1 AND owner_ref IS NOT DISTINCT FROM ?
          AND (next_allowed_at IS NULL OR next_allowed_at <= ?)
        ORDER BY sent_today ASC, COALESCE(last_sent_at, 0) ASC`
     )

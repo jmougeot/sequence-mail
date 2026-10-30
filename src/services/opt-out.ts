@@ -41,7 +41,7 @@ export function optOutFromCampaignOf(ccId: number, reason: string): void {
     if (cc.owner_ref == null) {
       db.prepare("UPDATE contacts SET do_not_contact = 1 WHERE id = ?").run(cc.contact_id);
     } else {
-      db.prepare("INSERT OR IGNORE INTO owner_opt_outs (owner_ref, contact_id, reason) VALUES (?, ?, ?)").run(
+      db.prepare("INSERT INTO owner_opt_outs (owner_ref, contact_id, reason) VALUES (?, ?, ?) ON CONFLICT DO NOTHING").run(
         cc.owner_ref,
         cc.contact_id,
         reason.slice(0, 200)
@@ -50,7 +50,7 @@ export function optOutFromCampaignOf(ccId: number, reason: string): void {
     const others = db
       .prepare(
         `SELECT cc.id FROM campaign_contacts cc JOIN campaigns cp ON cp.id = cc.campaign_id
-         WHERE cc.contact_id = ? AND cp.owner_ref IS ? AND cc.id <> ?
+         WHERE cc.contact_id = ? AND cp.owner_ref IS NOT DISTINCT FROM ? AND cc.id <> ?
            AND cc.status IN ('held', 'pending', 'in_progress', 'awaiting_li')`
       )
       .all(cc.contact_id, cc.owner_ref, ccId) as Array<{ id: number }>;

@@ -170,10 +170,10 @@ export function registerInboxRoutes(app: express.Express): void {
            LEFT JOIN accounts a ON a.id = cc.account_id
            LEFT JOIN li_accounts li ON li.id = cc.li_account_id
            WHERE cc.status IN (SELECT value FROM json_each(@statuses))
-             AND (@campaign IS NULL OR cc.campaign_id = @campaign)
-             AND (@since IS NULL OR cc.replied_at >= @since)
-             AND (@done IS NULL OR (cc.inbox_done_at IS NOT NULL) = @done)
-           ORDER BY cc.replied_at DESC, cc.id DESC
+             AND (CAST(@campaign AS BIGINT) IS NULL OR cc.campaign_id = @campaign)
+             AND (CAST(@since AS BIGINT) IS NULL OR cc.replied_at >= @since)
+             AND (CAST(@done AS BIGINT) IS NULL OR CASE WHEN cc.inbox_done_at IS NOT NULL THEN 1 ELSE 0 END = @done)
+           ORDER BY cc.replied_at DESC NULLS LAST, cc.id DESC
            LIMIT @limit`
         )
         .all({
@@ -249,7 +249,7 @@ export function registerInboxRoutes(app: express.Express): void {
   app.get("/api/inbox/counts", (_req, res) => {
     const row = db
       .prepare(
-        `SELECT COUNT(*) AS todo, COALESCE(SUM(inbox_seen_at IS NULL), 0) AS unseen
+        `SELECT COUNT(*) AS todo, COALESCE(SUM(CASE WHEN inbox_seen_at IS NULL THEN 1 ELSE 0 END), 0) AS unseen
          FROM campaign_contacts WHERE status IN ('replied', 'opted_out') AND inbox_done_at IS NULL`
       )
       .get() as { todo: number; unseen: number };
@@ -264,8 +264,8 @@ export function registerInboxRoutes(app: express.Express): void {
     const r = db
       .prepare(
         `UPDATE campaign_contacts SET
-           inbox_seen_at = CASE WHEN @seen IS NULL THEN inbox_seen_at WHEN @seen = 1 THEN COALESCE(inbox_seen_at, @now) ELSE NULL END,
-           inbox_done_at = CASE WHEN @done IS NULL THEN inbox_done_at WHEN @done = 1 THEN COALESCE(inbox_done_at, @now) ELSE NULL END
+           inbox_seen_at = CASE WHEN CAST(@seen AS BIGINT) IS NULL THEN inbox_seen_at WHEN @seen = 1 THEN COALESCE(inbox_seen_at, @now) ELSE NULL END,
+           inbox_done_at = CASE WHEN CAST(@done AS BIGINT) IS NULL THEN inbox_done_at WHEN @done = 1 THEN COALESCE(inbox_done_at, @now) ELSE NULL END
          WHERE id = @id`
       )
       .run({
@@ -572,7 +572,7 @@ export function registerInboxRoutes(app: express.Express): void {
       )`;
     const params = { since, campaign: campaignId ?? null };
     const counts = db
-      .prepare(`${EVENTS} SELECT type, COUNT(*) AS n FROM ev WHERE @campaign IS NULL OR campaign_id = @campaign GROUP BY type`)
+      .prepare(`${EVENTS} SELECT type, COUNT(*) AS n FROM ev WHERE CAST(@campaign AS BIGINT) IS NULL OR campaign_id = @campaign GROUP BY type`)
       .all(params) as Array<{ type: string; n: number }>;
     const n = (type: string) => counts.find((c) => c.type === type)?.n ?? 0;
     const events = db
@@ -584,7 +584,7 @@ export function registerInboxRoutes(app: express.Express): void {
          FROM ev
          JOIN campaigns cp ON cp.id = ev.campaign_id
          JOIN contacts c ON c.id = ev.contact_id
-         WHERE @campaign IS NULL OR ev.campaign_id = @campaign
+         WHERE CAST(@campaign AS BIGINT) IS NULL OR ev.campaign_id = @campaign
          ORDER BY ev.at DESC, ev.cc_id DESC
          LIMIT ${EVENTS_MAX}`
       )

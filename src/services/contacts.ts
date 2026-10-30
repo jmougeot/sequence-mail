@@ -88,7 +88,7 @@ export async function importContacts(
       -- anciennes, les champs absents du nouvel import sont conservés, ceux
       -- marqués CLEAR_FIELD (null dans @extra) sont retirés
       extra      = CASE
-        WHEN @extra IS NULL THEN extra
+        WHEN CAST(@extra AS TEXT) IS NULL THEN extra
         ELSE NULLIF(json_patch(COALESCE(extra, '{}'), @extra), '{}')
       END,
       attio_record_id = COALESCE(@attio_record_id, attio_record_id)
@@ -98,8 +98,9 @@ export async function importContacts(
   const owner = (db.prepare("SELECT owner_ref FROM campaigns WHERE id = ?").get(campaignId) as { owner_ref: string | null } | undefined)
     ?.owner_ref ?? null;
   const enroll = db.prepare(`
-    INSERT OR IGNORE INTO campaign_contacts (campaign_id, contact_id, status)
+    INSERT INTO campaign_contacts (campaign_id, contact_id, status)
     VALUES (?, ?, 'held')
+    ON CONFLICT DO NOTHING
   `);
   // Same merge as contact fields: new values overwrite old ones
   const setVars = db.prepare(`

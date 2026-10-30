@@ -813,7 +813,7 @@ export interface MessageGuard {
  */
 function messageGuard(ccId: number): MessageGuard {
   const sent = db
-    .prepare(`SELECT type, body, error FROM li_actions WHERE campaign_contact_id = ? AND status = 'sent' ORDER BY sent_at, id`)
+    .prepare(`SELECT type, body, error FROM li_actions WHERE campaign_contact_id = ? AND status = 'sent' ORDER BY sent_at NULLS FIRST, id`)
     .all(ccId) as Array<{ type: LiActionType; body: string | null; error: string | null }>;
   const invite = sent.find((a) => a.type === "invite");
   return {
@@ -939,7 +939,8 @@ export function recordSentInvitations(account: LiAccount, list: unknown, complet
   if (!Array.isArray(list) || (complete !== true && !partial)) return 0;
   const now = Date.now();
   const insert = db.prepare(
-    `INSERT OR REPLACE INTO li_sent_invitations (li_account_id, slug, sent_at, seen_at) VALUES (?, ?, ?, ?)`
+    `INSERT INTO li_sent_invitations (li_account_id, slug, sent_at, seen_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT (li_account_id, slug) DO UPDATE SET sent_at = excluded.sent_at, seen_at = excluded.seen_at`
   );
   let n = 0;
   db.transaction(() => {
@@ -1007,7 +1008,7 @@ function askConnections(account: LiAccount, row: ActionRow, now: number): LiServ
   const ids = sameProfile(account).map((a) => a.id);
   const inIds = ids.map(() => "?").join(",");
   const last = db
-    .prepare(`SELECT MAX(connections_try_at) AS tried, MAX(connections_error IS NOT NULL) AS failed FROM li_accounts WHERE id IN (${inIds})`)
+    .prepare(`SELECT MAX(connections_try_at) AS tried, MAX(CASE WHEN connections_error IS NOT NULL THEN 1 ELSE 0 END) AS failed FROM li_accounts WHERE id IN (${inIds})`)
     .get(...ids) as { tried: number | null; failed: number | null };
   const wait = (last.failed ? CONNECTIONS_RETRY_AFTER_ERROR_MIN : CONNECTIONS_RETRY_MIN) * 60_000;
   if (last.tried != null && now - last.tried < wait) return null;
@@ -1064,11 +1065,11 @@ const ELIGIBLE = `
   WHERE la.status = 'pending'
     AND (cc.status = 'awaiting_li' OR (la.detached = 1 AND cc.status IN ('in_progress', 'completed')))
     AND cp.status = 'active'
-    AND (cp.owner_ref IS @owner OR (cp.owner_ref IS NULL AND @dash = 1))
+    AND (cp.owner_ref IS NOT DISTINCT FROM @owner OR (cp.owner_ref IS NULL AND @dash = 1))
     AND (la.li_account_id = @acc
          OR (la.li_account_id IS NULL AND cc.li_account_id = @acc)
          OR (la.li_account_id IS NULL AND cc.li_account_id IS NULL
-             AND (cp.li_account_ids IS NULL OR EXISTS (SELECT 1 FROM json_each(cp.li_account_ids) WHERE value = @acc))))`;
+             AND (cp.li_account_ids IS NULL OR EXISTS (SELECT 1 FROM json_each(cp.li_account_ids) WHERE value = CAST(@acc AS TEXT)))))`;
 
 // Eligible and due now: not postponed, and no message while its invite is still out.
 const READY = `
@@ -1254,7 +1255,7 @@ export function nextForAccounts(accounts: LiAccount[], via: LiMode): NextResult 
   for (const a of accounts) if (a.mode === via) db.prepare("UPDATE li_accounts SET last_seen_at = ? WHERE id = ?").run(now, a.id);
   const topPriority = (a: LiAccount) =>
     (
-      db.prepare(`SELECT MAX(cp.priority * 2 + (la.type = 'message')) AS p ${ELIGIBLE} ${READY}`).get({ acc: a.id, owner: a.owner_ref, dash: a.serves_dashboard, now }) as {
+      db.prepare(`SELECT MAX(cp.priority * 2 + CASE WHEN la.type = 'message' THEN 1 ELSE 0 END) AS p ${ELIGIBLE} ${READY}`).get({ acc: a.id, owner: a.owner_ref, dash: a.serves_dashboard, now }) as {
         p: number | null;
       }
     ).p ?? 0;
