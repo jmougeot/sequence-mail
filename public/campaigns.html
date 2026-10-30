@@ -100,12 +100,6 @@
         <p class="muted">Columns: email and/or linkedin (at least one of the two), first_name, last_name, company, … — a contact without an email skips email steps, a contact without a profile skips LinkedIn steps.</p>
         <button onclick="importCsv(this)">Import</button> <span id="csvMsg" class="muted"></span>
       </div>
-      <div class="card grow">
-        <h2>Sync from Attio</h2>
-        <input id="attioAttr" placeholder="Status attribute slug (e.g. stage)">
-        <input id="attioStatuses" placeholder="Statuses, comma-separated">
-        <button onclick="attioSync(this)">Sync</button> <span id="attioMsg" class="muted"></span>
-      </div>
     </div>
   </div>
 </div>
@@ -1196,32 +1190,8 @@ async function importCsv(btn) {
   btn.disabled = false; btn.textContent = "Import";
 }
 
-async function attioSync(btn) {
-  btn.disabled = true; btn.textContent = "Syncing…";
-  try {
-    const r = await api(`/api/campaigns/${selectedId}/attio-sync`, {
-      method: "POST", headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({
-        status_attribute: $("#attioAttr").value,
-        statuses: $("#attioStatuses").value.split(",").map(s => s.trim()).filter(Boolean),
-      })});
-    $("#attioMsg").textContent = `${r.fetched} fetched, ${r.imported} enrolled, ${r.updated || 0} updated` +
-      (r.errors?.length ? ` — ${r.errors.length} rejected` : "");
-    loadList();
-    if (r.imported || r.updated) {
-      notify(`Attio: ${r.imported} contact(s) imported${r.updated ? `, ${r.updated} updated` : ""}`);
-      showTab("contacts");
-    }
-    else notify(`Attio: ${r.fetched} found, no new contacts enrolled`, false);
-  } catch (e) { $("#attioMsg").textContent = e.message; notify(e.message, false); }
-  btn.disabled = false; btn.textContent = "Sync";
-}
-
 // --- Init ---
 (async function init() {
-  api("/api/settings").then(s => {
-    if (s.attio_import_attribute && !$("#attioAttr").value) $("#attioAttr").value = s.attio_import_attribute;
-  });
   $("#statusSet").innerHTML = `<option value="">Change status…</option>` +
     SETTABLE_STATUSES.map(s => `<option value="${s}">→ ${STATUS_LABELS[s]}</option>`).join("");
   accounts = await api("/api/accounts");

@@ -32,7 +32,6 @@ CREATE TABLE contacts (
   company TEXT,
   linkedin TEXT,
   extra TEXT,
-  attio_record_id TEXT,
   do_not_contact BIGINT NOT NULL DEFAULT 0,
   created_at BIGINT NOT NULL DEFAULT (floor(extract(epoch from now()))::bigint * 1000)
 );

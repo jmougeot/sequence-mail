@@ -55,7 +55,7 @@ export async function domainAcceptsMail(domain: string): Promise<boolean> {
 export async function importContacts(
   campaignId: number,
   rows: Array<Record<string, string>>,
-  source: { attioRecordIds?: Record<string, string>; withIds?: boolean; campaignVars?: string[] } = {}
+  source: { withIds?: boolean; campaignVars?: string[] } = {}
 ): Promise<ImportReport> {
   const report: ImportReport = { imported: 0, updated: 0, skipped: 0, errors: [] };
   const ids: Array<number | null> = [];
@@ -74,8 +74,8 @@ export async function importContacts(
   const byEmail = db.prepare("SELECT id FROM contacts WHERE email = ?");
   const byLinkedin = db.prepare("SELECT id, email FROM contacts WHERE linkedin = ? ORDER BY email IS NULL, id LIMIT 1");
   const insert = db.prepare(`
-    INSERT INTO contacts (email, first_name, last_name, company, linkedin, extra, attio_record_id)
-    VALUES (@email, @first_name, @last_name, @company, @linkedin, @extra, @attio_record_id)
+    INSERT INTO contacts (email, first_name, last_name, company, linkedin, extra)
+    VALUES (@email, @first_name, @last_name, @company, @linkedin, @extra)
   `);
   const update = db.prepare(`
     UPDATE contacts SET
@@ -90,8 +90,7 @@ export async function importContacts(
       extra      = CASE
         WHEN CAST(@extra AS TEXT) IS NULL THEN extra
         ELSE NULLIF(json_patch(COALESCE(extra, '{}'), @extra), '{}')
-      END,
-      attio_record_id = COALESCE(@attio_record_id, attio_record_id)
+      END
     WHERE id = @id
   `);
   // Opt-out specific to the campaign's owner (see opt-out.ts)
@@ -139,7 +138,6 @@ export async function importContacts(
         company: row.company?.trim() || null,
         linkedin,
         extra: Object.keys(extra).length ? JSON.stringify(extra) : null,
-        attio_record_id: (email && source.attioRecordIds?.[email]) || null,
       };
       // Existing contact: same email, else same LinkedIn profile (unless the emails differ: two
       // distinct emails on one profile stay two records).

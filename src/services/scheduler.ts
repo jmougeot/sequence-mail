@@ -1,6 +1,5 @@
 import { config } from "../config.js";
 import { db } from "../db.js";
-import { pushSequenceStatus } from "./attio.js";
 import { renderTemplate } from "./contacts.js";
 import { getForeignMessages, sendEmail, type AccountRow, type ForeignMessage } from "./google.js";
 import { firstAccepted, nextStep, unreachable } from "./branches.js";
@@ -183,14 +182,6 @@ function handleAuthError(account: AccountRow, msg: string): boolean {
   return true;
 }
 
-/** Pushes progress to Attio without blocking the workflow on error. */
-function syncAttio(attioRecordId: string | null, value: string): void {
-  if (!attioRecordId) return;
-  pushSequenceStatus(attioRecordId, value).catch((err) =>
-    console.error("[attio] update failed:", err instanceof Error ? err.message : err)
-  );
-}
-
 const d = config.deliverability;
 
 function randBetween(min: number, max: number): number {
@@ -263,7 +254,6 @@ interface DueRow {
   company: string | null;
   linkedin: string | null;
   extra: string | null;
-  attio_record_id: string | null;
   variant: string | null;
   li_accepted: number | null;
   campaign_account_ids: string | null;
@@ -350,7 +340,6 @@ function dispatchLinkedIn(row: DueRow, step: StepRow, steps: StepRow[]): void {
     skipStep({ ...row, li_accepted: 0 }, step, steps, "pas de profil LinkedIn");
     return;
   }
-  const totalSteps = steps.length;
   const type = step.li_action === "message" ? "message" : "invite";
   const contact = {
     email: row.email,
@@ -366,7 +355,6 @@ function dispatchLinkedIn(row: DueRow, step: StepRow, steps: StepRow[]): void {
   const detached = !!next?.with_previous;
   enqueueStep(row.cc_id, step.step_number, row.linkedin, type, body, detached);
   if (detached) scheduleNext(row, next!, steps);
-  syncAttio(row.attio_record_id, `Étape ${step.step_number}/${totalSteps} — ${type === "invite" ? "invitation" : "message"} LinkedIn en file`);
   console.log(`[linkedin] step ${step.step_number} (${type}) -> ${who(row)} queued`);
 }
 
@@ -395,7 +383,6 @@ function skipStep(row: DueRow, step: StepRow, steps: StepRow[], reason: string):
   db.prepare(
     `UPDATE campaign_contacts SET current_step = ?, status = ?, next_send_at = ?, error = ? WHERE id = ?`
   ).run(next ? next.step_number - 1 : step.step_number, next ? "in_progress" : "completed", at, `étape ${step.step_number} sautée : ${reason}`, row.cc_id);
-  if (!next) syncAttio(row.attio_record_id, `Séquence terminée (${steps.length} étapes, sans réponse)`);
   console.log(`[sequence] ${who(row)}: step ${step.step_number} skipped (${reason})`);
 }
 
@@ -492,10 +479,8 @@ async function processOne(row: DueRow): Promise<void> {
     const next = nextStep(steps, step.step_number, row.li_accepted);
     if (next) {
       scheduleNext(row, next, steps);
-      syncAttio(row.attio_record_id, `Étape ${step.step_number}/${steps.length} envoyée`);
     } else {
       db.prepare("UPDATE campaign_contacts SET status = 'completed', next_send_at = NULL WHERE id = ?").run(row.cc_id);
-      syncAttio(row.attio_record_id, `Séquence terminée (${steps.length} emails, sans réponse)`);
     }
     console.log(`[send] step ${step.step_number} -> ${to} via ${account.email}`);
   } catch (err) {
@@ -518,7 +503,6 @@ async function processOne(row: DueRow): Promise<void> {
       db.prepare(
         "UPDATE campaign_contacts SET status = 'failed', error = ?, next_send_at = NULL WHERE id = ?"
       ).run(msg, row.cc_id);
-      syncAttio(row.attio_record_id, "Échec d'envoi ⚠️");
     } else {
       db.prepare("UPDATE campaign_contacts SET error = ?, next_send_at = ? WHERE id = ?").run(
         `retry:${count}:${msg}`,
@@ -534,7 +518,7 @@ const DUE_SELECT = `
   SELECT cc.id AS cc_id, cc.campaign_id, cc.contact_id, cc.status, cc.current_step,
          cc.account_id, cc.thread_id, cc.last_gmail_message_id, cc.variant, cc.li_accepted,
          cp.account_ids AS campaign_account_ids, cp.owner_ref AS campaign_owner,
-         c.email, c.first_name, c.last_name, c.company, c.linkedin, c.attio_record_id,
+         c.email, c.first_name, c.last_name, c.company, c.linkedin,
          -- enrollment variables (message written for this candidate on this job) take precedence
          CASE WHEN cc.vars IS NULL THEN c.extra WHEN c.extra IS NULL THEN cc.vars
               ELSE json_patch(c.extra, cc.vars) END AS extra
@@ -630,10 +614,9 @@ export async function sendTick(): Promise<void> {
  * stops all channels.
  */
 export function terminate(
-  row: { cc_id: number; contact_id: number; attio_record_id: string | null },
+  row: { cc_id: number; contact_id: number },
   status: "replied" | "opted_out" | "bounced",
-  blacklist: boolean,
-  attioLabel: string
+  blacklist: boolean
 ): void {
   db.transaction(() => {
     db.prepare(
@@ -642,7 +625,6 @@ export function terminate(
     cancelLinkedInActions(`campaign_contact_id = ?`, row.cc_id, `séquence arrêtée (${status})`);
     if (blacklist) optOutFromCampaignOf(row.cc_id, status === "bounced" ? "adresse email invalide" : "refus du contact");
   })();
-  syncAttio(row.attio_record_id, attioLabel);
 }
 
 /**
@@ -660,7 +642,7 @@ export async function checkRepliesTick(): Promise<void> {
   const rows = db
     .prepare(
       `SELECT cc.id AS cc_id, cc.thread_id, cc.account_id, cc.status, cc.handled_msgs,
-              c.id AS contact_id, c.email, c.attio_record_id
+              c.id AS contact_id, c.email
        FROM campaign_contacts cc
        JOIN contacts c ON c.id = cc.contact_id
        WHERE cc.status IN ('in_progress', 'completed', 'awaiting_li')
@@ -678,7 +660,6 @@ export async function checkRepliesTick(): Promise<void> {
       handled_msgs: string | null;
       contact_id: number;
       email: string;
-      attio_record_id: string | null;
     }>;
 
   replyCursor = rows.length === REPLY_BATCH ? rows[rows.length - 1].cc_id : 0;
@@ -702,7 +683,7 @@ export async function checkRepliesTick(): Promise<void> {
           // the sequence. The delivery-status part carries the authoritative code (Status: 5.x.x);
           // the readable text does not always.
           const hard = isHardBounce(`${m.deliveryStatus}\n${m.text}`);
-          terminate(row, "bounced", hard, hard ? "Email invalide (bounce) ⚠️" : "Email en erreur (bounce temporaire)");
+          terminate(row, "bounced", hard);
           console.log(`[bounce] ${row.email}: ${hard ? "dead address, blacklisted" : "temporary failure"}, sequence stopped`);
           terminal = true;
           break;
@@ -720,12 +701,7 @@ export async function checkRepliesTick(): Promise<void> {
           continue;
         }
         const optedOut = isOptOut(stripQuoted(m.text));
-        terminate(
-          row,
-          optedOut ? "opted_out" : "replied",
-          optedOut,
-          optedOut ? "Pas intéressé / désinscrit 🚫" : "A répondu ✅"
-        );
+        terminate(row, optedOut ? "opted_out" : "replied", optedOut);
         console.log(
           `[reply] ${row.email} ${optedOut ? "opted out" : "replied"}, removed from the workflow`
         );

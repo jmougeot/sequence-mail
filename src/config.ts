@@ -24,11 +24,6 @@ export const config = {
     // not a human. 0 disables the timing check.
     botMinDelaySeconds: int("VISIT_BOT_MIN_DELAY_SECONDS", 60),
   },
-  attioApiKey: process.env.ATTIO_API_KEY ?? "",
-  // Slug of a text attribute on Attio's "people" object that receives sequence progress
-  attioStageAttribute: process.env.ATTIO_STAGE_ATTRIBUTE ?? "",
-  // Slug of the "people" attribute used to filter imports (sync form default)
-  attioImportAttribute: process.env.ATTIO_IMPORT_ATTRIBUTE ?? "",
   deliverability: {
     defaultDailyLimit: int("DEFAULT_DAILY_LIMIT", 40),
     sendWindowStart: int("SEND_WINDOW_START", 9),

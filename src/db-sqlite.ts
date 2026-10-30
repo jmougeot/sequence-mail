@@ -58,7 +58,6 @@ CREATE TABLE IF NOT EXISTS contacts (
   company TEXT,
   linkedin TEXT,                         -- LinkedIn profile URL
   extra TEXT,                            -- JSON: extra CSV columns
-  attio_record_id TEXT,
   do_not_contact INTEGER NOT NULL DEFAULT 0, -- opted out of the dashboard (ownerless campaigns; clients: owner_opt_outs)
   created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
 );
@@ -441,6 +440,11 @@ addColumnIfMissing("campaigns", "description", "description TEXT");
 for (const column of ["steps_source", "steps_updated_at"]) {
   const cols = (db.prepare("PRAGMA table_info(campaigns)").all() as Array<{ name: string }>).map((c) => c.name);
   if (cols.includes(column)) db.exec(`ALTER TABLE campaigns DROP COLUMN ${column}`);
+}
+
+// Attio is gone, and with it the record id each contact carried.
+if ((db.prepare("PRAGMA table_info(contacts)").all() as Array<{ name: string }>).some((c) => c.name === "attio_record_id")) {
+  db.exec("ALTER TABLE contacts DROP COLUMN attio_record_id");
 }
 
 // Priority campaign: its contacts go first in the send queues (LinkedIn actions, due emails).

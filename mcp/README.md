@@ -84,7 +84,7 @@ under 2,000 characters (Claude Code truncates at 2,048).
 **Contacts** — `list_campaign_contacts` (`status`/`search` filters, paginated `limit`/`offset`,
 returns `{ total, returned, offset, contacts }`), `search_contacts` (all campaigns),
 `export_campaign_contacts` (CSV as text or local file), `import_contacts` (list of JSON
-objects), `import_contacts_csv` (`csv` text or local file `csv_path`), `attio_sync`,
+objects), `import_contacts_csv` (`csv` text or local file `csv_path`),
 `launch_contacts` (`cc_ids`, or `all_held` + `limit`; `campaign_id` accepts a list),
 `stop_contacts`, `set_contacts_status`, `remove_contacts`, `update_contact`.
 

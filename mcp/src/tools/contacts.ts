@@ -1,6 +1,6 @@
 /**
  * Contacts: filtered/paginated list, global search, CSV export, imports
- * (objects, raw CSV or file), Attio, launch and status changes.
+ * (objects, raw CSV or file), launch and status changes.
  */
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -242,28 +242,6 @@ export function registerContactTools(server: McpServer): void {
       }
       return importCsv(campaign_id, content, campaign_vars);
     })
-  );
-
-  server.registerTool(
-    "attio_sync",
-    {
-      title: "Import from Attio",
-      description:
-        "Imports into a campaign the Attio people whose status attribute matches the chosen values (contacts 'held', like a CSV import). Requires ATTIO_API_KEY set in the app.",
-      inputSchema: {
-        campaign_id: z.number().int().describe("Target campaign."),
-        status_attribute: z
-          .string()
-          .optional()
-          .describe("Attio status attribute slug (default: the app's ATTIO_IMPORT_ATTRIBUTE)."),
-        statuses: z.array(z.string()).min(1).describe("Status values to import."),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    },
-    handler(
-      ({ campaign_id, status_attribute, statuses }: { campaign_id: number; status_attribute?: string; statuses: string[] }) =>
-        api("POST", `/api/campaigns/${campaign_id}/attio-sync`, { json: { status_attribute, statuses } })
-    )
   );
 
   // -------------------------------------------- write (key = cc_id)

@@ -35,7 +35,6 @@ interface Watched {
   first_name: string | null;
   last_name: string | null;
   linkedin: string | null;
-  attio_record_id: string | null;
   first_sent_at: number;
 }
 
@@ -115,7 +114,7 @@ export function parseLiTime(raw: string | null | undefined, now = Date.now()): n
 function watched(accountId: number): Watched[] {
   return db
     .prepare(
-      `SELECT cc.id AS cc_id, c.id AS contact_id, c.first_name, c.last_name, c.linkedin, c.attio_record_id,
+      `SELECT cc.id AS cc_id, c.id AS contact_id, c.first_name, c.last_name, c.linkedin,
               (SELECT MIN(la.sent_at) FROM li_actions la WHERE la.campaign_contact_id = cc.id AND la.status = 'sent') AS first_sent_at
        FROM campaign_contacts cc
        JOIN contacts c ON c.id = cc.contact_id
@@ -186,12 +185,7 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
 
     done.add(match.cc_id);
     const optedOut = !fromUs && isOptOut(conv.snippet ?? "");
-    terminate(
-      { cc_id: match.cc_id, contact_id: match.contact_id, attio_record_id: match.attio_record_id },
-      optedOut ? "opted_out" : "replied",
-      optedOut,
-      optedOut ? "Pas intéressé / désinscrit 🚫 (LinkedIn)" : "A répondu ✅ (LinkedIn)"
-    );
+    terminate({ cc_id: match.cc_id, contact_id: match.contact_id }, optedOut ? "opted_out" : "replied", optedOut);
     db.prepare("UPDATE campaign_contacts SET li_thread_url = COALESCE(?, li_thread_url), li_reply_text = ? WHERE id = ?").run(
       conv.thread_url ?? null,
       fromUs ? null : conv.snippet?.trim().slice(0, 2000) || null, // our answer isn't the contact's text
@@ -217,23 +211,18 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
 export function processThreadReply(account: LiAccount, actionId: number, text: string): boolean {
   const row = db
     .prepare(
-      `SELECT la.li_account_id, cc.id AS cc_id, cc.contact_id, c.attio_record_id, c.first_name, c.last_name
+      `SELECT la.li_account_id, cc.id AS cc_id, cc.contact_id, c.first_name, c.last_name
        FROM li_actions la
        JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
        JOIN contacts c ON c.id = cc.contact_id
        WHERE la.id = ?`
     )
     .get(actionId) as
-    | { li_account_id: number | null; cc_id: number; contact_id: number; attio_record_id: string | null; first_name: string | null; last_name: string | null }
+    | { li_account_id: number | null; cc_id: number; contact_id: number; first_name: string | null; last_name: string | null }
     | undefined;
   if (!row || row.li_account_id !== account.id) return false;
   const optedOut = isOptOut(text);
-  terminate(
-    { cc_id: row.cc_id, contact_id: row.contact_id, attio_record_id: row.attio_record_id },
-    optedOut ? "opted_out" : "replied",
-    optedOut,
-    optedOut ? "Pas intéressé / désinscrit 🚫 (LinkedIn)" : "A répondu ✅ (LinkedIn)"
-  );
+  terminate({ cc_id: row.cc_id, contact_id: row.contact_id }, optedOut ? "opted_out" : "replied", optedOut);
   if (text.trim()) db.prepare("UPDATE campaign_contacts SET li_reply_text = ? WHERE id = ?").run(text.trim().slice(0, 2000), row.cc_id);
   // terminate cancelled the pending action: record why it didn't go out
   db.prepare("UPDATE li_actions SET error = ? WHERE id = ?").run("le contact a écrit dans la conversation — message non envoyé", actionId);

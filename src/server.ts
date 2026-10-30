@@ -11,7 +11,6 @@ import {
   verifyOwnerState,
 } from "./services/google.js";
 import { BUILT_IN_VARIABLES, importContacts, KNOWN_COLUMNS, MERGED_EXTRA, normalizeColumn, parseCsv, renderTemplate, templateVariables } from "./services/contacts.js";
-import { syncFromAttio } from "./services/attio.js";
 import { effectiveDailyLimit, nextEmailEstimate, sendWindowState } from "./services/scheduler.js";
 import { registerOutreachRoutes } from "./services/outreach-routes.js";
 import { registerServiceRoutes, setEnrollmentVars } from "./services/service-routes.js";
@@ -539,9 +538,6 @@ export function createServer(): express.Express {
       google_configured: Boolean(config.google.clientId),
       google_source: googleCredentialsSource(),
       google_redirect_uri: googleRedirectUri(),
-      attio_configured: Boolean(config.attioApiKey),
-      attio_stage_attribute: config.attioStageAttribute || null,
-      attio_import_attribute: config.attioImportAttribute || null,
     });
   });
 
@@ -755,23 +751,6 @@ export function createServer(): express.Express {
       res.json(await importContacts(Number(req.params.id), rows, { campaignVars }));
     } catch (err) {
       res.status(400).json({ error: `Invalid CSV: ${err instanceof Error ? err.message : err}` });
-    }
-  });
-
-  // --- Attio sync ---
-  app.post("/api/campaigns/:id/attio-sync", async (req, res) => {
-    const { status_attribute, statuses } = req.body as {
-      status_attribute?: string;
-      statuses?: string[];
-    };
-    const attr = status_attribute || config.attioImportAttribute;
-    if (!attr || !statuses?.length) {
-      return res.status(400).json({ error: "status_attribute and statuses[] are required" });
-    }
-    try {
-      res.json(await syncFromAttio(Number(req.params.id), attr, statuses));
-    } catch (err) {
-      res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
