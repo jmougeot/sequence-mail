@@ -42,6 +42,7 @@ CREATE TABLE li_accounts (
   name TEXT NOT NULL,
   token_hash TEXT NOT NULL UNIQUE,
   active BIGINT NOT NULL DEFAULT 1,
+  warmup BIGINT NOT NULL DEFAULT 1, -- only on bases older than the removal of LinkedIn warm-up
   invites_per_day BIGINT,
   messages_per_day BIGINT,
   warmup_started_at BIGINT,
