@@ -178,7 +178,7 @@ async function refresh() {
       `<div><b>${st.today.invite.sent}/${st.today.invite.cap}</b>invitations</div>` +
       `<div><b>${st.today.message.sent}/${st.today.message.cap}</b>messages</div>` +
       `<div><b>${st.queue.pending}</b>en file</div>`;
-    document.getElementById("sub").textContent = `${st.queue.sent} envoyée(s) aujourd'hui`;
+    document.getElementById("sub").textContent = "";
     renderTodo(st.to_do_by_hand || []);
   } catch {
     document.getElementById("stat").innerHTML = "";
