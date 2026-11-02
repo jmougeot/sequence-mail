@@ -1640,6 +1640,37 @@ export function accountStatus(a: LiAccount) {
 }
 
 /**
+ * What a LinkedIn profile will send for sure, for the popup: due invites, and due messages to
+ * contacts known to be connections. A message whose invite is unanswered waits on the contact: left
+ * out, even when the executor would go and check the profile.
+ */
+function readyCount(profile: LiAccount[]): number {
+  const now = Date.now();
+  const connected = new Set(
+    (
+      db
+        .prepare(`SELECT slug FROM li_connections WHERE li_account_id IN (${profile.map(() => "?").join(",")})`)
+        .all(...profile.map((a) => a.id)) as Array<{ slug: string }>
+    ).map((c) => c.slug)
+  );
+  const ready = new Set<number>(); // a free action is eligible for each account of the profile
+  for (const a of profile) {
+    const due = db
+      .prepare(`SELECT la.id, la.type, la.linkedin, cc.li_accepted ${ELIGIBLE} ${READY}`)
+      .all({ acc: a.id, owner: a.owner_ref, dash: a.serves_dashboard, now }) as Array<{
+      id: number;
+      type: LiActionType;
+      linkedin: string;
+      li_accepted: number | null;
+    }>;
+    for (const d of due) {
+      if (d.type === "invite" || Number(d.li_accepted) === 1 || connected.has(linkedinSlug(d.linkedin) ?? "")) ready.add(Number(d.id));
+    }
+  }
+  return ready.size;
+}
+
+/**
  * Failed actions still holding a contact back, for the popup: what to do by hand, where, and the
  * text to send. Left out once the contact has moved on (relaunched, stopped, replied) or the
  * campaign is archived.
@@ -1693,6 +1724,7 @@ export function profileStatus(a: LiAccount) {
     ...accountStatus(a),
     today: { invite, message },
     queue: {
+      ready: readyCount(profile),
       pending: count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id IN (${inIds}) AND status = 'pending'`, ...ids),
       sent: invite.sent + message.sent,
       failed: count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id IN (${inIds}) AND status = 'failed'`, ...ids),
