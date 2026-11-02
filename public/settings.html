@@ -50,7 +50,7 @@
     </div>
     <p class="err" id="liWarn" hidden></p>
     <table id="liAccounts">
-      <thead><tr><th>Account</th><th>Runs on</th><th>Invites / day</th><th>Messages / day</th><th id="liQueueTh">Queued</th><th>Active</th><th></th></tr></thead>
+      <thead><tr><th>Account</th><th>Runs on</th><th>Invites / day</th><th>Messages / day</th><th>To send</th><th>Active</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
     <div class="inline" style="margin-top:12px">
@@ -155,7 +155,6 @@ async function loadLi() {
 
   liWarn(!s.server_mode_ready && s.accounts.some(a => a.mode === "server")
     ? ["Server mode unavailable: LI_SECRET_KEY / LI_RUNNER_SECRET missing (.env)"] : []);
-  $("#liQueueTh").textContent = "Queued" + (s.queue.unassigned ? ` (+${s.queue.unassigned} unassigned)` : "");
   const btn = $("#liToggle");
   btn.hidden = !s.accounts.length;
   btn.textContent = s.enabled ? "⏸ Pause all" : "▶ Resume all";
@@ -182,7 +181,7 @@ async function loadLi() {
         <span class="muted">${a.last_seen_at ? `seen ${timeAgo(a.last_seen_at)}` : "never seen"}</span></div>${sess}${proxy}${state}</td>
       ${quota("invite", "invites_per_day", "Invites")}
       ${quota("message", "messages_per_day", "Messages")}
-      <td>${a.queue.pending}${a.queue.failed ? ` <span class="err">· ${a.queue.failed} failed</span>` : ""}</td>
+      <td>${a.queue.ready}${a.queue.failed ? ` <span class="err">· ${a.queue.failed} failed</span>` : ""}</td>
       <td><input type="checkbox" ${a.active ? "checked" : ""} onchange="patchLi(${ids}, {active: this.checked})"></td>
       <td style="white-space:nowrap"><button class="ghost" onclick="rotateLi(${a.id})" title="Generate a new token (the old one stops working)">Token</button>
           <button class="icon-btn danger" onclick="deleteLi(${a.id})" title="Delete (only if the account hasn't done anything yet)">✕</button></td>
@@ -215,7 +214,7 @@ function liProfiles(accounts) {
       invites_per_day: Math.min(...g.map(x => x.invites_per_day)),
       messages_per_day: Math.min(...g.map(x => x.messages_per_day)),
       today: { invite: { sent: sum(x => x.today.invite.sent) }, message: { sent: sum(x => x.today.message.sent) } },
-      queue: { pending: sum(x => x.queue.pending), failed: sum(x => x.queue.failed) },
+      queue: { ready: sum(x => x.queue.ready), failed: sum(x => x.queue.failed) },
     };
     return { a, ids: JSON.stringify(g.map(x => x.id)), linked };
   });

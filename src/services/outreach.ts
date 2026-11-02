@@ -1165,10 +1165,18 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
     (t) =>
       sentToday(ids, t) < todayCap(Math.min(...profile.map((a) => dailyCap(a, t))), now, `${slug}:${t}`)
   );
-  const untilTomorrow = Math.ceil((startOfLocalDay(now) + DAY_MS - now) / 1000);
-  if (!underCap.length) return { wait: untilTomorrow, reason: "Quota du jour atteint" };
+  // Next start of a type that cannot go now: its next opening, or tomorrow's if it is at its cap
+  // or has nothing left to send today.
+  const tomorrow = startOfLocalDay(now) + DAY_MS;
+  const nextStart = () =>
+    Math.min(...types.map((t) => nextOpen(t, underCap.includes(t) && !open.includes(t) ? now : tomorrow - 1)));
+  const untilNext = (...at: number[]) => Math.ceil((Math.min(nextStart(), ...at) - now) / 1000);
+  if (!underCap.length) return { wait: untilNext(), reason: "Quota du jour atteint" };
+  const capReason = underCap.includes("invite") ? "Quota de messages atteint" : "Quota d'invitations atteint";
   const allowed = underCap.filter((t) => open.includes(t));
-  if (!allowed.length) return { wait: untilOpen(underCap), reason: "Hors plage horaire d'envoi" };
+  if (!allowed.length) {
+    return { wait: untilNext(), reason: `${capReason}, ${underCap[0] === "message" ? "messages" : "invitations"} hors plage horaire` };
+  }
 
   // Priority campaigns first, and within a priority level messages before invites (a message
   // reaches a contact who already accepted); then its own actions (contacts already engaged),
@@ -1200,7 +1208,20 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
 
   if (!row) {
     const blocked = db.prepare(`SELECT 1 ${ELIGIBLE} LIMIT 1`).get({ acc: account.id, owner: account.owner_ref, dash: account.serves_dashboard });
-    if (blocked) return { wait: untilTomorrow, reason: "Quota du jour atteint ou actions reportées" };
+    if (blocked) {
+      // Postponed actions come back on their own: the earliest one, once its hours allow it.
+      const retries = allowed.flatMap((t) => {
+        const { at } = db
+          .prepare(`SELECT MIN(la.not_before) AS at ${ELIGIBLE} AND la.type = '${t}' AND la.not_before > @now`)
+          .get({ acc: account.id, owner: account.owner_ref, dash: account.serves_dashboard, now }) as { at: number | null };
+        if (at == null) return [];
+        return [openTypes(Number(at)).includes(t) ? Number(at) : nextOpen(t, Number(at))];
+      });
+      return {
+        wait: untilNext(...retries),
+        reason: underCap.length < types.length ? `${capReason}, actions restantes reportées` : "Actions reportées",
+      };
+    }
     return { idle: true, reason: "File LinkedIn vide" };
   }
 
@@ -1481,6 +1502,21 @@ function count(sql: string, ...args: unknown[]): number {
   return (db.prepare(sql).get(...args) as { n: number }).n;
 }
 
+/** What the account can send: due invites, and due messages to contacts in its connections (a
+ *  message whose invite is unanswered is waiting on the contact, not on the account). */
+function readyCount(a: LiAccount, now: number): number {
+  const ids = sameProfile(a).map((p) => p.id);
+  const connected = new Set(
+    (db.prepare(`SELECT slug FROM li_connections WHERE li_account_id IN (${ids.map(() => "?").join(",")})`).all(...ids) as Array<{ slug: string }>).map(
+      (c) => c.slug
+    )
+  );
+  const due = db
+    .prepare(`SELECT la.type, la.linkedin ${ELIGIBLE} ${READY}`)
+    .all({ acc: a.id, owner: a.owner_ref, dash: a.serves_dashboard, now }) as Array<{ type: LiActionType; linkedin: string | null }>;
+  return due.filter((d) => d.type === "invite" || connected.has(linkedinSlug(d.linkedin) ?? "")).length;
+}
+
 /** Account status: executor presence, session, today's caps, queue. */
 export function accountStatus(a: LiAccount) {
   const now = Date.now();
@@ -1525,6 +1561,7 @@ export function accountStatus(a: LiAccount) {
       message: { sent: messages, cap: dailyCap(a, "message") },
     },
     queue: {
+      ready: readyCount(a, now),
       pending: count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id = ? AND status = 'pending'`, a.id),
       sent: invites + messages,
       failed: count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id = ? AND status = 'failed'`, a.id),
@@ -1555,6 +1592,7 @@ export function profileStatus(a: LiAccount) {
     ...accountStatus(a),
     today: { invite, message },
     queue: {
+      ready: profile.reduce((n, p) => n + readyCount(p, Date.now()), 0),
       pending: count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id IN (${inIds}) AND status = 'pending'`, ...ids),
       sent: invite.sent + message.sent,
       failed: count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id IN (${inIds}) AND status = 'failed'`, ...ids),
@@ -1584,7 +1622,7 @@ export function outreachStatus() {
       invite: { sent: sum((a) => a.today.invite.sent), cap: sum((a) => (a.active ? a.today.invite.cap : 0)) },
       message: { sent: sum((a) => a.today.message.sent), cap: sum((a) => (a.active ? a.today.message.cap : 0)) },
     },
-    queue: { pending, unassigned, sent: sum((a) => a.queue.sent), failed: sum((a) => a.queue.failed) },
+    queue: { ready: sum((a) => a.queue.ready), pending, unassigned, sent: sum((a) => a.queue.sent), failed: sum((a) => a.queue.failed) },
     pending, // kept for compatibility
     accounts,
   };

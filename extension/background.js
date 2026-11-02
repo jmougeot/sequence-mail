@@ -202,8 +202,14 @@ async function serve(SERVER, tokens) {
     if (verdict.retry) return { kind: "wait", text: "Message reporté : invitation pas encore acceptée" };
     return { kind: "err", text: `Échec : ${verdict.error || "inconnu"}` };
   }
-  if (res.wait != null) return { kind: "wait", text: `${res.reason} — reprise dans ~${Math.ceil(res.wait / 60)} min` };
+  if (res.wait != null) return { kind: "wait", text: `${res.reason} — reprise dans ~${formatWait(res.wait)}` };
   return { kind: "idle", text: res.reason || "File vide" };
+}
+
+/** Délai annoncé dans le panneau : en minutes sous une heure, en heures au-delà. */
+function formatWait(seconds) {
+  const min = Math.ceil(seconds / 60);
+  return min < 60 ? `${min} min` : `${Math.round(min / 60)} h`;
 }
 
 /**

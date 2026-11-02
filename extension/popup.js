@@ -80,7 +80,7 @@ async function refresh() {
     document.getElementById("stat").innerHTML =
       `<div><b>${st.today.invite.sent}/${st.today.invite.cap}</b>invitations</div>` +
       `<div><b>${st.today.message.sent}/${st.today.message.cap}</b>messages</div>` +
-      `<div><b>${st.queue.pending}</b>en file</div>`;
+      `<div><b>${st.queue.ready}</b>à envoyer</div>`;
     document.getElementById("sub").textContent = st.within_window
       ? `${st.queue.sent} envoyée(s) · ${st.queue.failed} échec(s)`
       : "Hors plage horaire d'envoi — reprise automatique.";
