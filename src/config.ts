@@ -43,7 +43,7 @@ export const config = {
     // Messages every day but Saturday (invites run every day)
     workdaysOnly: (process.env.LI_WORKDAYS_ONLY ?? "1") !== "0",
     // Each day's cap is drawn between this share and 100 % of the cap above (no flat daily volume).
-    capFloorPct: int("LI_CAP_FLOOR_PCT", 60),
+    capFloorPct: int("LI_CAP_FLOOR_PCT", 85),
     // Hours move each day: start up to N min later, stop up to N min earlier.
     windowJitterMin: int("LI_WINDOW_JITTER_MIN", 75),
     // Actions go in short sessions (LI_SESSION_MIN–MAX actions, LI_MIN/MAX_GAP_SEC apart), then

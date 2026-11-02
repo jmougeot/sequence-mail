@@ -477,6 +477,12 @@ function todayCap(cap: number, ts: number, salt: string): number {
   return Math.max(1, Math.round(cap * (floor + (1 - floor) * dayDraw(ts, salt))));
 }
 
+/** Today's cap of a LinkedIn profile for a type: what nextAction enforces and the popup shows. */
+function profileCapToday(profile: LiAccount[], type: LiActionType, ts: number): number {
+  const slug = profile[0].member_slug ?? `account-${profile[0].id}`;
+  return todayCap(Math.min(...profile.map((a) => dailyCap(a, type))), ts, `${slug}:${type}`);
+}
+
 /** [from, until) in minutes of the day, moved each day: starts later, ends earlier (LI_WINDOW_JITTER_MIN). */
 function jittered(ts: number, from: number, until: number, salt: string): [number, number] {
   const j = Math.max(0, Math.min(L.windowJitterMin, (until - from) / 4));
@@ -1232,11 +1238,7 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   }
 
   // Today's cap moves each day under the configured one.
-  const slug = account.member_slug ?? `account-${account.id}`;
-  const underCap = types.filter(
-    (t) =>
-      sentToday(ids, t) < todayCap(Math.min(...profile.map((a) => dailyCap(a, t))), now, `${slug}:${t}`)
-  );
+  const underCap = types.filter((t) => sentToday(ids, t) < profileCapToday(profile, t, now));
   const untilTomorrow = Math.ceil((startOfLocalDay(now) + DAY_MS - now) / 1000);
   if (!underCap.length) return { wait: untilTomorrow, reason: "Quota du jour atteint" };
   const allowed = underCap.filter((t) => open.includes(t));
@@ -1717,7 +1719,7 @@ export function profileStatus(a: LiAccount) {
   const profile = sameProfile(a);
   const ids = profile.map((p) => p.id);
   const inIds = ids.map(() => "?").join(",");
-  const today = (t: LiActionType) => ({ sent: sentToday(ids, t), cap: Math.min(...profile.map((p) => dailyCap(p, t))) });
+  const today = (t: LiActionType) => ({ sent: sentToday(ids, t), cap: profileCapToday(profile, t, Date.now()) });
   const invite = today("invite");
   const message = today("message");
   return {
