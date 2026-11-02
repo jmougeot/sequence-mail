@@ -34,6 +34,103 @@ async function isExecutor() {
   return Boolean(authPass) || Boolean(liToken) || Boolean(azeritToken) || custom;
 }
 
+// --- Actions en échec : à faire à la main sur LinkedIn ---
+
+const FAILED_LABEL = { invite: "Invitation non envoyée", message: "Message non envoyé" };
+let shownTodo = ""; // la liste n'est redessinée que si elle change (refresh toutes les 3 s)
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
+}
+
+// Dit au serveur que l'action a été faite : le contact passe à la suite de la séquence.
+async function markDone(id) {
+  const r = await fetch(`${await getServer()}/api/li/result`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(await authHeaders()) },
+    body: JSON.stringify({ id, done_by_hand: true }),
+  });
+  if (!r.ok) throw new Error(String(r.status));
+}
+
+// Deux clics : le premier arme le bouton quelques secondes, le second envoie.
+function doneButton(id) {
+  const label = "Fait à la main";
+  const btn = el("button", "done", label);
+  let armed = null;
+  btn.addEventListener("click", async () => {
+    if (!armed) {
+      btn.textContent = "Confirmer ?";
+      btn.classList.add("armed");
+      armed = setTimeout(() => {
+        armed = null;
+        btn.textContent = label;
+        btn.classList.remove("armed");
+      }, 4000);
+      return;
+    }
+    clearTimeout(armed);
+    armed = null;
+    btn.classList.remove("armed");
+    btn.disabled = true;
+    btn.textContent = "…";
+    try {
+      await markDone(id);
+      refresh();
+    } catch {
+      btn.disabled = false;
+      btn.textContent = "Échec — réessayer";
+    }
+  });
+  return btn;
+}
+
+function copyButton(text) {
+  const label = "Copier";
+  const btn = el("button", "", label);
+  btn.addEventListener("click", async () => {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = "Copié ✓";
+    setTimeout(() => (btn.textContent = label), 1500);
+  });
+  return btn;
+}
+
+function todoItem(a) {
+  const item = el("li", "item");
+  const head = el("div", "item-head");
+  head.append(el("b", "", a.name), el("span", "tag", FAILED_LABEL[a.type] || "Action non envoyée"));
+  item.append(head);
+  item.append(el("div", "why", a.campaign));
+  if (a.error) {
+    const why = el("div", "why", a.error);
+    why.title = a.error;
+    item.append(why);
+  }
+  const acts = el("div", "acts");
+  const link = el("a", "btn", "Ouvrir LinkedIn");
+  link.href = a.url;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  acts.append(link);
+  if (a.body) acts.append(copyButton(a.body));
+  acts.append(doneButton(a.id));
+  item.append(acts);
+  return item;
+}
+
+function renderTodo(list) {
+  const key = JSON.stringify(list);
+  if (key === shownTodo) return;
+  shownTodo = key;
+  document.getElementById("todo").hidden = !list.length;
+  document.getElementById("todoCount").textContent = `(${list.length})`;
+  document.getElementById("todoList").replaceChildren(...list.map(todoItem));
+}
+
 async function refresh() {
   const operator = showAdvanced || (await isExecutor());
   document.getElementById("bridge").hidden = operator;
@@ -82,8 +179,9 @@ async function refresh() {
       `<div><b>${st.today.message.sent}/${st.today.message.cap}</b>messages</div>` +
       `<div><b>${st.queue.pending}</b>en file</div>`;
     document.getElementById("sub").textContent = st.within_window
-      ? `${st.queue.sent} envoyée(s) · ${st.queue.failed} échec(s)`
+      ? `${st.queue.sent} envoyée(s) aujourd'hui`
       : "Hors plage horaire d'envoi — reprise automatique.";
+    renderTodo(st.to_do_by_hand || []);
   } catch {
     document.getElementById("stat").innerHTML = "";
     document.getElementById("sub").textContent = `App Sequence Mail injoignable (${SERVER}).`;
@@ -119,38 +217,6 @@ document.getElementById("saveAuth").addEventListener("click", async () => {
     authUser: document.getElementById("authUser").value.trim() || "admin",
     authPass: document.getElementById("authPass").value,
   });
-  refresh();
-});
-
-// Confie le compte au serveur : envoie la session LinkedIn de ce navigateur
-// (cookies linkedin.com + user-agent) et le profil connecté. Le compte passe en
-// mode serveur ; cette extension n'exécute plus rien pour lui.
-document.getElementById("handover").addEventListener("click", async () => {
-  const msg = document.getElementById("handoverMsg");
-  const { liToken } = await chrome.storage.local.get("liToken");
-  if (!liToken) {
-    msg.textContent = "Renseignez d'abord le jeton du compte LinkedIn ci-dessous.";
-    return;
-  }
-  msg.textContent = "Lecture de la session LinkedIn…";
-  const cap = await chrome.runtime.sendMessage({ type: "capture-linkedin" });
-  if (!cap || !cap.ok) {
-    msg.textContent = (cap && cap.error) || "Session LinkedIn illisible.";
-    return;
-  }
-  try {
-    const r = await fetch(`${await getServer()}/api/li/session`, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...(await authHeaders()) },
-      body: JSON.stringify({ cookies: cap.cookies, user_agent: cap.user_agent, member: cap.member }),
-    });
-    const d = await r.json().catch(() => ({}));
-    msg.textContent = r.ok
-      ? `✓ Session de ${cap.member.name || cap.member.slug} transmise : le serveur pilote désormais « ${d.account && d.account.name} ».`
-      : `Échec : ${d.error || r.status}`;
-  } catch {
-    msg.textContent = "Serveur injoignable.";
-  }
   refresh();
 });
 

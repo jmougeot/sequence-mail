@@ -3,22 +3,52 @@
 <head>
 <meta charset="utf-8">
 <style>
-  body { font: 13px/1.4 system-ui, sans-serif; width: 280px; margin: 0; padding: 14px; color: #1d2733; }
-  h1 { font-size: 14px; margin: 0 0 10px; }
-  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; background: #999; }
-  .ok { background: #1a9c52; } .err { background: #d23; } .run, .wait { background: #e0a400; } .off, .idle { background: #999; }
-  .muted { color: #667; }
-  button { font: inherit; cursor: pointer; border: 1px solid #c9d2dc; background: #f4f6f9; border-radius: 6px; padding: 5px 10px; }
-  .stat { display: flex; gap: 12px; margin-top: 10px; font-size: 12px; }
-  .stat b { font-size: 15px; display: block; }
-  .sub { font-size: 11px; color: #889; margin-top: 8px; }
-  .srv { margin-top: 12px; border-top: 1px solid #e6e9ef; padding-top: 10px; }
-  .srv label { display: block; font-size: 11px; color: #667; margin-bottom: 4px; }
-  .srv .line { display: flex; gap: 6px; }
-  .srv input { flex: 1; font: inherit; border: 1px solid #c9d2dc; border-radius: 6px; padding: 4px 8px; }
-  .linkbtn { border: 0; background: none; padding: 0; color: #667; font-size: 11px; text-decoration: underline; }
-  a.cta { display: inline-block; margin-top: 10px; color: #0f766e; font-weight: 600; text-decoration: none; }
+  :root { --ink: #1d2733; --muted: #667085; --line: #e6e9ef; --soft: #f6f7f9; --accent: #0f766e; --warn: #b42318; }
+  body { font: 13px/1.4 system-ui, sans-serif; width: 320px; margin: 0; padding: 14px; color: var(--ink); background: #fff; }
+  h1 { font-size: 14px; margin: 0; }
+  h2 { font-size: 12px; margin: 0; }
+  .muted { color: var(--muted); }
+  button, .btn { font: inherit; font-size: 12px; cursor: pointer; border: 1px solid #d0d5dd; background: #fff; color: var(--ink); border-radius: 6px; padding: 4px 9px; text-decoration: none; }
+  button:hover, .btn:hover { background: var(--soft); }
+  button:disabled { cursor: default; opacity: .6; }
+
+  .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+  .account { color: var(--muted); font-size: 12px; }
+  .icon { padding: 4px 6px; line-height: 0; }
+  .state { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+  .state > span { display: flex; align-items: baseline; gap: 6px; min-width: 0; color: var(--muted); }
+  .dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #98a2b3; }
+  .dot.ok { background: #1a9c52; } .dot.err { background: #d92d20; } .dot.run, .dot.wait { background: #e0a400; }
+  #toggle { flex: none; }
+
+  .stat { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 10px; font-size: 11px; color: var(--muted); }
+  .stat:empty { display: none; }
+  .stat div { background: var(--soft); border-radius: 6px; padding: 6px 8px; }
+  .stat b { display: block; font-size: 15px; color: var(--ink); }
+  .sub { font-size: 11px; color: var(--muted); margin-top: 8px; }
+
+  .todo { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+  .todo h2 span { color: var(--warn); }
+  .todo ul { list-style: none; margin: 8px 0 0; padding: 0; max-height: 300px; overflow-y: auto; }
+  .item { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .item + .item { margin-top: 6px; }
+  .item-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .item-head b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tag { flex: none; font-size: 11px; color: var(--warn); }
+  .why { font-size: 11px; color: var(--muted); margin-top: 2px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  .acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .done { margin-left: auto; border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .done.armed { background: var(--accent); color: #fff; }
+
+  details { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+  summary { cursor: pointer; font-size: 11px; color: var(--muted); }
+  details label { display: block; font-size: 11px; color: var(--muted); margin: 10px 0 4px; }
+  .line { display: flex; gap: 6px; }
+  .line input { flex: 1; min-width: 0; font: inherit; font-size: 12px; border: 1px solid #d0d5dd; border-radius: 6px; padding: 4px 8px; }
+  .line input.user { flex: 0 0 64px; }
+
+  .linkbtn { border: 0; background: none; padding: 0; color: var(--muted); font-size: 11px; text-decoration: underline; }
+  a.cta { display: inline-block; margin-top: 10px; color: var(--accent); font-weight: 600; text-decoration: none; }
 </style>
 </head>
 <body>
@@ -33,39 +63,45 @@
 
   <!-- Exécutant Sequence Mail (mot de passe d'accès ou serveur local). -->
   <div id="operator" hidden>
-  <h1>Prospection LinkedIn</h1>
-  <div class="muted" id="account" style="margin:-6px 0 6px;font-size:12px"></div>
-  <div class="row">
-    <span><span class="dot" id="dot"></span><span id="statusText" class="muted">…</span></span>
-    <span>
-      <button id="reload" title="Recharger l'extension" aria-label="Recharger l'extension" style="padding:5px 7px;vertical-align:middle"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
+    <div class="top">
+      <div>
+        <h1>Azerit — LinkedIn</h1>
+        <div class="account" id="account"></div>
+      </div>
+      <button id="reload" class="icon" title="Recharger l'extension" aria-label="Recharger l'extension"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
+    </div>
+
+    <div class="state">
+      <span><i class="dot" id="dot"></i><span id="statusText">…</span></span>
       <button id="toggle">…</button>
-    </span>
-  </div>
-  <div class="stat" id="stat"></div>
-  <div class="sub" id="sub"></div>
-  <div class="srv">
-    <button id="handover" style="width:100%">Confier ce compte au serveur</button>
-    <div class="sub" id="handoverMsg">Le serveur enverra à votre place, sans que ce Chrome reste ouvert. Ne vous déconnectez pas de LinkedIn ensuite (cela couperait aussi la session du serveur).</div>
-  </div>
-  <div class="srv">
-    <label for="server">Adresse du serveur</label>
-    <div class="line">
-      <input id="server" placeholder="https://sequence.example.com">
-      <button id="saveServer">OK</button>
     </div>
-    <label for="liToken" style="margin-top:10px">Jeton du compte LinkedIn (Réglages de l'app)</label>
-    <div class="line">
-      <input id="liToken" type="password" placeholder="li_…">
-      <button id="saveToken">OK</button>
-    </div>
-    <label for="authPass" style="margin-top:10px">Mot de passe d'accès (prod protégée)</label>
-    <div class="line">
-      <input id="authUser" placeholder="admin" style="flex:0 0 64px">
-      <input id="authPass" type="password" placeholder="mot de passe">
-      <button id="saveAuth">OK</button>
-    </div>
-  </div>
+    <div class="stat" id="stat"></div>
+    <div class="sub" id="sub"></div>
+
+    <section class="todo" id="todo" hidden>
+      <h2>À faire à la main <span id="todoCount"></span></h2>
+      <ul id="todoList"></ul>
+    </section>
+
+    <details>
+      <summary>Connexion au serveur</summary>
+      <label for="server">Adresse du serveur</label>
+      <div class="line">
+        <input id="server" placeholder="https://sequence.example.com">
+        <button id="saveServer">OK</button>
+      </div>
+      <label for="liToken">Jeton du compte LinkedIn (Réglages de l'app)</label>
+      <div class="line">
+        <input id="liToken" type="password" placeholder="li_…">
+        <button id="saveToken">OK</button>
+      </div>
+      <label for="authPass">Mot de passe d'accès (prod protégée)</label>
+      <div class="line">
+        <input id="authUser" class="user" placeholder="admin">
+        <input id="authPass" type="password" placeholder="mot de passe">
+        <button id="saveAuth">OK</button>
+      </div>
+    </details>
   </div>
   <script src="popup.js"></script>
 </body>

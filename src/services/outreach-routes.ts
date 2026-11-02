@@ -20,6 +20,7 @@ import {
   deleteAccount,
   getAccount,
   isRunner,
+  markDoneByHand,
   nextForAccounts,
   outreachStatus,
   parseMember,
@@ -128,6 +129,11 @@ export function registerOutreachRoutes(app: express.Express): void {
     const b = req.body as Record<string, unknown>;
     const id = Number(b.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: "id manquant" });
+    // Failed action done by hand on LinkedIn (popup): the sequence moves on.
+    if (b.done_by_hand) {
+      if (!markDoneByHand(c.account, id)) return res.status(404).json({ error: "Action inconnue pour ce compte" });
+      return res.json({ ok: true, done_by_hand: true });
+    }
     // The contact wrote in the conversation: the executor sent nothing.
     if (b.replied && !b.ok && !b.wrong_account) {
       const text = typeof b.reply_text === "string" ? b.reply_text.slice(0, 2000) : "";

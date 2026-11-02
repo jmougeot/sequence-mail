@@ -1530,6 +1530,33 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
 }
 
 /**
+ * A failed action the user did by hand on LinkedIn (extension popup): recorded as sent and the
+ * contact moves on as after a success. Outside the daily caps (not in li_log): no executor played it.
+ * Returns false if the action is not a failed one of this LinkedIn profile.
+ */
+export function markDoneByHand(account: LiAccount, id: number): boolean {
+  const row = db
+    .prepare(`SELECT type, status, campaign_contact_id, step_number, li_account_id, detached FROM li_actions WHERE id = ?`)
+    .get(id) as
+    | { type: LiActionType; status: string; campaign_contact_id: number; step_number: number; li_account_id: number | null; detached: number }
+    | undefined;
+  if (row?.status !== "failed" || !sameProfile(account).some((a) => a.id === row.li_account_id)) return false;
+  db.transaction(() => {
+    db.prepare(`UPDATE li_actions SET status = 'sent', sent_at = ?, lease_at = NULL, error = ?, member_slug = ? WHERE id = ?`).run(
+      Date.now(),
+      "fait à la main",
+      account.member_slug,
+      id
+    );
+    if (row.type === "message") db.prepare(`UPDATE campaign_contacts SET li_accepted = 1 WHERE id = ?`).run(row.campaign_contact_id);
+    if (row.detached) return;
+    db.prepare(`UPDATE campaign_contacts SET status = 'awaiting_li', error = NULL WHERE id = ? AND status = 'failed'`).run(row.campaign_contact_id);
+    advanceContact(row.campaign_contact_id, row.step_number);
+  })();
+  return true;
+}
+
+/**
  * Identity attached to an inbox read: other profile → account stopped and read ignored
  * (those are not its conversations). Returns false in that case.
  */
@@ -1613,6 +1640,45 @@ export function accountStatus(a: LiAccount) {
 }
 
 /**
+ * Failed actions still holding a contact back, for the popup: what to do by hand, where, and the
+ * text to send. Left out once the contact has moved on (relaunched, stopped, replied) or the
+ * campaign is archived.
+ */
+function failedActions(ids: number[]) {
+  const rows = db
+    .prepare(
+      `SELECT la.id, la.type, la.linkedin, la.body, la.error, c.first_name, c.last_name, cp.name AS campaign
+       FROM li_actions la
+       JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
+       JOIN contacts c ON c.id = cc.contact_id
+       JOIN campaigns cp ON cp.id = cc.campaign_id
+       WHERE la.status = 'failed' AND la.li_account_id IN (${ids.map(() => "?").join(",")})
+         AND cp.status != 'archived'
+         AND (cc.status = 'failed' OR (la.detached = 1 AND cc.status IN ('in_progress', 'completed')))
+         AND NOT EXISTS (SELECT 1 FROM li_actions x WHERE x.campaign_contact_id = la.campaign_contact_id AND x.step_number = la.step_number AND x.id > la.id)
+       ORDER BY la.id DESC LIMIT 50`
+    )
+    .all(...ids) as Array<{
+    id: number;
+    type: LiActionType;
+    linkedin: string;
+    body: string | null;
+    error: string | null;
+    first_name: string | null;
+    last_name: string | null;
+    campaign: string;
+  }>;
+  return rows.map(({ linkedin, first_name, last_name, ...r }) => {
+    const slug = linkedinSlug(linkedin);
+    return {
+      ...r,
+      name: [first_name, last_name].filter(Boolean).join(" ") || slug || linkedin,
+      url: slug ? `https://www.linkedin.com/in/${encodeURIComponent(slug)}` : linkedin,
+    };
+  });
+}
+
+/**
  * Extension popup: the account's status with today's counts, caps and queue of its whole
  * LinkedIn profile (Sequence Mail and Azerit accounts sharing it), as the caps apply to it.
  */
@@ -1631,6 +1697,7 @@ export function profileStatus(a: LiAccount) {
       sent: invite.sent + message.sent,
       failed: count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id IN (${inIds}) AND status = 'failed'`, ...ids),
     },
+    to_do_by_hand: failedActions(ids),
   };
 }
 

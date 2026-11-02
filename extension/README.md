@@ -92,6 +92,14 @@ c'est plus lent mais beaucoup moins détectable.
    l'état « Extension connectée » et les quotas du jour dans **Réglages**
    (`/settings`) et dans le popup.
 
+## Quand une action échoue
+
+Le popup liste sous « À faire à la main » chaque invitation ou message en échec :
+lien vers le profil LinkedIn, texte à copier, et bouton **Fait à la main**. Ce bouton
+enregistre l'action comme envoyée (`POST /api/li/result` avec `done_by_hand`) : le
+contact sort de l'échec et passe à l'étape suivante, sans compter dans les quotas
+du jour. Tant qu'on ne clique pas, le contact reste en échec.
+
 ## Limites à connaître
 
 - **Messages** : LinkedIn ne les délivre qu'aux **relations de 1er niveau**. Pour
