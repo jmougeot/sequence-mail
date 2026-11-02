@@ -15,7 +15,7 @@ import { effectiveDailyLimit, nextEmailEstimate, sendWindowState } from "./servi
 import { registerOutreachRoutes } from "./services/outreach-routes.js";
 import { registerServiceRoutes, setEnrollmentVars } from "./services/service-routes.js";
 import { campaignStepRows, replaceSteps, validateSteps as validateStepList, insertSteps, type StepInput } from "./services/steps.js";
-import { applyWithPrevious, cancelLinkedInActions } from "./services/outreach.js";
+import { applyWithPrevious, cancelLinkedInActions, placeAtStep } from "./services/outreach.js";
 import { optOutFromCampaignOf } from "./services/opt-out.js";
 import { registerUnsubscribeRoutes } from "./services/unsubscribe.js";
 import { registerInboxRoutes } from "./services/inbox-routes.js";
@@ -597,6 +597,17 @@ export function createServer(): express.Express {
       return changes;
     })();
     res.json({ ok: true, stopped: changes });
+  });
+
+  // --- Place held contacts at a later step (what comes before was done by hand) ---
+  app.post("/api/campaigns/:id/advance-contacts", (req, res) => {
+    const { ids, step, li_account_id } = req.body as { ids?: number[]; step?: number; li_account_id?: number };
+    if (!Array.isArray(ids) || !ids.length || !Number.isInteger(step)) {
+      return res.status(400).json({ error: "ids[] and step are required" });
+    }
+    const result = placeAtStep(Number(req.params.id), ids, step!, li_account_id);
+    if ("error" in result) return res.status(400).json(result);
+    res.json({ ok: true, ...result });
   });
 
   // --- Manually set the status of selected contacts ---

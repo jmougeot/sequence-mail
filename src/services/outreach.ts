@@ -758,6 +758,77 @@ function advanceContact(ccId: number, completedStep: number, immediate = false):
 }
 
 /**
+ * Places held contacts at a later step, when what comes before was done outside the sequence
+ * (an invite sent by hand). A passed LinkedIn invite is recorded as sent from `liAccountId`, at its
+ * date in the account's pending invitations; `seen` = false when it isn't there yet (date = now).
+ * Nothing goes out: the contacts stay held until launched. Other statuses are left alone (`skipped`).
+ */
+export function placeAtStep(
+  campaignId: number,
+  ids: number[],
+  step: number,
+  liAccountId?: number
+): { placed: Array<{ cc_id: number; seen: boolean | null }>; skipped: number[] } | { error: string } {
+  const steps = db
+    .prepare(`SELECT step_number, wait_days, channel, li_action, branch, with_previous FROM steps WHERE campaign_id = ? ORDER BY step_number`)
+    .all(campaignId) as Array<StepRow & { li_action: string | null }>;
+  const target = steps.find((s) => s.step_number === step);
+  if (step < 2 || !target) return { error: `étape : 2 à ${steps.length}` };
+  if (nextStep(steps, step - 1, null) !== target) return { error: `L'étape ${step} n'est pas sur le chemin d'un contact en attente` };
+
+  const invite = steps.find((s) => s.step_number < step && s.channel === "linkedin" && s.li_action !== "message");
+  const camp = db.prepare(`SELECT owner_ref, li_account_ids FROM campaigns WHERE id = ?`).get(campaignId) as
+    | { owner_ref: string | null; li_account_ids: string | null }
+    | undefined;
+  const allowed = camp?.li_account_ids ? (JSON.parse(camp.li_account_ids) as number[]) : null;
+  const accountId = liAccountId ?? (allowed?.length === 1 ? allowed[0] : undefined);
+  const account = accountId == null ? undefined : getAccount(accountId);
+  if (invite) {
+    if (accountId == null) return { error: "li_account_id requis : le compte LinkedIn qui a invité" };
+    if (!account || account.owner_ref !== camp?.owner_ref || (allowed && !allowed.includes(accountId))) {
+      return { error: `Le compte LinkedIn ${accountId} n'envoie pas cette campagne` };
+    }
+  }
+  const profile = account ? sameProfile(account).map((a) => a.id) : [];
+
+  const placed: Array<{ cc_id: number; seen: boolean | null }> = [];
+  const skipped: number[] = [];
+  db.transaction(() => {
+    for (const id of ids) {
+      const cc = db
+        .prepare(
+          `SELECT c.linkedin FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id
+           WHERE cc.id = ? AND cc.campaign_id = ? AND cc.status = 'held' AND cc.current_step < ?`
+        )
+        .get(id, campaignId, step - 1) as { linkedin: string | null } | undefined;
+      if (!cc || (invite && !cc.linkedin)) {
+        skipped.push(id);
+        continue;
+      }
+      let seen: boolean | null = null;
+      if (invite) {
+        const row = db
+          .prepare(`SELECT sent_at FROM li_sent_invitations WHERE slug = ? AND li_account_id IN (${profile.map(() => "?").join(",")}) LIMIT 1`)
+          .get(linkedinSlug(cc.linkedin), ...profile) as { sent_at: number | null } | undefined;
+        seen = Boolean(row);
+        const at = row?.sent_at ?? Date.now();
+        db.prepare(
+          `INSERT INTO li_actions (campaign_contact_id, step_number, linkedin, type, status, attempts, created_at, sent_at, li_account_id, member_slug)
+           VALUES (?, ?, ?, 'invite', 'sent', 1, ?, ?, ?, ?)`
+        ).run(id, invite.step_number, cc.linkedin, at, at, accountId, account!.member_slug);
+      }
+      db.prepare(`UPDATE campaign_contacts SET current_step = ?, li_account_id = COALESCE(li_account_id, ?), next_send_at = NULL, error = NULL WHERE id = ?`).run(
+        step - 1,
+        invite ? accountId : null,
+        id
+      );
+      placed.push({ cc_id: id, seen });
+    }
+  })();
+  return { placed, skipped };
+}
+
+/**
  * Message to a contact not yet connected: past this deadline the invite counts as not
  * accepted. Branched campaign: delay of the first "not accepted" step, counted from the
  * invite; otherwise LI_MESSAGE_RETRY_MAX_DAYS from when the message was queued.
