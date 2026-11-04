@@ -14,7 +14,8 @@
     "csv-parse": "^5.5.6",
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
-    "googleapis": "^144.0.0"
+    "googleapis": "^144.0.0",
+    "pg-native": "^3.9.1"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",

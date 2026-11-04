@@ -1,10 +1,10 @@
-# Production image for Sequence Mail (Node + Express + SQLite).
-# better-sqlite3 is native: keep build tools in case no prebuilt binary
-# matches the platform.
+# Production image for Sequence Mail (Node + Express + SQLite or Postgres, see docs/postgres.md).
+# better-sqlite3 and pg-native are native: keep build tools in case no prebuilt
+# binary matches the platform; libpq-dev is what pg-native compiles against.
 FROM node:22-bookworm-slim
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
+  && apt-get install -y --no-install-recommends python3 make g++ libpq-dev ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

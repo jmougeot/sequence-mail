@@ -19,7 +19,7 @@ const stepSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Message body. Variables: {{first_name}}, {{last_name}}, {{company}}, {{email}}, {{sender_name}}, {{link}}, {{signature}} + any CSV column. Conditional block: {{if variable}}text if set{{else}}text otherwise{{end}} ({{else}} optional, no nesting; French {{si}}/{{sinon}}/{{fin}} still accepted), also in the subject. An email follow-up without subject goes in the same thread (Re:). For a LinkedIn invite, the note is optional."
+      "Message body. Variables: {{first_name}}, {{last_name}}, {{company}}, {{email}}, {{sender_name}}, {{signature}} + any CSV column. Conditional block: {{if variable}}text if set{{else}}text otherwise{{end}} ({{else}} optional, no nesting; French {{si}}/{{sinon}}/{{fin}} still accepted), also in the subject. An email follow-up without subject goes in the same thread (Re:). For a LinkedIn invite, the note is optional."
     ),
   wait_days: z
     .number()
@@ -45,7 +45,7 @@ const stepSchema = z.object({
     ),
 });
 
-const EVENT_TYPES = ["email_sent", "replied", "opted_out", "bounced", "li_invite", "li_message", "visit"] as const;
+const EVENT_TYPES = ["email_sent", "replied", "opted_out", "bounced", "li_invite", "li_message"] as const;
 
 const activityShape = {
   days: z.number().int().min(1).max(90).optional().describe("Period in days up to now (default 7, max 90)."),
@@ -175,7 +175,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "List campaigns",
       description:
-        "Lists campaigns with their description (who each targets, which contacts belong) and stats: status (active/paused/archived), contacts per state, emails sent, {{link}} visits, reply rate (overall, and per variant with an A/B test), progress. A missing counter or rate means 0. Archived campaigns are hidden by default (archived_hidden gives their count): include_archived: true to see them. Use for an overview before any action, and to pick a contact's campaign.",
+        "Lists campaigns with their description (who each targets, which contacts belong) and stats: status (active/paused/archived), contacts per state, emails sent, reply rate (overall, and per variant with an A/B test), progress. A missing counter or rate means 0. Archived campaigns are hidden by default (archived_hidden gives their count): include_archived: true to see them. Use for an overview before any action, and to pick a contact's campaign.",
       inputSchema: {
         include_archived: z.boolean().optional().describe("true = include archived campaigns (default false)."),
       },
@@ -238,7 +238,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Activity log",
       description:
-        "What happened over a period (default 7 days), all campaigns or one: totals (emails sent, replies, opt-outs, bounces, LinkedIn invites and messages, link visits excluding bots) and events newest first (type, campaign, contact with cc_id and contact_id, step, account). The server returns at most 300 events; events_limit trims further. Dates in ISO 8601 (UTC).",
+        "What happened over a period (default 7 days), all campaigns or one: totals (emails sent, replies, opt-outs, bounces, LinkedIn invites and messages) and events newest first (type, campaign, contact with cc_id and contact_id, step, account). The server returns at most 300 events; events_limit trims further. Dates in ISO 8601 (UTC).",
       inputSchema: activityShape,
       annotations: READ,
     },
@@ -308,7 +308,7 @@ export function registerCampaignTools(server: McpServer): void {
     {
       title: "Step test email",
       description:
-        "Renders a campaign email step exactly like the scheduler (contact variables, {{sender_name}}, sample {{link}}, {{signature}}; a follow-up without subject becomes \"Re: \" + step 1 subject) and sends it to \"to\", subject prefixed [TEST]. Touches no quotas, statuses or history. dry_run defaults to true: nothing is sent and the rendering (from, to, subject, body) is returned. To really send: show this rendering first, then call again with dry_run: false after explicit user approval. Refused for a LinkedIn step (the rendered body is in the error).",
+        "Renders a campaign email step exactly like the scheduler (contact variables, {{sender_name}}, {{signature}}; a follow-up without subject becomes \"Re: \" + step 1 subject) and sends it to \"to\", subject prefixed [TEST]. Touches no quotas, statuses or history. dry_run defaults to true: nothing is sent and the rendering (from, to, subject, body) is returned. To really send: show this rendering first, then call again with dry_run: false after explicit user approval. Refused for a LinkedIn step (the rendered body is in the error).",
       inputSchema: testEmailShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },

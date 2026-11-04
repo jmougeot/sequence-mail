@@ -12,7 +12,7 @@ La règle d'or : **l'extension n'envoie jamais quand elle veut.** À chaque tick
 Le serveur (`outreach.ts`) répond en appliquant :
 
 - **plafonds journaliers** par type (par défaut 20 invitations, 40 messages),
-  tirés chaque jour entre 60 et 100 % du plafond (pas de plafond hebdomadaire :
+  tirés chaque jour entre 85 et 100 % du plafond (pas de plafond hebdomadaire :
   seul le quota du jour compte) ;
 - **plage horaire** décalée chaque jour (début plus tard, fin plus tôt, jusqu'à 75 min) ;
 - **sessions courtes** : 2 à 5 actions espacées de 2 à 7 min, puis **1 h à 2 h 30 de

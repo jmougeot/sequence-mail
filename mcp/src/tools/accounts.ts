@@ -122,7 +122,7 @@ export function registerAccountTools(server: McpServer): void {
     {
       title: "App settings",
       description:
-        "Effective settings (read-only, from .env) and send clock. server: server time, its timezone (timezone, utc_offset) and local_time. Send window hours (deliverability.sendWindowStart / sendWindowEnd) are in the deliverability.sendWindowTimezone timezone, not the server's or the user's. send_window: open, with closes_at if open or opens_at otherwise. next_email: earliest_at = earliest next email send (estimate: due contacts, window, quotas and account rest), due_now = emails due right now, reason if nothing to send or a quota blocks. Then deliverability (quotas, delays, warm-up) and whether Google and Attio are configured. Dates in ISO 8601 (UTC).",
+        "Effective settings (read-only, from .env) and send clock. server: server time, its timezone (timezone, utc_offset) and local_time. Send window hours (deliverability.sendWindowStart / sendWindowEnd) are in the deliverability.sendWindowTimezone timezone, not the server's or the user's. send_window: open, with closes_at if open or opens_at otherwise. next_email: earliest_at = earliest next email send (estimate: due contacts, window, quotas and account rest), due_now = emails due right now, reason if nothing to send or a quota blocks. Then deliverability (quotas, delays, warm-up) and whether Google is configured. Dates in ISO 8601 (UTC).",
       inputSchema: {},
       annotations: READ,
     },

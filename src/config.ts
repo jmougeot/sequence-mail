@@ -13,22 +13,6 @@ export const config = {
     clientId: process.env.GOOGLE_CLIENT_ID ?? "",
     clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   },
-  // Per-prospect link, placed in the email via {{link}}. It points to VISIT_BASE_URL (ideally a
-  // subdomain like sequence.example.com serving this app), logs the visit server-side (reliable), then
-  // 302-redirects to VISIT_DEST_URL (your public page). VISIT_BASE_URL must be PUBLIC.
-  visit: {
-    enabled: (process.env.VISIT_ENABLED ?? "true") !== "false",
-    baseUrl: (process.env.VISIT_BASE_URL || process.env.BASE_URL || "http://localhost:3000").replace(/\/+$/, ""),
-    destUrl: (process.env.VISIT_DEST_URL || "https://www.example.com").replace(/\/+$/, ""),
-    // Bot filter: a click less than N seconds after sending is a security scanner (Safe Links…),
-    // not a human. 0 disables the timing check.
-    botMinDelaySeconds: int("VISIT_BOT_MIN_DELAY_SECONDS", 60),
-  },
-  attioApiKey: process.env.ATTIO_API_KEY ?? "",
-  // Slug of a text attribute on Attio's "people" object that receives sequence progress
-  attioStageAttribute: process.env.ATTIO_STAGE_ATTRIBUTE ?? "",
-  // Slug of the "people" attribute used to filter imports (sync form default)
-  attioImportAttribute: process.env.ATTIO_IMPORT_ATTRIBUTE ?? "",
   deliverability: {
     defaultDailyLimit: int("DEFAULT_DAILY_LIMIT", 40),
     sendWindowStart: int("SEND_WINDOW_START", 9),
@@ -59,7 +43,7 @@ export const config = {
     // Messages every day but Saturday (invites run every day)
     workdaysOnly: (process.env.LI_WORKDAYS_ONLY ?? "1") !== "0",
     // Each day's cap is drawn between this share and 100 % of the cap above (no flat daily volume).
-    capFloorPct: int("LI_CAP_FLOOR_PCT", 60),
+    capFloorPct: int("LI_CAP_FLOOR_PCT", 85),
     // Hours move each day: start up to N min later, stop up to N min earlier.
     windowJitterMin: int("LI_WINDOW_JITTER_MIN", 75),
     // Actions go in short sessions (LI_SESSION_MIN–MAX actions, LI_MIN/MAX_GAP_SEC apart), then

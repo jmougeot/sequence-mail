@@ -10,7 +10,7 @@
 //   - ecosystems : ecosyste.ms API (repos depending on the package, any ecosystem).
 //                  Free, deep pagination, repo metadata included.
 // Only active *organization* repos are kept (no personal accounts, no forks); the
-// org's GitHub profile gives the domain, the key for enrichment and Attio import.
+// org's GitHub profile gives the domain, the key for enrichment.
 // With --emails, the repo's commits are scanned for @org-domain addresses
 // (public data).
 //

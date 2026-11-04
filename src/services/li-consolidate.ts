@@ -73,14 +73,14 @@ export function consolidateProfiles(opts: { owners?: string[]; profile?: string;
         }
         let campaigns = 0;
         const withOld = db
-          .prepare("SELECT id, li_account_ids FROM campaigns WHERE li_account_ids IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(li_account_ids) WHERE value = ?)")
+          .prepare("SELECT id, li_account_ids FROM campaigns WHERE li_account_ids IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(li_account_ids) WHERE value = CAST(? AS TEXT))")
           .all(old.id) as Array<{ id: number; li_account_ids: string }>;
         for (const c of withOld) {
           const ids = [...new Set((JSON.parse(c.li_account_ids) as number[]).map((x) => (x === old.id ? keep.id : x)))];
           db.prepare("UPDATE campaigns SET li_account_ids = ? WHERE id = ?").run(JSON.stringify(ids), c.id);
           campaigns++;
         }
-        db.prepare("INSERT OR REPLACE INTO li_token_aliases (token_hash, li_account_id) VALUES (?, ?)").run(old.token_hash, keep.id);
+        db.prepare("INSERT INTO li_token_aliases (token_hash, li_account_id) VALUES (?, ?) ON CONFLICT (token_hash) DO UPDATE SET li_account_id = excluded.li_account_id").run(old.token_hash, keep.id);
         // Aliases that pointed to the merged account follow it.
         db.prepare("UPDATE li_token_aliases SET li_account_id = ? WHERE li_account_id = ?").run(keep.id, old.id);
         // The kept account serves the dashboard's campaigns only if the merged one did, and must not act

@@ -477,6 +477,12 @@ function todayCap(cap: number, ts: number, salt: string): number {
   return Math.max(1, Math.round(cap * (floor + (1 - floor) * dayDraw(ts, salt))));
 }
 
+/** Today's cap of a LinkedIn profile for a type: what nextAction enforces and the popup shows. */
+function profileCapToday(profile: LiAccount[], type: LiActionType, ts: number): number {
+  const slug = profile[0].member_slug ?? `account-${profile[0].id}`;
+  return todayCap(Math.min(...profile.map((a) => dailyCap(a, type))), ts, `${slug}:${type}`);
+}
+
 /** [from, until) in minutes of the day, moved each day: starts later, ends earlier (LI_WINDOW_JITTER_MIN). */
 function jittered(ts: number, from: number, until: number, salt: string): [number, number] {
   const j = Math.max(0, Math.min(L.windowJitterMin, (until - from) / 4));
@@ -758,6 +764,77 @@ function advanceContact(ccId: number, completedStep: number, immediate = false):
 }
 
 /**
+ * Places held contacts at a later step, when what comes before was done outside the sequence
+ * (an invite sent by hand). A passed LinkedIn invite is recorded as sent from `liAccountId`, at its
+ * date in the account's pending invitations; `seen` = false when it isn't there yet (date = now).
+ * Nothing goes out: the contacts stay held until launched. Other statuses are left alone (`skipped`).
+ */
+export function placeAtStep(
+  campaignId: number,
+  ids: number[],
+  step: number,
+  liAccountId?: number
+): { placed: Array<{ cc_id: number; seen: boolean | null }>; skipped: number[] } | { error: string } {
+  const steps = db
+    .prepare(`SELECT step_number, wait_days, channel, li_action, branch, with_previous FROM steps WHERE campaign_id = ? ORDER BY step_number`)
+    .all(campaignId) as Array<StepRow & { li_action: string | null }>;
+  const target = steps.find((s) => s.step_number === step);
+  if (step < 2 || !target) return { error: `étape : 2 à ${steps.length}` };
+  if (nextStep(steps, step - 1, null) !== target) return { error: `L'étape ${step} n'est pas sur le chemin d'un contact en attente` };
+
+  const invite = steps.find((s) => s.step_number < step && s.channel === "linkedin" && s.li_action !== "message");
+  const camp = db.prepare(`SELECT owner_ref, li_account_ids FROM campaigns WHERE id = ?`).get(campaignId) as
+    | { owner_ref: string | null; li_account_ids: string | null }
+    | undefined;
+  const allowed = camp?.li_account_ids ? (JSON.parse(camp.li_account_ids) as number[]) : null;
+  const accountId = liAccountId ?? (allowed?.length === 1 ? allowed[0] : undefined);
+  const account = accountId == null ? undefined : getAccount(accountId);
+  if (invite) {
+    if (accountId == null) return { error: "li_account_id requis : le compte LinkedIn qui a invité" };
+    if (!account || account.owner_ref !== camp?.owner_ref || (allowed && !allowed.includes(accountId))) {
+      return { error: `Le compte LinkedIn ${accountId} n'envoie pas cette campagne` };
+    }
+  }
+  const profile = account ? sameProfile(account).map((a) => a.id) : [];
+
+  const placed: Array<{ cc_id: number; seen: boolean | null }> = [];
+  const skipped: number[] = [];
+  db.transaction(() => {
+    for (const id of ids) {
+      const cc = db
+        .prepare(
+          `SELECT c.linkedin FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id
+           WHERE cc.id = ? AND cc.campaign_id = ? AND cc.status = 'held' AND cc.current_step < ?`
+        )
+        .get(id, campaignId, step - 1) as { linkedin: string | null } | undefined;
+      if (!cc || (invite && !cc.linkedin)) {
+        skipped.push(id);
+        continue;
+      }
+      let seen: boolean | null = null;
+      if (invite) {
+        const row = db
+          .prepare(`SELECT sent_at FROM li_sent_invitations WHERE slug = ? AND li_account_id IN (${profile.map(() => "?").join(",")}) LIMIT 1`)
+          .get(linkedinSlug(cc.linkedin), ...profile) as { sent_at: number | null } | undefined;
+        seen = Boolean(row);
+        const at = row?.sent_at ?? Date.now();
+        db.prepare(
+          `INSERT INTO li_actions (campaign_contact_id, step_number, linkedin, type, status, attempts, created_at, sent_at, li_account_id, member_slug)
+           VALUES (?, ?, ?, 'invite', 'sent', 1, ?, ?, ?, ?)`
+        ).run(id, invite.step_number, cc.linkedin, at, at, accountId, account!.member_slug);
+      }
+      db.prepare(`UPDATE campaign_contacts SET current_step = ?, li_account_id = COALESCE(li_account_id, ?), next_send_at = NULL, error = NULL WHERE id = ?`).run(
+        step - 1,
+        invite ? accountId : null,
+        id
+      );
+      placed.push({ cc_id: id, seen });
+    }
+  })();
+  return { placed, skipped };
+}
+
+/**
  * Message to a contact not yet connected: past this deadline the invite counts as not
  * accepted. Branched campaign: delay of the first "not accepted" step, counted from the
  * invite; otherwise LI_MESSAGE_RETRY_MAX_DAYS from when the message was queued.
@@ -813,7 +890,7 @@ export interface MessageGuard {
  */
 function messageGuard(ccId: number): MessageGuard {
   const sent = db
-    .prepare(`SELECT type, body, error FROM li_actions WHERE campaign_contact_id = ? AND status = 'sent' ORDER BY sent_at, id`)
+    .prepare(`SELECT type, body, error FROM li_actions WHERE campaign_contact_id = ? AND status = 'sent' ORDER BY sent_at NULLS FIRST, id`)
     .all(ccId) as Array<{ type: LiActionType; body: string | null; error: string | null }>;
   const invite = sent.find((a) => a.type === "invite");
   return {
@@ -939,7 +1016,8 @@ export function recordSentInvitations(account: LiAccount, list: unknown, complet
   if (!Array.isArray(list) || (complete !== true && !partial)) return 0;
   const now = Date.now();
   const insert = db.prepare(
-    `INSERT OR REPLACE INTO li_sent_invitations (li_account_id, slug, sent_at, seen_at) VALUES (?, ?, ?, ?)`
+    `INSERT INTO li_sent_invitations (li_account_id, slug, sent_at, seen_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT (li_account_id, slug) DO UPDATE SET sent_at = excluded.sent_at, seen_at = excluded.seen_at`
   );
   let n = 0;
   db.transaction(() => {
@@ -1007,7 +1085,7 @@ function askConnections(account: LiAccount, row: ActionRow, now: number): LiServ
   const ids = sameProfile(account).map((a) => a.id);
   const inIds = ids.map(() => "?").join(",");
   const last = db
-    .prepare(`SELECT MAX(connections_try_at) AS tried, MAX(connections_error IS NOT NULL) AS failed FROM li_accounts WHERE id IN (${inIds})`)
+    .prepare(`SELECT MAX(connections_try_at) AS tried, MAX(CASE WHEN connections_error IS NOT NULL THEN 1 ELSE 0 END) AS failed FROM li_accounts WHERE id IN (${inIds})`)
     .get(...ids) as { tried: number | null; failed: number | null };
   const wait = (last.failed ? CONNECTIONS_RETRY_AFTER_ERROR_MIN : CONNECTIONS_RETRY_MIN) * 60_000;
   if (last.tried != null && now - last.tried < wait) return null;
@@ -1064,11 +1142,11 @@ const ELIGIBLE = `
   WHERE la.status = 'pending'
     AND (cc.status = 'awaiting_li' OR (la.detached = 1 AND cc.status IN ('in_progress', 'completed')))
     AND cp.status = 'active'
-    AND (cp.owner_ref IS @owner OR (cp.owner_ref IS NULL AND @dash = 1))
+    AND (cp.owner_ref IS NOT DISTINCT FROM @owner OR (cp.owner_ref IS NULL AND @dash = 1))
     AND (la.li_account_id = @acc
          OR (la.li_account_id IS NULL AND cc.li_account_id = @acc)
          OR (la.li_account_id IS NULL AND cc.li_account_id IS NULL
-             AND (cp.li_account_ids IS NULL OR EXISTS (SELECT 1 FROM json_each(cp.li_account_ids) WHERE value = @acc))))`;
+             AND (cp.li_account_ids IS NULL OR EXISTS (SELECT 1 FROM json_each(cp.li_account_ids) WHERE value = CAST(@acc AS TEXT)))))`;
 
 // Eligible and due now: not postponed, and no message while its invite is still out.
 const READY = `
@@ -1160,11 +1238,7 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   }
 
   // Today's cap moves each day under the configured one.
-  const slug = account.member_slug ?? `account-${account.id}`;
-  const underCap = types.filter(
-    (t) =>
-      sentToday(ids, t) < todayCap(Math.min(...profile.map((a) => dailyCap(a, t))), now, `${slug}:${t}`)
-  );
+  const underCap = types.filter((t) => sentToday(ids, t) < profileCapToday(profile, t, now));
   // Next start of a type that cannot go now: its next opening, or tomorrow's if it is at its cap
   // or has nothing left to send today.
   const tomorrow = startOfLocalDay(now) + DAY_MS;
@@ -1275,7 +1349,7 @@ export function nextForAccounts(accounts: LiAccount[], via: LiMode): NextResult 
   for (const a of accounts) if (a.mode === via) db.prepare("UPDATE li_accounts SET last_seen_at = ? WHERE id = ?").run(now, a.id);
   const topPriority = (a: LiAccount) =>
     (
-      db.prepare(`SELECT MAX(cp.priority * 2 + (la.type = 'message')) AS p ${ELIGIBLE} ${READY}`).get({ acc: a.id, owner: a.owner_ref, dash: a.serves_dashboard, now }) as {
+      db.prepare(`SELECT MAX(cp.priority * 2 + CASE WHEN la.type = 'message' THEN 1 ELSE 0 END) AS p ${ELIGIBLE} ${READY}`).get({ acc: a.id, owner: a.owner_ref, dash: a.serves_dashboard, now }) as {
         p: number | null;
       }
     ).p ?? 0;
@@ -1479,6 +1553,33 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
 }
 
 /**
+ * A failed action the user did by hand on LinkedIn (extension popup): recorded as sent and the
+ * contact moves on as after a success. Outside the daily caps (not in li_log): no executor played it.
+ * Returns false if the action is not a failed one of this LinkedIn profile.
+ */
+export function markDoneByHand(account: LiAccount, id: number): boolean {
+  const row = db
+    .prepare(`SELECT type, status, campaign_contact_id, step_number, li_account_id, detached FROM li_actions WHERE id = ?`)
+    .get(id) as
+    | { type: LiActionType; status: string; campaign_contact_id: number; step_number: number; li_account_id: number | null; detached: number }
+    | undefined;
+  if (row?.status !== "failed" || !sameProfile(account).some((a) => a.id === row.li_account_id)) return false;
+  db.transaction(() => {
+    db.prepare(`UPDATE li_actions SET status = 'sent', sent_at = ?, lease_at = NULL, error = ?, member_slug = ? WHERE id = ?`).run(
+      Date.now(),
+      "fait à la main",
+      account.member_slug,
+      id
+    );
+    if (row.type === "message") db.prepare(`UPDATE campaign_contacts SET li_accepted = 1 WHERE id = ?`).run(row.campaign_contact_id);
+    if (row.detached) return;
+    db.prepare(`UPDATE campaign_contacts SET status = 'awaiting_li', error = NULL WHERE id = ? AND status = 'failed'`).run(row.campaign_contact_id);
+    advanceContact(row.campaign_contact_id, row.step_number);
+  })();
+  return true;
+}
+
+/**
  * Identity attached to an inbox read: other profile → account stopped and read ignored
  * (those are not its conversations). Returns false in that case.
  */
@@ -1500,21 +1601,6 @@ export function setEnabled(v: boolean): void {
 
 function count(sql: string, ...args: unknown[]): number {
   return (db.prepare(sql).get(...args) as { n: number }).n;
-}
-
-/** What the account can send: due invites, and due messages to contacts in its connections (a
- *  message whose invite is unanswered is waiting on the contact, not on the account). */
-function readyCount(a: LiAccount, now: number): number {
-  const ids = sameProfile(a).map((p) => p.id);
-  const connected = new Set(
-    (db.prepare(`SELECT slug FROM li_connections WHERE li_account_id IN (${ids.map(() => "?").join(",")})`).all(...ids) as Array<{ slug: string }>).map(
-      (c) => c.slug
-    )
-  );
-  const due = db
-    .prepare(`SELECT la.type, la.linkedin ${ELIGIBLE} ${READY}`)
-    .all({ acc: a.id, owner: a.owner_ref, dash: a.serves_dashboard, now }) as Array<{ type: LiActionType; linkedin: string | null }>;
-  return due.filter((d) => d.type === "invite" || connected.has(linkedinSlug(d.linkedin) ?? "")).length;
 }
 
 /** Account status: executor presence, session, today's caps, queue. */
@@ -1561,7 +1647,7 @@ export function accountStatus(a: LiAccount) {
       message: { sent: messages, cap: dailyCap(a, "message") },
     },
     queue: {
-      ready: readyCount(a, now),
+      ready: readyCount([a]),
       pending: count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id = ? AND status = 'pending'`, a.id),
       sent: invites + messages,
       failed: count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id = ? AND status = 'failed'`, a.id),
@@ -1578,6 +1664,76 @@ export function accountStatus(a: LiAccount) {
 }
 
 /**
+ * What a LinkedIn profile will send for sure, for the popup: due invites, and due messages to
+ * contacts known to be connections. A message whose invite is unanswered waits on the contact: left
+ * out, even when the executor would go and check the profile.
+ */
+function readyCount(profile: LiAccount[]): number {
+  const now = Date.now();
+  const connected = new Set(
+    (
+      db
+        .prepare(`SELECT slug FROM li_connections WHERE li_account_id IN (${profile.map(() => "?").join(",")})`)
+        .all(...profile.map((a) => a.id)) as Array<{ slug: string }>
+    ).map((c) => c.slug)
+  );
+  const ready = new Set<number>(); // a free action is eligible for each account of the profile
+  for (const a of profile) {
+    const due = db
+      .prepare(`SELECT la.id, la.type, la.linkedin, cc.li_accepted ${ELIGIBLE} ${READY}`)
+      .all({ acc: a.id, owner: a.owner_ref, dash: a.serves_dashboard, now }) as Array<{
+      id: number;
+      type: LiActionType;
+      linkedin: string;
+      li_accepted: number | null;
+    }>;
+    for (const d of due) {
+      if (d.type === "invite" || Number(d.li_accepted) === 1 || connected.has(linkedinSlug(d.linkedin) ?? "")) ready.add(Number(d.id));
+    }
+  }
+  return ready.size;
+}
+
+/**
+ * Failed actions still holding a contact back, for the popup: what to do by hand, where, and the
+ * text to send. Left out once the contact has moved on (relaunched, stopped, replied) or the
+ * campaign is archived.
+ */
+function failedActions(ids: number[]) {
+  const rows = db
+    .prepare(
+      `SELECT la.id, la.type, la.linkedin, la.body, la.error, c.first_name, c.last_name, cp.name AS campaign
+       FROM li_actions la
+       JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
+       JOIN contacts c ON c.id = cc.contact_id
+       JOIN campaigns cp ON cp.id = cc.campaign_id
+       WHERE la.status = 'failed' AND la.li_account_id IN (${ids.map(() => "?").join(",")})
+         AND cp.status != 'archived'
+         AND (cc.status = 'failed' OR (la.detached = 1 AND cc.status IN ('in_progress', 'completed')))
+         AND NOT EXISTS (SELECT 1 FROM li_actions x WHERE x.campaign_contact_id = la.campaign_contact_id AND x.step_number = la.step_number AND x.id > la.id)
+       ORDER BY la.id DESC LIMIT 50`
+    )
+    .all(...ids) as Array<{
+    id: number;
+    type: LiActionType;
+    linkedin: string;
+    body: string | null;
+    error: string | null;
+    first_name: string | null;
+    last_name: string | null;
+    campaign: string;
+  }>;
+  return rows.map(({ linkedin, first_name, last_name, ...r }) => {
+    const slug = linkedinSlug(linkedin);
+    return {
+      ...r,
+      name: [first_name, last_name].filter(Boolean).join(" ") || slug || linkedin,
+      url: slug ? `https://www.linkedin.com/in/${encodeURIComponent(slug)}` : linkedin,
+    };
+  });
+}
+
+/**
  * Extension popup: the account's status with today's counts, caps and queue of its whole
  * LinkedIn profile (Sequence Mail and Azerit accounts sharing it), as the caps apply to it.
  */
@@ -1585,18 +1741,19 @@ export function profileStatus(a: LiAccount) {
   const profile = sameProfile(a);
   const ids = profile.map((p) => p.id);
   const inIds = ids.map(() => "?").join(",");
-  const today = (t: LiActionType) => ({ sent: sentToday(ids, t), cap: Math.min(...profile.map((p) => dailyCap(p, t))) });
+  const today = (t: LiActionType) => ({ sent: sentToday(ids, t), cap: profileCapToday(profile, t, Date.now()) });
   const invite = today("invite");
   const message = today("message");
   return {
     ...accountStatus(a),
     today: { invite, message },
     queue: {
-      ready: profile.reduce((n, p) => n + readyCount(p, Date.now()), 0),
+      ready: readyCount(profile),
       pending: count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id IN (${inIds}) AND status = 'pending'`, ...ids),
       sent: invite.sent + message.sent,
       failed: count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id IN (${inIds}) AND status = 'failed'`, ...ids),
     },
+    to_do_by_hand: failedActions(ids),
   };
 }
 

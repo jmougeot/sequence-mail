@@ -2,7 +2,7 @@
 
 *[English](README.md)*
 
-Outil de séquences multicanales (cold outreach) auto-hébergé : emails depuis plusieurs comptes Google Workspace et étapes LinkedIn, campagnes indépendantes, import CSV / Attio, détection automatique des réponses, répartition de charge entre comptes, protection de la délivrabilité.
+Outil de séquences multicanales (cold outreach) auto-hébergé : emails depuis plusieurs comptes Google Workspace et étapes LinkedIn, campagnes indépendantes, import CSV, détection automatique des réponses, répartition de charge entre comptes, protection de la délivrabilité.
 
 ## Démarrage rapide
 
@@ -28,10 +28,9 @@ Mise à jour : `cd /opt/sequence-mail && docker compose pull && docker compose u
 docker run -d --name sequence-mail -p 127.0.0.1:3000:3000 -v sequence-data:/data ghcr.io/jmougeot/sequence-mail
 ```
 
-puis ouvrir http://localhost:3000. Le lien `{{link}}` et le suivi des visites ont
-besoin d'une adresse publique : ils ne marchent qu'avec l'installation serveur.
+puis ouvrir http://localhost:3000.
 
-Le suivi (`/p/`, `/t/`) est public ; tout le reste est protégé par le mot de passe
+La désinscription (`/u/`) est publique ; tout le reste est protégé par le mot de passe
 (utilisateur `admin`).
 
 ### Configuration Google (la seule étape manuelle)
@@ -65,12 +64,6 @@ cp .env.example .env
 npm start              # http://localhost:3000
 ```
 
-### Configuration Attio (bonus, optionnel)
-
-Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroniser depuis Attio » du tableau de bord en indiquant le slug de l'attribut statut (ex. `stage`) et les valeurs à importer.
-
-**Mise à jour retour vers Attio** : en renseignant `ATTIO_STAGE_ATTRIBUTE` (slug d'un attribut *texte* sur l'objet « people »), l'avancement de chaque contact est écrit automatiquement sur sa fiche Attio : « Étape 2/3 envoyée », « A répondu ✅ », « Séquence terminée », « Échec d'envoi ⚠️ ». La base SQLite reste la source de vérité (transactions, aucune perte en cas d'incident) ; Attio est un miroir temps réel.
-
 ## Fonctionnement
 
 ### Campagnes et séquences
@@ -82,12 +75,11 @@ Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroni
 
 ### Import des contacts
 - **CSV** : colonnes `email` et/ou `linkedin` (au moins l'une des deux par ligne), `first_name`, `last_name`, `company` ; toute autre colonne devient une variable de template. Une cellule vide laisse le champ tel qu'il est ; la valeur `[vider]` le retire du contact. Dédoublonnage par email, sinon par profil LinkedIn. Un contact sans email saute les étapes email, un contact sans profil LinkedIn saute les étapes LinkedIn : une même campagne mêle candidats joignables par l'un, l'autre ou les deux.
-- **Attio** : import des personnes dont un attribut de statut CRM correspond aux valeurs choisies.
 
 ### Gestion des réponses
 - Le système interroge les boîtes connectées toutes les ~4–7 minutes.
 - Dès qu'un contact répond (n'importe quel message du fil qui ne vient pas du compte émetteur), il passe au statut `replied` et est **retiré du workflow** : plus aucune relance ne lui sera envoyée, même après l'envoi de la dernière étape.
-- **Détection des refus** : si la réponse contient une demande de désinscription ou un refus (« pas intéressé », « ne plus me contacter », « unsubscribe », etc.), le contact passe en `opted_out`, est désinscrit auprès du propriétaire de la campagne — `do_not_contact` pour le tableau de bord, `owner_opt_outs` pour un client Azerit (exclu de toutes ses campagnes actuelles et futures, y compris lors d'imports ultérieurs ; les campagnes des autres clients ne sont pas touchées) et sa fiche Attio est taguée « Pas intéressé / désinscrit 🚫 ».
+- **Détection des refus** : si la réponse contient une demande de désinscription ou un refus (« pas intéressé », « ne plus me contacter », « unsubscribe », etc.), le contact passe en `opted_out`, est désinscrit auprès du propriétaire de la campagne — `do_not_contact` pour le tableau de bord, `owner_opt_outs` pour un client Azerit (exclu de toutes ses campagnes actuelles et futures, y compris lors d'imports ultérieurs ; les campagnes des autres clients ne sont pas touchées).
 - **Détection des bounces** (signaux serveur uniquement) : un message dont l'expéditeur est `mailer-daemon`/`postmaster` (convention RFC 5321) ou l'adresse NDR fixe d'Exchange passe le contact en `bounced`. Si le bounce est **permanent** (code DSN 5.X.X, « user unknown »…), l'adresse est blacklistée définitivement ; un échec temporaire (boîte pleine…) arrête la séquence sans blacklister. Les bounces sont exclus du taux de réponse.
 - **Réponses automatiques (OOO)** : détectées uniquement par les signaux machine — en-tête `Auto-Submitted` (RFC 3834, posé par Gmail/Outlook), `X-Autoreply`, `Precedence: auto_reply`, ou préfixe de sujet généré par le client (« Automatic reply: », « Réponse automatique : »). La relance est alors reportée d'environ 7 jours. **Aucune analyse du texte humain** : « je suis en déplacement, appelez-moi » est une vraie réponse et arrête la séquence. En cas de doute, le système choisit toujours l'arrêt de la séquence (échec côté sûr).
 - La classification opt-out ignore le texte cité (`>` et « Le … a écrit : ») : une mention de désinscription présente dans *votre propre template* cité dans la réponse ne déclenche rien.
@@ -126,7 +118,6 @@ Renseigner `ATTIO_API_KEY` dans `.env`, puis utiliser le formulaire « Synchroni
 | PATCH | `/api/campaigns/:id/steps/:n` | Modifier une étape `{ subject?, subject_b?, body?, wait_days?, channel?, li_action? }` |
 | GET | `/api/campaigns/:id/preview` | Variables vides sur tous les contacts, étapes sautées, rendu (`status`, `samples`, `limit`) |
 | POST | `/api/campaigns/:id/import` | Importer un CSV (body brut, `Content-Type: text/csv`) ; `?campaign_vars=a,b` : colonnes propres à cette campagne |
-| POST | `/api/campaigns/:id/attio-sync` | `{ status_attribute, statuses[] }` |
 | GET | `/api/campaigns/:id/contacts` | Détail par contact (statut, étape, émetteur, erreurs) |
 
 ## Licence

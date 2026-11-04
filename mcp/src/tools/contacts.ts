@@ -1,6 +1,6 @@
 /**
  * Contacts: filtered/paginated list, global search, CSV export, imports
- * (objects, raw CSV or file), Attio, launch and status changes.
+ * (objects, raw CSV or file), launch and status changes.
  */
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -144,7 +144,7 @@ export function registerContactTools(server: McpServer): void {
     {
       title: "Campaign contacts",
       description:
-        "Lists a campaign's contacts with their state, filtered (status, search) and paginated (limit default 100, offset). Returns { total, returned, offset, contacts }: total = row count AFTER filtering; if it exceeds offset + returned, call again with a higher offset. IMPORTANT: each row has two ids: \"contact_id\" (the global contact, used by update_contact) and \"cc_id\" (the enrollment in THIS campaign, used by launch_contacts, stop_contacts, set_contacts_status, remove_contacts, get_conversation, reply_to_contact). Includes status, current step, A/B variant, sending account, next send and replied_at (epoch ms), link visits, extra (the contact's custom fields) and vars (this campaign's own variables, which take precedence). A missing field is empty, a missing visit counter is 0. For per-status counts, list_campaigns is enough.",
+        "Lists a campaign's contacts with their state, filtered (status, search) and paginated (limit default 100, offset). Returns { total, returned, offset, contacts }: total = row count AFTER filtering; if it exceeds offset + returned, call again with a higher offset. IMPORTANT: each row has two ids: \"contact_id\" (the global contact, used by update_contact) and \"cc_id\" (the enrollment in THIS campaign, used by launch_contacts, stop_contacts, set_contacts_status, remove_contacts, get_conversation, reply_to_contact). Includes status, current step, A/B variant, sending account, next send and replied_at (epoch ms), extra (the contact's custom fields) and vars (this campaign's own variables, which take precedence). A missing field is empty. For per-status counts, list_campaigns is enough.",
       inputSchema: listShape,
       annotations: READ,
     },
@@ -181,7 +181,7 @@ export function registerContactTools(server: McpServer): void {
     {
       title: "Export contacts (CSV)",
       description:
-        "Exports a campaign's contacts as CSV: email, first_name, last_name, company, linkedin, status, current_step, variant, sender, li_sender, replied_at and next_send_at (ISO 8601 UTC), visit_count, error, then one column per custom field (contact's or campaign's own; prefixed extra_ on collision). Optional status filter. With file_path (local MCP only): writes the file and returns { path, rows, columns }. Without file_path: returns the CSV text; prefer file_path beyond ~200 rows to avoid flooding the conversation.",
+        "Exports a campaign's contacts as CSV: email, first_name, last_name, company, linkedin, status, current_step, variant, sender, li_sender, replied_at and next_send_at (ISO 8601 UTC), error, then one column per custom field (contact's or campaign's own; prefixed extra_ on collision). Optional status filter. With file_path (local MCP only): writes the file and returns { path, rows, columns }. Without file_path: returns the CSV text; prefer file_path beyond ~200 rows to avoid flooding the conversation.",
       inputSchema: exportShape,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
@@ -242,28 +242,6 @@ export function registerContactTools(server: McpServer): void {
       }
       return importCsv(campaign_id, content, campaign_vars);
     })
-  );
-
-  server.registerTool(
-    "attio_sync",
-    {
-      title: "Import from Attio",
-      description:
-        "Imports into a campaign the Attio people whose status attribute matches the chosen values (contacts 'held', like a CSV import). Requires ATTIO_API_KEY set in the app.",
-      inputSchema: {
-        campaign_id: z.number().int().describe("Target campaign."),
-        status_attribute: z
-          .string()
-          .optional()
-          .describe("Attio status attribute slug (default: the app's ATTIO_IMPORT_ATTRIBUTE)."),
-        statuses: z.array(z.string()).min(1).describe("Status values to import."),
-      },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-    },
-    handler(
-      ({ campaign_id, status_attribute, statuses }: { campaign_id: number; status_attribute?: string; statuses: string[] }) =>
-        api("POST", `/api/campaigns/${campaign_id}/attio-sync`, { json: { status_attribute, statuses } })
-    )
   );
 
   // -------------------------------------------- write (key = cc_id)

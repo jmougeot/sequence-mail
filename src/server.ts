@@ -11,14 +11,12 @@ import {
   verifyOwnerState,
 } from "./services/google.js";
 import { BUILT_IN_VARIABLES, importContacts, KNOWN_COLUMNS, MERGED_EXTRA, normalizeColumn, parseCsv, renderTemplate, templateVariables } from "./services/contacts.js";
-import { syncFromAttio } from "./services/attio.js";
 import { effectiveDailyLimit, nextEmailEstimate, sendWindowState } from "./services/scheduler.js";
 import { registerOutreachRoutes } from "./services/outreach-routes.js";
 import { registerServiceRoutes, setEnrollmentVars } from "./services/service-routes.js";
 import { campaignStepRows, replaceSteps, validateSteps as validateStepList, insertSteps, type StepInput } from "./services/steps.js";
-import { applyWithPrevious, cancelLinkedInActions } from "./services/outreach.js";
+import { applyWithPrevious, cancelLinkedInActions, placeAtStep } from "./services/outreach.js";
 import { optOutFromCampaignOf } from "./services/opt-out.js";
-import { registerVisitRoutes } from "./services/visits.js";
 import { registerUnsubscribeRoutes } from "./services/unsubscribe.js";
 import { registerInboxRoutes } from "./services/inbox-routes.js";
 import { normalizeLinkedin } from "./services/linkedin-url.js";
@@ -44,9 +42,6 @@ export function createServer(): express.Express {
 
   // --- Service API (Azerit, internal network) ---
   registerServiceRoutes(app);
-
-  // --- Personalized {{link}} + visit tracking ---
-  registerVisitRoutes(app);
 
   // --- One-click unsubscribe (List-Unsubscribe) ---
   registerUnsubscribeRoutes(app);
@@ -267,9 +262,6 @@ export function createServer(): express.Express {
               AND cc.status <> 'bounced') AS contacted,
            (SELECT COUNT(*) FROM messages m JOIN campaign_contacts cc ON cc.id = m.campaign_contact_id
               WHERE cc.campaign_id = cp.id) AS emails_sent,
-           (SELECT COUNT(DISTINCT v.cc_id) FROM visits v
-              JOIN campaign_contacts cc ON cc.id = v.cc_id
-              WHERE cc.campaign_id = cp.id AND v.is_bot = 0) AS visited,
            (SELECT COUNT(*) FROM steps s WHERE s.campaign_id = cp.id AND s.channel = 'linkedin') AS li_steps,
            (SELECT COUNT(*) FROM li_actions la JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
               WHERE cc.campaign_id = cp.id AND la.type = 'invite' AND la.status = 'sent') AS li_invites_sent,
@@ -280,7 +272,7 @@ export function createServer(): express.Express {
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.variant = 'A' AND cc.status = 'replied') AS replied_a,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.variant = 'B' AND cc.current_step > 0) AS contacted_b,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.variant = 'B' AND cc.status = 'replied') AS replied_b
-         FROM campaigns cp ORDER BY cp.created_at DESC`
+         FROM campaigns cp ORDER BY cp.created_at DESC, cp.id DESC`
       )
       .all() as Array<Record<string, number | string | null>>;
 
@@ -503,11 +495,9 @@ export function createServer(): express.Express {
       | { email: string; from_name: string | null; signature: string | null }
       | undefined;
     const senderName = account?.from_name ?? account?.email ?? "Votre nom";
-    const link = `${config.visit.baseUrl}/p/exemple`;
     const senderVars = {
       sender_name: senderName,
-      link,
-      signature: account?.signature ? renderTemplate(account.signature, sample, { sender_name: senderName, link }) : "",
+      signature: account?.signature ? renderTemplate(account.signature, sample, { sender_name: senderName }) : "",
     };
     const renderedBody = renderTemplate(body ?? "", sample, senderVars);
     res.json({
@@ -539,9 +529,6 @@ export function createServer(): express.Express {
       google_configured: Boolean(config.google.clientId),
       google_source: googleCredentialsSource(),
       google_redirect_uri: googleRedirectUri(),
-      attio_configured: Boolean(config.attioApiKey),
-      attio_stage_attribute: config.attioStageAttribute || null,
-      attio_import_attribute: config.attioImportAttribute || null,
     });
   });
 
@@ -610,6 +597,17 @@ export function createServer(): express.Express {
       return changes;
     })();
     res.json({ ok: true, stopped: changes });
+  });
+
+  // --- Place held contacts at a later step (what comes before was done by hand) ---
+  app.post("/api/campaigns/:id/advance-contacts", (req, res) => {
+    const { ids, step, li_account_id } = req.body as { ids?: number[]; step?: number; li_account_id?: number };
+    if (!Array.isArray(ids) || !ids.length || !Number.isInteger(step)) {
+      return res.status(400).json({ error: "ids[] and step are required" });
+    }
+    const result = placeAtStep(Number(req.params.id), ids, step!, li_account_id);
+    if ("error" in result) return res.status(400).json(result);
+    res.json({ ok: true, ...result });
   });
 
   // --- Manually set the status of selected contacts ---
@@ -758,23 +756,6 @@ export function createServer(): express.Express {
     }
   });
 
-  // --- Attio sync ---
-  app.post("/api/campaigns/:id/attio-sync", async (req, res) => {
-    const { status_attribute, statuses } = req.body as {
-      status_attribute?: string;
-      statuses?: string[];
-    };
-    const attr = status_attribute || config.attioImportAttribute;
-    if (!attr || !statuses?.length) {
-      return res.status(400).json({ error: "status_attribute and statuses[] are required" });
-    }
-    try {
-      res.json(await syncFromAttio(Number(req.params.id), attr, statuses));
-    } catch (err) {
-      res.status(502).json({ error: err instanceof Error ? err.message : String(err) });
-    }
-  });
-
   // --- Campaign contacts detail ---
   app.get("/api/campaigns/:id/contacts", (req, res) => {
     const rows = db
@@ -782,10 +763,7 @@ export function createServer(): express.Express {
         `SELECT c.id AS contact_id, c.email, c.first_name, c.last_name, c.company, c.linkedin, c.extra,
                 cc.id AS cc_id, cc.vars, cc.status, cc.current_step, cc.variant, cc.account_id,
                 cc.next_send_at, cc.replied_at, cc.error, a.email AS sender,
-                li.name AS li_sender, cc.li_thread_url,
-                (SELECT COUNT(*) FROM visits v WHERE v.cc_id = cc.id AND v.is_bot = 0) AS visit_count,
-                (SELECT MAX(v.at) FROM visits v WHERE v.cc_id = cc.id AND v.is_bot = 0) AS last_visit_at,
-                (SELECT COUNT(*) FROM visits v WHERE v.cc_id = cc.id AND v.is_bot = 1) AS bot_visit_count
+                li.name AS li_sender, cc.li_thread_url
          FROM campaign_contacts cc
          JOIN contacts c ON c.id = cc.contact_id
          LEFT JOIN accounts a ON a.id = cc.account_id

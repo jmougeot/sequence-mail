@@ -4,8 +4,8 @@
 __DOMAIN__ {
 	encode gzip
 
-	# --- PUBLIC tracking routes: open (prospects must not log in) ---
-	@public path /p/* /t/*
+	# --- PUBLIC unsubscribe route: open (prospects must not log in) ---
+	@public path /u/*
 	handle @public {
 		reverse_proxy app:3000
 	}

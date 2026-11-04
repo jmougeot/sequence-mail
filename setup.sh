@@ -75,7 +75,7 @@ sed -e "s|__DOMAIN__|${DOMAIN}|g" -e "s|__CADDY_HASH__|${CADDY_HASH}|g" \
   Caddyfile.template > Caddyfile
 ok "→ Caddyfile generated (${DOMAIN})"
 
-# --- 6. Write the public domain into .env (BASE_URL / VISIT_BASE_URL) ---
+# --- 6. Write the public domain into .env (BASE_URL) ---
 set_env() { # set_env KEY VALUE: replace the line if present, else append it
   local key="$1" val="$2"
   if grep -q "^${key}=" .env; then
@@ -85,7 +85,6 @@ set_env() { # set_env KEY VALUE: replace the line if present, else append it
   fi
 }
 set_env BASE_URL "https://${DOMAIN}"
-set_env VISIT_BASE_URL "https://${DOMAIN}"
 
 # --- 7. Start (prebuilt image; local build only if it can't be pulled) ---
 echo "→ starting…"

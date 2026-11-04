@@ -21,7 +21,7 @@ const updateShape = {
     .enum(["extension", "server"])
     .optional()
     .describe(
-      "Who runs it: \"extension\" (the user's Chrome) or \"server\" (server-side browser; needs a session handed over by the extension: session.stored). Prefer the extension's \"Confier ce compte au serveur\" (hand over to server) button, which sends the session and switches the mode."
+      "Who runs it: \"extension\" (the user's Chrome) or \"server\" (server-side browser; needs a stored session: session.stored)."
     ),
   proxy: z
     .union([z.string(), z.null()])
@@ -49,7 +49,6 @@ function extensionSteps(token: string): string[] {
     "   - \"Mot de passe d'accès\" (access password, protected instance): dashboard username and password → OK (leave empty locally);",
     "   - \"Jeton du compte LinkedIn\" (LinkedIn account token): the token above → OK.",
     "4. Keep a Chrome tab open: at the next tick (~1 min), list_linkedin_accounts shows connected: true and the detected LinkedIn profile (member).",
-    "5. Optional: the popup's \"Confier ce compte au serveur\" (hand over to server) button → server mode, the server acts without this Chrome staying open (don't log out of LinkedIn afterwards). Requires server_mode_ready: true in linkedin_status.",
     "Then: the campaign must allow this account (li_account_ids of create_campaign / update_campaign; omitted = all accounts). Quotas and proxy: update_linkedin_account.",
   ];
 }
