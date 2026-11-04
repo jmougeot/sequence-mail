@@ -764,7 +764,7 @@ function profileUrl(url) {
   }
 }
 
-// --- Remise de session (popup « Confier au serveur », app Azerit) ------------
+// --- Remise de session (app Azerit) ------------------------------------------
 
 const SAME_SITE = { no_restriction: "None", lax: "Lax", strict: "Strict" };
 
@@ -876,10 +876,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (busy) reloadPending = true;
     else chrome.runtime.reload();
     return;
-  }
-  if (msg.type === "capture-linkedin" && sender.id === chrome.runtime.id && !sender.tab) {
-    captureLinkedIn().then(sendResponse); // popup de l'extension
-    return true;
   }
   if (msg.type === "azerit-connect") {
     // L'origine vient de Chrome (onglet émetteur), jamais du message lui-même.
