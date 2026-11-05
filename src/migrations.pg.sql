@@ -55,3 +55,12 @@ BEGIN
     WHERE c.id = m.contact_id AND c.person_id IS NULL;
   END IF;
 END $$;
+
+-- Azerit owner and job of a campaign, as real columns for joins with public.users / public.jobs
+-- (ADR of 5 Nov 2026). Generated from owner_ref / external_ref, so they cannot diverge. No foreign
+-- key: a campaign outlives its job (it is the record of what was sent).
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS owner_user_id BIGINT
+  GENERATED ALWAYS AS (CASE WHEN owner_ref ~ '^azerit:u:[0-9]+$' THEN substr(owner_ref, 10)::bigint END) STORED;
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS job_id BIGINT
+  GENERATED ALWAYS AS (CASE WHEN external_ref ~ '^job:[0-9]+$' THEN substr(external_ref, 5)::bigint END) STORED;
+CREATE INDEX IF NOT EXISTS idx_campaigns_job ON campaigns (job_id);

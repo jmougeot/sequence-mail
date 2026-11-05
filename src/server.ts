@@ -242,7 +242,7 @@ export function createServer(): express.Express {
   app.get("/api/campaigns", (_req, res) => {
     const campaigns = db
       .prepare(
-        `SELECT cp.id, cp.name, cp.description, cp.status, cp.priority, cp.created_at,
+        `SELECT cp.id, cp.name, cp.description, cp.status, cp.priority, cp.created_at, cp.owner_ref, cp.external_ref,
            (SELECT COUNT(*) FROM steps s WHERE s.campaign_id = cp.id) AS steps,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id) AS contacts,
            (SELECT COUNT(*) FROM campaign_contacts cc WHERE cc.campaign_id = cp.id AND cc.status = 'held') AS held,

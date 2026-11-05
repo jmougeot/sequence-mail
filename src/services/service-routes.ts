@@ -357,6 +357,17 @@ export function registerServiceRoutes(app: express.Express): void {
     res.json({ id, sent_now: applyWithPrevious(id) });
   });
 
+  /** The owner's campaign `external_ref` (e.g. `job:12`): its id, name and state; 404 if it has none. */
+  app.get("/api/svc/campaigns", (req, res) => {
+    const owner = ownerOf(req)!;
+    const ref = String(req.query.external_ref ?? "").trim();
+    const campaign = db
+      .prepare("SELECT id, name, status FROM campaigns WHERE owner_ref = ? AND external_ref = ?")
+      .get(owner, ref);
+    if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
+    res.json(campaign);
+  });
+
   /**
    * The campaign as Azerit's Sequence page shows it: its steps in the dashboard's shape, its
    * sending accounts, its state, and each enrolled candidate's variables (the ones Azerit sent,
