@@ -162,7 +162,7 @@ export function registerInboxRoutes(app: express.Express): void {
                   cc.inbox_seen_at, cc.inbox_done_at,
                   cc.thread_id, cc.account_id
            FROM campaign_contacts cc
-           JOIN contacts c ON c.id = cc.contact_id
+           JOIN contacts_v c ON c.id = cc.contact_id
            JOIN campaigns cp ON cp.id = cc.campaign_id
            LEFT JOIN accounts a ON a.id = cc.account_id
            LEFT JOIN li_accounts li ON li.id = cc.li_account_id
@@ -290,7 +290,7 @@ export function registerInboxRoutes(app: express.Express): void {
            FROM campaign_contacts cc
            LEFT JOIN li_accounts li ON li.id = cc.li_account_id
            JOIN campaigns cp ON cp.id = cc.campaign_id
-           JOIN contacts c ON c.id = cc.contact_id
+           JOIN contacts_v c ON c.id = cc.contact_id
            LEFT JOIN accounts a ON a.id = cc.account_id
            WHERE cc.id = ?`
         )
@@ -411,7 +411,7 @@ export function registerInboxRoutes(app: express.Express): void {
         .prepare(
           `SELECT cc.id AS cc_id, cc.campaign_id, cc.thread_id, cc.account_id, cc.last_gmail_message_id, cc.variant,
                   c.email, c.first_name, c.last_name, c.company, ${MERGED_EXTRA} AS extra
-           FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id
+           FROM campaign_contacts cc JOIN contacts_v c ON c.id = cc.contact_id
            WHERE cc.id = ?`
         )
         .get(req.params.ccId) as
@@ -496,7 +496,7 @@ export function registerInboxRoutes(app: express.Express): void {
     const contacts = db
       .prepare(
         `SELECT c.id AS contact_id, c.email, c.first_name, c.last_name, c.company, c.linkedin, c.do_not_contact, c.extra
-         FROM contacts c
+         FROM contacts_v c
          WHERE c.email LIKE @like ESCAPE '\\'
             OR c.first_name LIKE @like ESCAPE '\\'
             OR c.last_name LIKE @like ESCAPE '\\'
@@ -576,7 +576,7 @@ export function registerInboxRoutes(app: express.Express): void {
                 c.email, ev.step_number, ev.account
          FROM ev
          JOIN campaigns cp ON cp.id = ev.campaign_id
-         JOIN contacts c ON c.id = ev.contact_id
+         JOIN contacts_v c ON c.id = ev.contact_id
          WHERE CAST(@campaign AS BIGINT) IS NULL OR ev.campaign_id = @campaign
          ORDER BY ev.at DESC, ev.cc_id DESC
          LIMIT ${EVENTS_MAX}`
@@ -638,7 +638,7 @@ export function registerInboxRoutes(app: express.Express): void {
         contact = db
           .prepare(
             `SELECT c.email, c.first_name, c.last_name, c.company, ${MERGED_EXTRA} AS extra
-             FROM contacts c LEFT JOIN campaign_contacts cc ON cc.contact_id = c.id AND cc.campaign_id = ?
+             FROM contacts_v c LEFT JOIN campaign_contacts cc ON cc.contact_id = c.id AND cc.campaign_id = ?
              WHERE c.id = ?`
           )
           .get(campaignId, contactId) as ContactVars | undefined;
@@ -647,7 +647,7 @@ export function registerInboxRoutes(app: express.Express): void {
         contact = db
           .prepare(
             `SELECT c.email, c.first_name, c.last_name, c.company, ${MERGED_EXTRA} AS extra
-             FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id
+             FROM campaign_contacts cc JOIN contacts_v c ON c.id = cc.contact_id
              WHERE cc.campaign_id = ? ORDER BY cc.id LIMIT 1`
           )
           .get(campaignId) as ContactVars | undefined;
@@ -738,7 +738,7 @@ export function registerInboxRoutes(app: express.Express): void {
       .prepare(
         `SELECT cc.id AS cc_id, c.id AS contact_id, cc.status, cc.current_step, cc.variant, cc.account_id,
                 c.email, c.first_name, c.last_name, c.company, c.linkedin, ${MERGED_EXTRA} AS extra
-         FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id
+         FROM campaign_contacts cc JOIN contacts_v c ON c.id = cc.contact_id
          WHERE cc.campaign_id = ? AND cc.status IN (SELECT value FROM json_each(?))
          ORDER BY cc.id`
       )

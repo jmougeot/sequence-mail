@@ -182,7 +182,7 @@ export function setEnrollmentVars(campaignId: number, ccId: number, vars: Record
     const contact = db
       .prepare(
         `SELECT c.email, c.first_name, c.last_name, c.company, ${MERGED_EXTRA} AS extra
-         FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id WHERE cc.id = ?`
+         FROM campaign_contacts cc JOIN contacts_v c ON c.id = cc.contact_id WHERE cc.id = ?`
       )
       .get(ccId) as Parameters<typeof renderTemplate>[1];
     const queued = db
@@ -406,7 +406,8 @@ export function registerServiceRoutes(app: express.Express): void {
   });
 
   /**
-   * Enrolls candidates: [{ key, first_name, last_name, company, linkedin, email?, vars? }].
+   * Enrolls candidates: [{ key, person_id?, first_name, last_name, company, linkedin, email?, vars? }].
+   * `person_id`: the candidate in Azerit's people table, whose identity the contact then reads.
    * `vars` (e.g. the message written for this candidate) stays specific to this enrollment.
    * `/enroll` launches them; `/hold` leaves them held — nothing goes out until `/launch`. A separate
    * route rather than a flag: a server without it answers 404 instead of sending. An already
@@ -424,7 +425,7 @@ export function registerServiceRoutes(app: express.Express): void {
     );
     const results: Array<{ key: string; cc_id?: number; status: string; error?: string }> = [];
     const rows: Array<Record<string, string>> = [];
-    const meta: Array<{ key: string; vars: Record<string, string> | null }> = [];
+    const meta: Array<{ key: string; vars: Record<string, string> | null; person: number | null }> = [];
     for (const raw of list as Array<Record<string, unknown>>) {
       const key = typeof raw?.key === "string" ? raw.key.trim().slice(0, 300) : "";
       if (!key) {
@@ -447,7 +448,8 @@ export function registerServiceRoutes(app: express.Express): void {
         company: str(raw.company),
         linkedin,
       });
-      meta.push({ key, vars: cleanVars(raw.vars) });
+      const person = Number.isSafeInteger(raw.person_id) && (raw.person_id as number) > 0 ? (raw.person_id as number) : null;
+      meta.push({ key, vars: cleanVars(raw.vars), person });
     }
 
     if (rows.length) {
@@ -455,12 +457,20 @@ export function registerServiceRoutes(app: express.Express): void {
       const ccOf = db.prepare("SELECT id, status FROM campaign_contacts WHERE campaign_id = ? AND contact_id = ?");
       const setMeta = db.prepare("UPDATE campaign_contacts SET vars = ?, external_key = ? WHERE id = ?");
       const launch = db.prepare("UPDATE campaign_contacts SET status = 'pending', error = NULL WHERE id = ? AND status = 'held'");
+      // a contact already tied to another person keeps it (shared address): logged, not overwritten
+      const setPerson = db.prepare("UPDATE contacts SET person_id = ? WHERE id = ? AND person_id IS NULL");
+      const personOf = db.prepare("SELECT person_id FROM contacts WHERE id = ?");
       db.transaction(() => {
         report.contact_ids!.forEach((contactId, i) => {
-          const { key, vars } = meta[i];
+          const { key, vars, person } = meta[i];
           if (contactId == null) {
             results.push({ key, status: "rejected", error: "désinscrit ou injoignable" });
             return;
+          }
+          if (person != null) {
+            setPerson.run(person, contactId);
+            const has = (personOf.get(contactId) as { person_id: number | null } | undefined)?.person_id;
+            if (has != null && Number(has) !== person) console.warn(`[enroll] contact ${contactId} is person ${has}, not ${person}`);
           }
           const cc = ccOf.get(campaign.id, contactId) as { id: number; status: string } | undefined;
           if (!cc) {
@@ -535,7 +545,7 @@ export function registerServiceRoutes(app: express.Express): void {
         `SELECT cc.id AS cc_id, cc.external_key AS key, cc.status, cc.current_step, cc.next_send_at, cc.replied_at,
                 cc.error, cc.li_thread_url, c.linkedin, li.member_slug AS sender_slug, li.member_name AS sender_name
          FROM campaign_contacts cc
-         JOIN contacts c ON c.id = cc.contact_id
+         JOIN contacts_v c ON c.id = cc.contact_id
          LEFT JOIN li_accounts li ON li.id = cc.li_account_id
          WHERE cc.campaign_id = ? AND cc.external_key IS NOT NULL
          ORDER BY cc.id`

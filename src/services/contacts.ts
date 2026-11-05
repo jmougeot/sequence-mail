@@ -71,8 +71,8 @@ export async function importContacts(
   const domainOk = new Map<string, boolean>();
   for (const d of domains) domainOk.set(d, await domainAcceptsMail(d));
 
-  const byEmail = db.prepare("SELECT id FROM contacts WHERE email = ?");
-  const byLinkedin = db.prepare("SELECT id, email FROM contacts WHERE linkedin = ? ORDER BY email IS NULL, id LIMIT 1");
+  const byEmail = db.prepare("SELECT id FROM contacts_v WHERE email = ?");
+  const byLinkedin = db.prepare("SELECT id, email FROM contacts_v WHERE linkedin = ? ORDER BY email IS NULL, id LIMIT 1");
   const insert = db.prepare(`
     INSERT INTO contacts (email, first_name, last_name, company, linkedin, extra)
     VALUES (@email, @first_name, @last_name, @company, @linkedin, @extra)

@@ -117,7 +117,7 @@ function watched(accountId: number): Watched[] {
       `SELECT cc.id AS cc_id, c.id AS contact_id, c.first_name, c.last_name, c.linkedin,
               (SELECT MIN(la.sent_at) FROM li_actions la WHERE la.campaign_contact_id = cc.id AND la.status = 'sent') AS first_sent_at
        FROM campaign_contacts cc
-       JOIN contacts c ON c.id = cc.contact_id
+       JOIN contacts_v c ON c.id = cc.contact_id
        WHERE cc.li_account_id = ? AND cc.replied_at IS NULL
          AND cc.status IN ('awaiting_li', 'in_progress', 'completed')
          AND EXISTS (SELECT 1 FROM li_actions la WHERE la.campaign_contact_id = cc.id AND la.status = 'sent' AND la.sent_at > ?)`
@@ -214,7 +214,7 @@ export function processThreadReply(account: LiAccount, actionId: number, text: s
       `SELECT la.li_account_id, cc.id AS cc_id, cc.contact_id, c.first_name, c.last_name
        FROM li_actions la
        JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
-       JOIN contacts c ON c.id = cc.contact_id
+       JOIN contacts_v c ON c.id = cc.contact_id
        WHERE la.id = ?`
     )
     .get(actionId) as
@@ -242,7 +242,7 @@ export function processAlreadyMessaged(account: LiAccount, actionId: number): bo
       `SELECT la.li_account_id, la.status, cc.id AS cc_id, c.first_name, c.last_name, c.id AS contact_id
        FROM li_actions la
        JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
-       JOIN contacts c ON c.id = cc.contact_id
+       JOIN contacts_v c ON c.id = cc.contact_id
        WHERE la.id = ?`
     )
     .get(actionId) as

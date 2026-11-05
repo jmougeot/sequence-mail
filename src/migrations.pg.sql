@@ -18,3 +18,40 @@ CREATE TABLE IF NOT EXISTS enrollment_history (
   removed_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_enrollment_history_key ON enrollment_history (owner_ref, external_key);
+
+-- Azerit candidates: one identity, in Azerit's people table (ADR of 5 Nov 2026). A contact with a
+-- person_id reads its name, email, company and LinkedIn there; every read of a contact's identity
+-- goes through contacts_v. Without public.people (or without the right to read it) the view is the
+-- table itself. Same columns, same order in both versions.
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS person_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_contacts_person ON contacts (person_id);
+DO $$
+BEGIN
+  IF to_regclass('public.people') IS NOT NULL AND has_table_privilege('public.people', 'SELECT') THEN
+    EXECUTE $view$
+      CREATE OR REPLACE VIEW contacts_v AS
+      SELECT c.id,
+             COALESCE(NULLIF(p.email, ''), c.email)::text AS email,
+             COALESCE(NULLIF(p.first_name, ''), c.first_name)::text AS first_name,
+             COALESCE(NULLIF(p.last_name, ''), c.last_name)::text AS last_name,
+             COALESCE(NULLIF(p.current_company, ''), c.company)::text AS company,
+             COALESCE('https://www.linkedin.com/in/' || p.linkedin_key, c.linkedin)::text AS linkedin,
+             c.extra, c.do_not_contact, c.created_at, c.person_id
+      FROM contacts c LEFT JOIN public.people p ON p.id = c.person_id
+    $view$;
+  ELSE
+    EXECUTE 'CREATE OR REPLACE VIEW contacts_v AS SELECT * FROM contacts';
+  END IF;
+  -- Contacts enrolled before people existed: their person through the lead key of their enrollment
+  -- (public.lead_people). Enrollments made since carry the person (services/service-routes.ts).
+  IF to_regclass('public.lead_people') IS NOT NULL AND has_table_privilege('public.lead_people', 'SELECT') THEN
+    UPDATE contacts c SET person_id = m.person_id
+    FROM (SELECT cc.contact_id, MIN(lp.person_id) AS person_id
+          FROM campaign_contacts cc
+          JOIN campaigns ca ON ca.id = cc.campaign_id
+          JOIN public.lead_people lp ON lp.lead_key = cc.external_key
+          WHERE ca.owner_ref LIKE 'azerit:u:%'
+          GROUP BY cc.contact_id HAVING COUNT(DISTINCT lp.person_id) = 1) m
+    WHERE c.id = m.contact_id AND c.person_id IS NULL;
+  END IF;
+END $$;

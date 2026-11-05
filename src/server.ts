@@ -468,7 +468,7 @@ export function createServer(): express.Express {
       ? db
           .prepare(
             `SELECT c.email, c.first_name, c.last_name, c.company, ${MERGED_EXTRA} AS extra
-             FROM contacts c LEFT JOIN campaign_contacts cc ON cc.contact_id = c.id AND cc.campaign_id = ?
+             FROM contacts_v c LEFT JOIN campaign_contacts cc ON cc.contact_id = c.id AND cc.campaign_id = ?
              WHERE c.id = ?`
           )
           .get(campaign_id ?? null, contact_id)
@@ -476,7 +476,7 @@ export function createServer(): express.Express {
       ? db
           .prepare(
             `SELECT c.email, c.first_name, c.last_name, c.company, ${MERGED_EXTRA} AS extra
-             FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id
+             FROM campaign_contacts cc JOIN contacts_v c ON c.id = cc.contact_id
              WHERE cc.campaign_id = ? ORDER BY cc.id LIMIT 1`
           )
           .get(campaign_id)
@@ -661,10 +661,15 @@ export function createServer(): express.Express {
 
   // --- Update a contact's fields (standard + custom columns) ---
   app.patch("/api/contacts/:id", (req, res) => {
-    const contact = db.prepare("SELECT id, extra FROM contacts WHERE id = ?").get(req.params.id) as
-      | { id: number; extra: string | null }
+    const contact = db.prepare("SELECT id, extra, person_id FROM contacts WHERE id = ?").get(req.params.id) as
+      | { id: number; extra: string | null; person_id: number | null }
       | undefined;
     if (!contact) return res.status(404).json({ error: "Contact not found" });
+    const identity = ["first_name", "last_name", "company", "linkedin"].some((k) => (req.body as Record<string, unknown>)[k] !== undefined);
+    if (contact.person_id != null && identity) {
+      // an Azerit candidate: name, company and LinkedIn are read from Azerit's people table
+      return res.status(409).json({ error: "Azerit candidate: edit their identity in Azerit (custom fields can be edited here)" });
+    }
     const { first_name, last_name, company, linkedin, extra } = req.body as {
       first_name?: string;
       last_name?: string;
@@ -773,7 +778,7 @@ export function createServer(): express.Express {
                 cc.next_send_at, cc.replied_at, cc.error, a.email AS sender,
                 li.name AS li_sender, cc.li_thread_url
          FROM campaign_contacts cc
-         JOIN contacts c ON c.id = cc.contact_id
+         JOIN contacts_v c ON c.id = cc.contact_id
          LEFT JOIN accounts a ON a.id = cc.account_id
          LEFT JOIN li_accounts li ON li.id = cc.li_account_id
          WHERE cc.campaign_id = ?

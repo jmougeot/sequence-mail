@@ -519,7 +519,7 @@ const DUE_SELECT = `
          CASE WHEN cc.vars IS NULL THEN c.extra WHEN c.extra IS NULL THEN cc.vars
               ELSE json_patch(c.extra, cc.vars) END AS extra
   FROM campaign_contacts cc
-  JOIN contacts c ON c.id = cc.contact_id
+  JOIN contacts_v c ON c.id = cc.contact_id
   JOIN campaigns cp ON cp.id = cc.campaign_id
   WHERE cp.status = 'active'
     AND ${NOT_OPTED_OUT}
@@ -549,7 +549,7 @@ export function nextEmailEstimate(ts = Date.now()): { earliest_at: number | null
       .prepare(
         `SELECT MIN(cc.next_send_at) AS t
          FROM campaign_contacts cc
-         JOIN contacts c ON c.id = cc.contact_id
+         JOIN contacts_v c ON c.id = cc.contact_id
          JOIN campaigns cp ON cp.id = cc.campaign_id
          WHERE cp.status = 'active' AND ${NOT_OPTED_OUT} AND c.email IS NOT NULL
            AND cc.status IN ('pending', 'in_progress') AND cc.next_send_at > @now
@@ -640,7 +640,7 @@ export async function checkRepliesTick(): Promise<void> {
       `SELECT cc.id AS cc_id, cc.thread_id, cc.account_id, cc.status, cc.handled_msgs,
               c.id AS contact_id, c.email
        FROM campaign_contacts cc
-       JOIN contacts c ON c.id = cc.contact_id
+       JOIN contacts_v c ON c.id = cc.contact_id
        WHERE cc.status IN ('in_progress', 'completed', 'awaiting_li')
          AND cc.thread_id IS NOT NULL
          AND cc.replied_at IS NULL

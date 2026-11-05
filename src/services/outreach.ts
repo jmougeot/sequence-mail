@@ -681,7 +681,7 @@ export function applyWithPrevious(campaignId: number): number {
           `SELECT la.id, la.campaign_contact_id AS cc_id, cc.li_accepted, c.email, c.linkedin
            FROM li_actions la
            JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
-           JOIN contacts c ON c.id = cc.contact_id
+           JOIN contacts_v c ON c.id = cc.contact_id
            WHERE cc.campaign_id = ? AND cc.status = 'awaiting_li' AND la.status = 'pending'
              AND la.detached = 0 AND la.step_number = ?`
         )
@@ -741,7 +741,7 @@ function advanceContact(ccId: number, completedStep: number, immediate = false):
   const cc = db
     .prepare(
       `SELECT cc.campaign_id, cc.status, cc.li_accepted, c.email, c.linkedin
-       FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id WHERE cc.id = ?`
+       FROM campaign_contacts cc JOIN contacts_v c ON c.id = cc.contact_id WHERE cc.id = ?`
     )
     .get(ccId) as
     | { campaign_id: number; status: string; li_accepted: number | null; email: string | null; linkedin: string | null }
@@ -803,7 +803,7 @@ export function placeAtStep(
     for (const id of ids) {
       const cc = db
         .prepare(
-          `SELECT c.linkedin FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id
+          `SELECT c.linkedin FROM campaign_contacts cc JOIN contacts_v c ON c.id = cc.contact_id
            WHERE cc.id = ? AND cc.campaign_id = ? AND cc.status = 'held' AND cc.current_step < ?`
         )
         .get(id, campaignId, step - 1) as { linkedin: string | null } | undefined;
@@ -1705,7 +1705,7 @@ function failedActions(ids: number[]) {
       `SELECT la.id, la.type, la.linkedin, la.body, la.error, c.first_name, c.last_name, cp.name AS campaign
        FROM li_actions la
        JOIN campaign_contacts cc ON cc.id = la.campaign_contact_id
-       JOIN contacts c ON c.id = cc.contact_id
+       JOIN contacts_v c ON c.id = cc.contact_id
        JOIN campaigns cp ON cp.id = cc.campaign_id
        WHERE la.status = 'failed' AND la.li_account_id IN (${ids.map(() => "?").join(",")})
          AND cp.status != 'archived'

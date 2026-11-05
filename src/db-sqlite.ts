@@ -447,3 +447,9 @@ CREATE TABLE IF NOT EXISTS enrollment_history (
 );
 CREATE INDEX IF NOT EXISTS idx_enrollment_history_key ON enrollment_history (owner_ref, external_key);
 `);
+
+// Azerit candidate (5 Nov 2026): the contact's identity lives in Azerit's `people` table. On
+// Postgres, contacts_v reads it there (migrations.pg.sql); SQLite has no `people`, so the view is
+// the table itself. Every read of a contact's identity goes through contacts_v.
+addColumnIfMissing("contacts", "person_id", "person_id INTEGER");
+db.exec("DROP VIEW IF EXISTS contacts_v; CREATE VIEW contacts_v AS SELECT * FROM contacts;");
