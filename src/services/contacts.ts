@@ -1,6 +1,6 @@
 import { parse } from "csv-parse/sync";
 import { resolveMx } from "node:dns/promises";
-import { db } from "../db.js";
+import { db, forgetCopiedIdentity } from "../db.js";
 import { normalizeLinkedin } from "./linkedin-url.js";
 import { isOptedOut } from "./opt-out.js";
 import { resolveSections, splitSections } from "./template-sections.js";
@@ -167,6 +167,7 @@ export async function importContacts(
     }
   });
   run();
+  forgetCopiedIdentity(); // a contact tied to a person keeps none of its identity
   if (source.withIds) report.contact_ids = ids;
   return report;
 }

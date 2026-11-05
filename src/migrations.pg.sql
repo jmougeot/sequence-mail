@@ -54,6 +54,50 @@ BEGIN
           GROUP BY cc.contact_id HAVING COUNT(DISTINCT lp.person_id) = 1) m
     WHERE c.id = m.contact_id AND c.person_id IS NULL;
   END IF;
+  -- A contact tied to a person keeps none of what the person holds: forget_copied_identity() clears
+  -- those columns (run here, and after each import or enrollment, see db.ts). Without people, it
+  -- does nothing.
+  IF to_regclass('public.people') IS NOT NULL AND has_table_privilege('public.people', 'SELECT') THEN
+    EXECUTE $fn$
+      CREATE OR REPLACE FUNCTION forget_copied_identity() RETURNS BIGINT LANGUAGE sql
+      SET search_path FROM CURRENT AS $body$
+        WITH done AS (
+          UPDATE contacts c SET
+            email      = CASE WHEN NULLIF(p.email, '') IS NOT NULL THEN NULL ELSE c.email END,
+            first_name = CASE WHEN NULLIF(p.first_name, '') IS NOT NULL THEN NULL ELSE c.first_name END,
+            last_name  = CASE WHEN NULLIF(p.last_name, '') IS NOT NULL THEN NULL ELSE c.last_name END,
+            company    = CASE WHEN NULLIF(p.current_company, '') IS NOT NULL THEN NULL ELSE c.company END,
+            linkedin   = CASE WHEN p.linkedin_key IS NOT NULL THEN NULL ELSE c.linkedin END
+          FROM public.people p
+          WHERE p.id = c.person_id
+            AND ((c.email IS NOT NULL AND NULLIF(p.email, '') IS NOT NULL)
+              OR (c.first_name IS NOT NULL AND NULLIF(p.first_name, '') IS NOT NULL)
+              OR (c.last_name IS NOT NULL AND NULLIF(p.last_name, '') IS NOT NULL)
+              OR (c.company IS NOT NULL AND NULLIF(p.current_company, '') IS NOT NULL)
+              OR (c.linkedin IS NOT NULL AND p.linkedin_key IS NOT NULL))
+          RETURNING 1)
+        SELECT COUNT(*) FROM done
+      $body$
+    $fn$;
+  ELSE
+    EXECUTE 'CREATE OR REPLACE FUNCTION forget_copied_identity() RETURNS BIGINT LANGUAGE sql AS $b$ SELECT 0::bigint $b$';
+  END IF;
+  PERFORM forget_copied_identity();
+  -- person_id is a real foreign key to Azerit's people (granted by Azerit's migrations): a person
+  -- still named by a contact cannot be deleted (Azerit's merge() moves the contacts first). An
+  -- orphan left by an older version only warns, so a start is never blocked.
+  IF to_regclass('public.people') IS NOT NULL AND has_table_privilege('public.people', 'REFERENCES')
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'contacts_person_fk'
+                     AND conrelid = 'contacts'::regclass) THEN
+    BEGIN
+      ALTER TABLE contacts ADD CONSTRAINT contacts_person_fk
+        FOREIGN KEY (person_id) REFERENCES public.people (id);
+    EXCEPTION WHEN foreign_key_violation THEN
+      RAISE WARNING 'contacts_person_fk not added: % contact(s) name a missing person',
+        (SELECT COUNT(*) FROM contacts c WHERE c.person_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM public.people p WHERE p.id = c.person_id));
+    END;
+  END IF;
 END $$;
 
 -- Azerit owner and job of a campaign, as real columns for joins with public.users / public.jobs

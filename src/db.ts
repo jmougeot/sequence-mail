@@ -39,3 +39,8 @@ function open(): Db {
 }
 
 export const db = open();
+
+/** Clears from contacts tied to an Azerit person what the person holds (see migrations.pg.sql). */
+export function forgetCopiedIdentity(): void {
+  if (mode === "postgres") db.prepare("SELECT forget_copied_identity() AS n").get();
+}

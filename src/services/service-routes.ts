@@ -15,7 +15,7 @@
 import { timingSafeEqual } from "node:crypto";
 import type express from "express";
 import { config } from "../config.js";
-import { db } from "../db.js";
+import { db, forgetCopiedIdentity } from "../db.js";
 import { MERGED_EXTRA, importContacts, renderTemplate } from "./contacts.js";
 import { authUrl, signOwnerState } from "./google.js";
 import { normalizeLinkedin } from "./linkedin-url.js";
@@ -502,6 +502,7 @@ export function registerServiceRoutes(app: express.Express): void {
         });
         if (results.some((r) => r.status === "pending")) db.prepare("UPDATE campaigns SET status = 'active' WHERE id = ?").run(campaign.id);
       })();
+      forgetCopiedIdentity(); // the contacts just tied to a person
     }
     res.json({ results });
   };
