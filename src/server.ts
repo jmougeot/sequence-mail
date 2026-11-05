@@ -17,6 +17,7 @@ import { registerServiceRoutes, setEnrollmentVars } from "./services/service-rou
 import { campaignStepRows, replaceSteps, validateSteps as validateStepList, insertSteps, type StepInput } from "./services/steps.js";
 import { applyWithPrevious, cancelLinkedInActions, placeAtStep } from "./services/outreach.js";
 import { optOutFromCampaignOf } from "./services/opt-out.js";
+import { archiveEnrollments } from "./services/history.js";
 import { registerUnsubscribeRoutes } from "./services/unsubscribe.js";
 import { registerInboxRoutes } from "./services/inbox-routes.js";
 import { normalizeLinkedin } from "./services/linkedin-url.js";
@@ -649,9 +650,12 @@ export function createServer(): express.Express {
       return res.status(400).json({ error: "ids[] is required" });
     }
     const placeholders = ids.map(() => "?").join(",");
-    const { changes } = db
-      .prepare(`DELETE FROM campaign_contacts WHERE id IN (${placeholders}) AND campaign_id = ?`)
-      .run(...ids, Number(req.params.id));
+    const changes = db.transaction(() => {
+      archiveEnrollments(`cc.id IN (${placeholders}) AND cc.campaign_id = ?`, ...ids, Number(req.params.id));
+      return db
+        .prepare(`DELETE FROM campaign_contacts WHERE id IN (${placeholders}) AND campaign_id = ?`)
+        .run(...ids, Number(req.params.id)).changes;
+    })();
     res.json({ ok: true, removed: changes });
   });
 
@@ -722,9 +726,13 @@ export function createServer(): express.Express {
     res.json({ ok: true, requeued: setEnrollmentVars(cc.campaign_id, cc.id, patch) });
   });
 
-  // --- Delete a campaign (steps, enrollments and history cascade) ---
+  // --- Delete a campaign (steps, enrollments and their sends cascade; enrollment_history keeps
+  // who had been contacted) ---
   app.delete("/api/campaigns/:id", (req, res) => {
-    const { changes } = db.prepare("DELETE FROM campaigns WHERE id = ?").run(req.params.id);
+    const changes = db.transaction(() => {
+      archiveEnrollments("cc.campaign_id = ?", Number(req.params.id));
+      return db.prepare("DELETE FROM campaigns WHERE id = ?").run(req.params.id).changes;
+    })();
     if (!changes) return res.status(404).json({ error: "Campaign not found" });
     res.json({ ok: true });
   });

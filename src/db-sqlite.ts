@@ -426,3 +426,24 @@ db.exec("CREATE TABLE IF NOT EXISTS variable_instructions (name TEXT PRIMARY KEY
 
 // Settings entered in the UI (Google credentials…); the .env takes precedence.
 db.exec("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+
+// Memory of deleted enrollments: removing contacts or deleting a campaign cascades to their
+// LinkedIn actions and emails, so one line per enrollment that had activity is kept here first
+// (services/history.ts). Append only: Azerit reads it to keep a candidate "contacted".
+db.exec(`
+CREATE TABLE IF NOT EXISTS enrollment_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign_id INTEGER NOT NULL,
+  owner_ref TEXT,
+  external_ref TEXT,
+  contact_id INTEGER,
+  external_key TEXT,
+  status TEXT,
+  invited_at INTEGER,
+  messaged_at INTEGER,
+  emailed_at INTEGER,
+  replied_at INTEGER,
+  removed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_enrollment_history_key ON enrollment_history (owner_ref, external_key);
+`);

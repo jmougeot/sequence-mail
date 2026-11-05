@@ -8,6 +8,7 @@ import { copyToPostgres, ShadowDatabase } from "./db-shadow.js";
 const mode = process.env.DB_MODE ?? "sqlite";
 const url = process.env.POSTGRES_URL ?? "";
 const schema = () => fs.readFileSync(new URL("./schema.pg.sql", import.meta.url), "utf8");
+const migrations = () => fs.readFileSync(new URL("./migrations.pg.sql", import.meta.url), "utf8");
 
 function open(): Db {
   if (mode === "sqlite") return sqlite as unknown as Db;
@@ -16,6 +17,7 @@ function open(): Db {
     const pg = new PgDatabase({ url, reconnectMs: 60_000, statementTimeoutMs: 30_000 });
     const meta = pg.prepare("SELECT role FROM mirror_meta").get() as { role: string } | undefined;
     if (meta?.role !== "primary") throw new Error('DB_MODE=postgres: schema "sequence" is not marked primary (see docs/postgres.md)');
+    pg.exec(migrations());
     return pg;
   }
   if (mode === "shadow") {
