@@ -26,16 +26,19 @@ CREATE INDEX IF NOT EXISTS idx_enrollment_history_key ON enrollment_history (own
 -- account in public.accounts (Azerit's ADR step 6, 6 Nov 2026: one row per account, pointing to
 -- its person), before that people.linkedin_key. Azerit's migration writes the same view and
 -- function when it moves to accounts (db/_migrations.py, _sequence_reads_accounts). A person's
--- company is the name of her employer (people.company_id -> public.companies) once
+-- company is her employer (people.company_id -> public.companies) or, failing that, her situation as
+-- written (people.employment_note: Freelance, a company the referential does not know…) once
 -- people.current_company is gone (ids everywhere, Nov 2026), before that people.current_company;
--- without the right to read companies, the contact keeps its own company column.
+-- without the right to read companies, only the note counts and a contact whose person has an
+-- employer keeps its own company column.
 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS person_id BIGINT;
 CREATE INDEX IF NOT EXISTS idx_contacts_person ON contacts (person_id);
 DO $$
 DECLARE
   li TEXT := 'p.linkedin_key';
-  co TEXT := 'NULLIF(p.current_company, '''')';               -- the person's company, as text
-  has_co TEXT := 'NULLIF(p.current_company, '''') IS NOT NULL'; -- the person holds a company
+  co TEXT := 'COALESCE(NULLIF(p.current_company, ''''), c.company)'; -- the contact's company, as text
+  co_join TEXT := '';                                                -- what co reads besides people
+  has_co TEXT := 'NULLIF(p.current_company, '''') IS NOT NULL';       -- the person holds a company
 BEGIN
   IF to_regclass('public.accounts') IS NOT NULL AND has_table_privilege('public.accounts', 'SELECT') THEN
     li := '(SELECT a.handle FROM public.accounts a WHERE a.person_id = p.id AND a.platform = ''linkedin'' '
@@ -44,12 +47,18 @@ BEGIN
   IF to_regclass('public.people') IS NOT NULL AND NOT EXISTS (
        SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('public.people')
          AND attname = 'current_company' AND NOT attisdropped) THEN
-    IF to_regclass('public.companies') IS NOT NULL AND has_table_privilege('public.companies', 'SELECT') THEN
-      co := '(SELECT NULLIF(k.name, '''') FROM public.companies k WHERE k.id = p.company_id)';
-      has_co := 'p.company_id IS NOT NULL';
-    ELSE
-      co := 'NULL::text';
+    IF NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('public.people')
+                     AND attname = 'employment_note' AND NOT attisdropped) THEN
+      co := 'c.company';
       has_co := 'FALSE';
+    ELSIF to_regclass('public.companies') IS NOT NULL AND has_table_privilege('public.companies', 'SELECT') THEN
+      -- same text as Azerit's migration (db/_migrations.py, _sequence_reads_accounts)
+      co := 'COALESCE(NULLIF(co.name, ''''), NULLIF(p.employment_note, ''''), c.company)';
+      co_join := 'LEFT JOIN public.companies co ON co.id = p.company_id';
+      has_co := '(p.company_id IS NOT NULL OR NULLIF(p.employment_note, '''') IS NOT NULL)';
+    ELSE
+      co := 'COALESCE(NULLIF(p.employment_note, ''''), c.company)';
+      has_co := 'NULLIF(p.employment_note, '''') IS NOT NULL';
     END IF;
   END IF;
   IF to_regclass('public.people') IS NOT NULL AND has_table_privilege('public.people', 'SELECT') THEN
@@ -59,11 +68,12 @@ BEGIN
              COALESCE(NULLIF(p.email, ''), c.email)::text AS email,
              COALESCE(NULLIF(p.first_name, ''), c.first_name)::text AS first_name,
              COALESCE(NULLIF(p.last_name, ''), c.last_name)::text AS last_name,
-             COALESCE(%2$s, c.company)::text AS company,
+             %2$s::text AS company,
              COALESCE('https://www.linkedin.com/in/' || %1$s, c.linkedin)::text AS linkedin,
              c.extra, c.do_not_contact, c.created_at, c.person_id
       FROM contacts c LEFT JOIN public.people p ON p.id = c.person_id
-    $view$, li, co);
+      %3$s
+    $view$, li, co, co_join);
   ELSE
     EXECUTE 'CREATE OR REPLACE VIEW contacts_v AS SELECT * FROM contacts';
   END IF;
