@@ -22,23 +22,32 @@ CREATE INDEX IF NOT EXISTS idx_enrollment_history_key ON enrollment_history (own
 -- Azerit candidates: one identity, in Azerit's people table (ADR of 5 Nov 2026). A contact with a
 -- person_id reads its name, email, company and LinkedIn there; every read of a contact's identity
 -- goes through contacts_v. Without public.people (or without the right to read it) the view is the
--- table itself. Same columns, same order in both versions.
+-- table itself. Same columns, same order in both versions. A person's LinkedIn is her LinkedIn
+-- account in public.accounts (Azerit's ADR step 6, 6 Nov 2026: one row per account, pointing to
+-- its person), before that people.linkedin_key. Azerit's migration writes the same view and
+-- function when it moves to accounts (db/_migrations.py, _sequence_reads_accounts).
 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS person_id BIGINT;
 CREATE INDEX IF NOT EXISTS idx_contacts_person ON contacts (person_id);
 DO $$
+DECLARE
+  li TEXT := 'p.linkedin_key';
 BEGIN
+  IF to_regclass('public.accounts') IS NOT NULL AND has_table_privilege('public.accounts', 'SELECT') THEN
+    li := '(SELECT a.handle FROM public.accounts a WHERE a.person_id = p.id AND a.platform = ''linkedin'' '
+          'AND a.deleted_at IS NULL ORDER BY a.id DESC LIMIT 1)';
+  END IF;
   IF to_regclass('public.people') IS NOT NULL AND has_table_privilege('public.people', 'SELECT') THEN
-    EXECUTE $view$
+    EXECUTE format($view$
       CREATE OR REPLACE VIEW contacts_v AS
       SELECT c.id,
              COALESCE(NULLIF(p.email, ''), c.email)::text AS email,
              COALESCE(NULLIF(p.first_name, ''), c.first_name)::text AS first_name,
              COALESCE(NULLIF(p.last_name, ''), c.last_name)::text AS last_name,
              COALESCE(NULLIF(p.current_company, ''), c.company)::text AS company,
-             COALESCE('https://www.linkedin.com/in/' || p.linkedin_key, c.linkedin)::text AS linkedin,
+             COALESCE('https://www.linkedin.com/in/' || %1$s, c.linkedin)::text AS linkedin,
              c.extra, c.do_not_contact, c.created_at, c.person_id
       FROM contacts c LEFT JOIN public.people p ON p.id = c.person_id
-    $view$;
+    $view$, li);
   ELSE
     EXECUTE 'CREATE OR REPLACE VIEW contacts_v AS SELECT * FROM contacts';
   END IF;
@@ -58,7 +67,7 @@ BEGIN
   -- those columns (run here, and after each import or enrollment, see db.ts). Without people, it
   -- does nothing.
   IF to_regclass('public.people') IS NOT NULL AND has_table_privilege('public.people', 'SELECT') THEN
-    EXECUTE $fn$
+    EXECUTE format($fn$
       CREATE OR REPLACE FUNCTION forget_copied_identity() RETURNS BIGINT LANGUAGE sql
       SET search_path FROM CURRENT AS $body$
         WITH done AS (
@@ -67,18 +76,18 @@ BEGIN
             first_name = CASE WHEN NULLIF(p.first_name, '') IS NOT NULL THEN NULL ELSE c.first_name END,
             last_name  = CASE WHEN NULLIF(p.last_name, '') IS NOT NULL THEN NULL ELSE c.last_name END,
             company    = CASE WHEN NULLIF(p.current_company, '') IS NOT NULL THEN NULL ELSE c.company END,
-            linkedin   = CASE WHEN p.linkedin_key IS NOT NULL THEN NULL ELSE c.linkedin END
+            linkedin   = CASE WHEN %1$s IS NOT NULL THEN NULL ELSE c.linkedin END
           FROM public.people p
           WHERE p.id = c.person_id
             AND ((c.email IS NOT NULL AND NULLIF(p.email, '') IS NOT NULL)
               OR (c.first_name IS NOT NULL AND NULLIF(p.first_name, '') IS NOT NULL)
               OR (c.last_name IS NOT NULL AND NULLIF(p.last_name, '') IS NOT NULL)
               OR (c.company IS NOT NULL AND NULLIF(p.current_company, '') IS NOT NULL)
-              OR (c.linkedin IS NOT NULL AND p.linkedin_key IS NOT NULL))
+              OR (c.linkedin IS NOT NULL AND %1$s IS NOT NULL))
           RETURNING 1)
         SELECT COUNT(*) FROM done
       $body$
-    $fn$;
+    $fn$, li);
   ELSE
     EXECUTE 'CREATE OR REPLACE FUNCTION forget_copied_identity() RETURNS BIGINT LANGUAGE sql AS $b$ SELECT 0::bigint $b$';
   END IF;
