@@ -469,7 +469,11 @@ export function processSeenThread(accounts: LiAccount[], t: SeenThread): Threads
     if (bySlug.length) return bySlug;
     const byThread = tid ? pool.filter((w) => threadId(w.li_thread_url) === tid) : [];
     if (byThread.length) return byThread;
-    const byName = name.includes(" ") ? pool.filter((w) => normName(`${w.first_name ?? ""} ${w.last_name ?? ""}`) === name) : [];
+    // the header may carry more than the name (« Maelle Cabayot · 1st », status): the name first
+    const byName = pool.filter((w) => {
+      const full = normName(`${w.first_name ?? ""} ${w.last_name ?? ""}`);
+      return full.includes(" ") && (name === full || name.startsWith(`${full} `));
+    });
     return byName.length === 1 ? byName : [];
   };
   const bodies = db.prepare(SEQUENCE_BODIES);
@@ -478,8 +482,17 @@ export function processSeenThread(accounts: LiAccount[], t: SeenThread): Threads
   const last = messages[messages.length - 1];
   // contact's message last: "§" never matches a snippet of ours
   const memo = SEEN + (last.mine === false ? "§" : last.text.trim().slice(0, 300));
+  let matched = 0;
   for (const account of accounts) {
-    for (const w of find(watched(account.id))) {
+    const awaiting = find(watched(account.id));
+    const replied = find(watched(account.id, true));
+    matched += awaiting.length + replied.length;
+    console.log(
+      `[linkedin] conversation on screen (${account.name}): « ${t.name ?? "?"} », ${messages.length} message(s), ` +
+        `${seen.length ? "read receipt, " : ""}profiles [${[...slugs].join(", ")}]${tid ? `, thread ${tid}` : ""} — ` +
+        (awaiting.length || replied.length ? `contact(s) ${[...awaiting, ...replied].map((w) => w.cc_id).join(", ")}` : "no contact of this account")
+    );
+    for (const w of awaiting) {
       const verdict = threadVerdict(
         messages,
         (bodies.all(w.cc_id) as Array<{ body: string | null }>).map((r) => r.body),
@@ -489,7 +502,7 @@ export function processSeenThread(accounts: LiAccount[], t: SeenThread): Threads
       markSeen(w.cc_id, seen);
       settle(w, account, verdict, memo, "seen on screen", report);
     }
-    for (const w of find(watched(account.id, true))) {
+    for (const w of replied) {
       const verdict = threadVerdict(
         messages,
         (bodies.all(w.cc_id) as Array<{ body: string | null }>).map((r) => r.body),

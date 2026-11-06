@@ -1822,6 +1822,12 @@ async function doWhoami() {
 const PASSIVE_EVERY_MS = 4000;
 const passiveState = new Map(); // fil → { pending, sent } : envoyé une fois stable, et à chaque changement
 
+/** Première ligne affichée d'un élément (le nom, sans statut ni degré en dessous). */
+function firstLine(el) {
+  if (!el) return null;
+  return ((el.innerText || el.textContent || "").split("\n").map((l) => l.trim()).find(Boolean)) || null;
+}
+
 function passiveThreads() {
   const out = [];
   const abs = (href) => {
@@ -1840,13 +1846,14 @@ function passiveThreads() {
   if (/^\/messaging\/thread\//.test(location.pathname)) {
     const root = document.querySelector(".msg-s-message-list, .msg-s-message-list-content");
     const detail = root && (root.closest(".scaffold-layout__detail, .msg-convo-wrapper, .msg-thread") || root);
-    if (detail) out.push({ root: detail, thread_url: location.origin + location.pathname, name: openThreadName(), profile_urls: profiles(detail) });
+    const title = document.querySelector(".msg-thread .msg-entity-lockup__entity-title, .msg-title-bar__details h2, .msg-title-bar h2, .scaffold-layout__detail h2, .msg-thread h2");
+    if (detail) out.push({ root: detail, thread_url: location.origin + location.pathname, name: firstLine(title), profile_urls: profiles(detail) });
   }
   for (const b of document.querySelectorAll(".msg-overlay-conversation-bubble")) {
     if (!b.querySelector(".msg-s-event-listitem")) continue;
     const a = b.querySelector('a[href*="/messaging/thread/"]');
     const title = b.querySelector(".msg-overlay-bubble-header__title, h2");
-    out.push({ root: b, thread_url: a ? abs(a.getAttribute("href")) : null, name: title ? title.textContent.trim() : null, profile_urls: profiles(b) });
+    out.push({ root: b, thread_url: a ? abs(a.getAttribute("href")) : null, name: firstLine(title), profile_urls: profiles(b) });
   }
   return out;
 }
