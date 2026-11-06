@@ -154,7 +154,7 @@ async function serve(SERVER, tokens) {
     // Lecture de la messagerie : le serveur y cherche les réponses des contacts.
     await setStatus({ kind: "run", text: res.action.connections_only ? "Lecture des relations…" : "Lecture de la messagerie…" });
     const r = await runInbox(res.action);
-    await fetch(`${SERVER}/api/li/inbox`, {
+    const sent = await fetch(`${SERVER}/api/li/inbox`, {
       method: "POST",
       headers: { "content-type": "application/json", ...auth },
       body: JSON.stringify({
@@ -170,8 +170,22 @@ async function serve(SERVER, tokens) {
         sent_invitations: r.sent_invitations && r.sent_invitations.invitations,
         sent_invitations_complete: r.sent_invitations ? r.sent_invitations.complete : undefined,
         sent_invitations_since: r.sent_invitations && r.sent_invitations.reached ? res.action.sent_invitations_since : undefined,
+        reads_threads: true,
       }),
     });
+    // Conversations où notre dernier message n'est pas de la séquence : le serveur demande à
+    // les lire pour savoir si le contact a écrit avant (sinon, relance à la main).
+    const out = await sent.json().catch(() => null);
+    const threads = out && Array.isArray(out.read_threads) ? out.read_threads.slice(0, 3) : [];
+    if (r.ok && threads.length) {
+      await setStatus({ kind: "run", text: "Lecture des conversations…" });
+      const read = await readThreads(threads, res.action);
+      await fetch(`${SERVER}/api/li/threads`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...auth },
+        body: JSON.stringify(read),
+      }).catch(() => {});
+    }
     if (res.action.connections_only) {
       return r.ok
         ? { kind: "ok", text: "Relations lues" }
@@ -196,6 +210,7 @@ async function serve(SERVER, tokens) {
       replied: verdict.replied,
       reply_text: verdict.reply_text,
       already_messaged: verdict.already_messaged,
+      seen_texts: verdict.seen_texts,
     });
     if (verdict.ok) return { kind: "ok", text: "Dernière action : réussie" };
     // Invitation pas encore acceptée : le serveur reporte le message, ce n'est pas un échec.
@@ -754,6 +769,75 @@ async function runInbox(action) {
   }
 }
 
+/**
+ * Ouvre chaque conversation demandée par le serveur (au plus 3, adresse /messaging/thread/ lue dans
+ * la liste) et en lit les messages. Fenêtre montrée le temps de la lecture : le fil ne se dessine
+ * pas dans un onglet caché. Rend { threads, member?, wrong_account? } pour /api/li/threads.
+ */
+async function readThreads(threads, action) {
+  const out = { threads: [] };
+  try {
+    const tab = await ensureTab();
+    await attachDebugger(tab.id);
+    for (const [i, t] of threads.entries()) {
+      if (!/^https:\/\/www\.linkedin\.com\/messaging\/thread\//.test(t.thread_url || "")) continue;
+      if (i) await new Promise((r) => setTimeout(r, 3000 + Math.random() * 5000));
+      const loaded = waitForLoad(tab.id);
+      await chrome.tabs.update(tab.id, { url: t.thread_url });
+      await loaded;
+      await new Promise((r) => setTimeout(r, 2500 + Math.random() * 2500));
+      const hide = await showForMessage(tab).catch(() => async () => {});
+      let r;
+      try {
+        r = await sendToTab(tab.id, { type: "li-action", action: { type: "read_thread", thread: true, expect_member: action.expect_member ?? null } });
+      } finally {
+        await hide();
+      }
+      if (r.member) out.member = r.member;
+      if (r.wrong_account) {
+        out.wrong_account = true;
+        break;
+      }
+      // Contrôle de sécurité : on s'arrête net, rien n'est conclu.
+      if (/contrôle de sécurité/.test(r.error || "")) break;
+      out.threads.push({
+        ...t,
+        ok: Boolean(r.ok),
+        messages: r.ok && r.data ? r.data.messages : undefined,
+        error: r.ok ? undefined : `${r.error || "lecture impossible"} [ext ${chrome.runtime.getManifest().version}]`,
+      });
+    }
+  } catch (e) {
+    // ce qui a été lu part quand même
+  }
+  return out;
+}
+
+/**
+ * Passe au serveur une conversation que la personne a ouverte (content.js, passiveTick) : il y lit
+ * une réponse ou une relance à la main. Jamais l'onglet de travail : ce que l'extension y écrit
+ * n'est pas encore confirmé au serveur et passerait pour un message à la main.
+ */
+async function threadSeen(tabId, msg) {
+  const { [WORK_TAB]: saved } = await chrome.storage.local.get(WORK_TAB);
+  if (saved && saved.tabId === tabId) return;
+  const tokens = (await accountTokens()).filter(Boolean);
+  if (!tokens.length) return;
+  const me = await whoamiCache({ type: "whoami-cache-get" }).catch(() => null); // cache seul, aucune requête
+  const SERVER = await getServer();
+  await fetch(`${SERVER}/api/li/thread-seen`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(await authHeaders(tokens.join(","))) },
+    body: JSON.stringify({
+      thread_url: msg.thread_url || null,
+      name: msg.name || null,
+      profile_urls: Array.isArray(msg.profile_urls) ? msg.profile_urls.slice(0, 10) : [],
+      messages: Array.isArray(msg.messages) ? msg.messages.slice(-25) : [],
+      member: (me && me.data) || undefined,
+    }),
+  }).catch(() => {});
+}
+
 /** Normalise l'URL de profil (force https www, garde le slug /in/...). */
 function profileUrl(url) {
   try {
@@ -868,6 +952,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       (hide) => { pendingHide = hide; sendResponse({ ok: true }); },
       () => sendResponse({ ok: false })
     );
+    return true;
+  }
+  // Conversation ouverte par la personne dans un de ses onglets LinkedIn (lecture passive).
+  if (msg.type === "li-thread-seen" && sender.id === chrome.runtime.id && sender.tab && sender.frameId === 0) {
+    threadSeen(sender.tab.id, msg).then(() => sendResponse({ ok: true }), () => sendResponse({ ok: false }));
     return true;
   }
   if (msg.type === "reload-extension" && sender.id === chrome.runtime.id && !sender.tab) {

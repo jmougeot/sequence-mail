@@ -380,11 +380,15 @@ CREATE TABLE IF NOT EXISTS owner_opt_outs (
 // li_accepted: NULL = unknown yet, 1 = accepted, 0 = not accepted.
 addColumnIfMissing("steps", "branch", "branch TEXT");
 addColumnIfMissing("campaign_contacts", "li_accepted", "li_accepted INTEGER");
+// li_thread_read: inbox snippet whose conversation was already read in full (li-inbox.ts), so it is read once.
+addColumnIfMissing("campaign_contacts", "li_thread_read", "li_thread_read TEXT");
 // Step played at the same time as the previous one (email + LinkedIn), without delay. After a
 // LinkedIn step, its action is "detached": queued without holding the contact, who moves on to
 // the next step right away; its success or failure then moves nothing (see outreach.ts).
 addColumnIfMissing("steps", "with_previous", "with_previous INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("li_actions", "detached", "detached INTEGER NOT NULL DEFAULT 0");
+// seen_at: LinkedIn showed this message as seen by the contact (read receipt), noted at that time.
+addColumnIfMissing("li_actions", "seen_at", "seen_at INTEGER");
 
 // Campaign description (audience, which contacts to add, message angle), read by
 // agents (MCP) before adding contacts or editing the sequence.

@@ -776,7 +776,8 @@ export function createServer(): express.Express {
         `SELECT c.id AS contact_id, c.email, c.first_name, c.last_name, c.company, c.linkedin, c.extra,
                 cc.id AS cc_id, cc.vars, cc.status, cc.current_step, cc.variant, cc.account_id,
                 cc.next_send_at, cc.replied_at, cc.error, a.email AS sender,
-                li.name AS li_sender, cc.li_thread_url
+                li.name AS li_sender, cc.li_thread_url,
+                (SELECT MAX(la.seen_at) FROM li_actions la WHERE la.campaign_contact_id = cc.id) AS li_seen_at
          FROM campaign_contacts cc
          JOIN contacts_v c ON c.id = cc.contact_id
          LEFT JOIN accounts a ON a.id = cc.account_id

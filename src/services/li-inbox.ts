@@ -4,9 +4,16 @@
  * reached: a conversation whose last message is from the contact, after our first action, counts as
  * a reply — the sequence stops on all channels (no more emails or LinkedIn messages), as for an
  * email reply.
- * A conversation whose last message is ours but is not one the sequence sent (the user answered by
- * hand before the list was read) also counts: the contact wrote in between, else the user wouldn't
- * have answered.
+ * A conversation whose last message is ours but is not one the sequence sent (written by hand, or an
+ * attachment: « You sent an attachment ») is ambiguous: the contact may have written in between, or
+ * the user followed up by hand. An executor that reads threads is asked to open that conversation
+ * once (readThreads); its messages decide: a message from the contact after the sequence's = reply,
+ * else ours only = the user took over by hand, the sequence stops without counting as a reply. An
+ * executor that doesn't (runner) keeps the old rule: it counts as a reply.
+ * Passive reading (processSeenThread): the extension also reads, without a request to LinkedIn, the
+ * conversations the user opens in their own tabs. That settles the same question at once (writing
+ * by hand means having the thread open), and fills in the full text of replies. The executor only
+ * opens a conversation the user never had on screen (followed up from the phone).
  * Matching: by profile URL when the list provides it, else by full name (no accents or
  * punctuation), and only if it identifies a single contact of the account. When in doubt, no
  * conclusion: one follow-up too many beats a sequence stopped by mistake… except for an unread
@@ -36,6 +43,8 @@ interface Watched {
   last_name: string | null;
   linkedin: string | null;
   first_sent_at: number;
+  li_thread_read: string | null;
+  li_thread_url: string | null;
 }
 
 /** Lowercase, no accents or punctuation, single spaces; strips ", PhD" & co. */
@@ -51,10 +60,24 @@ export function normName(s: string | null | undefined): string {
 }
 
 const FROM_US = /^\s*(vous|you)\s*:\s*/i;
+// What we did without text: « You sent an attachment », « Vous avez envoyé une pièce jointe », «
+// You reacted 👍 to… »; compared without accents.
+const OUR_EVENT = /^(you (sent|shared|reacted|forwarded)|vous avez (envoye|partage|reagi|transfere)) /;
 
-/** Last message written by us? (« Vous : … » / « You: … » at the start of the snippet) */
+/** Last message written by us? (« Vous : … » / « You: … », or one of our attachments, reactions…) */
 export function lastFromUs(snippet: string | null | undefined): boolean {
-  return FROM_US.test(snippet ?? "");
+  return FROM_US.test(snippet ?? "") || OUR_EVENT.test(normName(snippet));
+}
+
+// li_thread_read written by a passive read: SEEN + the thread's last message ("" = attachment).
+const SEEN = "seen:";
+
+/** Our last message in the snippet is the one the user already had on screen (passive read)? */
+function seenLast(memo: string | null, snippet: string): boolean {
+  if (!memo?.startsWith(SEEN)) return false;
+  const last = memo.slice(SEEN.length);
+  if (OUR_EVENT.test(normName(snippet))) return last === "";
+  return last !== "" && sentBySequence(snippet, [last]);
 }
 
 /**
@@ -110,19 +133,37 @@ export function parseLiTime(raw: string | null | undefined, now = Date.now()): n
   return null;
 }
 
-/** The account's contacts awaiting a reply, with the date of our first action. */
-function watched(accountId: number): Watched[] {
+/**
+ * The account's contacts awaiting a reply, with the date of our first action. Stopped ones too: a
+ * sequence stopped because the user wrote by hand still waits for the contact's answer. `replied`:
+ * those who already replied instead (passive read: full text of their reply).
+ */
+function watched(accountId: number, replied = false): Watched[] {
   return db
     .prepare(
       `SELECT cc.id AS cc_id, c.id AS contact_id, c.first_name, c.last_name, c.linkedin,
-              (SELECT MIN(la.sent_at) FROM li_actions la WHERE la.campaign_contact_id = cc.id AND la.status = 'sent') AS first_sent_at
+              (SELECT MIN(la.sent_at) FROM li_actions la WHERE la.campaign_contact_id = cc.id AND la.status = 'sent') AS first_sent_at,
+              cc.li_thread_read, cc.li_thread_url
        FROM campaign_contacts cc
        JOIN contacts_v c ON c.id = cc.contact_id
-       WHERE cc.li_account_id = ? AND cc.replied_at IS NULL
-         AND cc.status IN ('awaiting_li', 'in_progress', 'completed')
+       WHERE cc.li_account_id = ? AND ${
+         replied
+           ? "cc.replied_at IS NOT NULL AND cc.status IN ('replied', 'opted_out')"
+           : "cc.replied_at IS NULL AND cc.status IN ('awaiting_li', 'in_progress', 'completed', 'stopped')"
+       }
          AND EXISTS (SELECT 1 FROM li_actions la WHERE la.campaign_contact_id = cc.id AND la.status = 'sent' AND la.sent_at > ?)`
     )
     .all(accountId, Date.now() - WATCH_DAYS * DAY_MS) as Watched[];
+}
+
+// The sequence's messages to a contact; 'sending' too: just written, its verdict not back yet.
+const SEQUENCE_BODIES = `SELECT body FROM li_actions WHERE campaign_contact_id = ? AND status IN ('sent', 'sending')`;
+
+/** A conversation the executor is asked to open: its last message is ours, not the sequence's. */
+export interface ThreadToRead {
+  thread_url: string;
+  cc_ids: number[];
+  snippet: string; // echoed back with the messages: once read, this snippet isn't read again
 }
 
 export interface InboxReport {
@@ -131,11 +172,16 @@ export interface InboxReport {
   ambiguous: string[];
   unmatched: number; // last message from the other side, but no watched contact of that name
   stale: number; // matched, but older than our first action (or unread not set)
+  read_threads: ThreadToRead[];
 }
 
-/** Processes the conversation list read by the account's executor. */
-export function processInbox(account: LiAccount, conversations: LiConversation[]): InboxReport {
-  const report: InboxReport = { conversations: conversations.length, replied: [], ambiguous: [], unmatched: 0, stale: 0 };
+/**
+ * Processes the conversation list read by the account's executor. `readsThreads`: the executor can
+ * open a conversation (readThreads) — the ambiguous ones go in `read_threads` instead of counting as
+ * replies.
+ */
+export function processInbox(account: LiAccount, conversations: LiConversation[], readsThreads = false): InboxReport {
+  const report: InboxReport = { conversations: conversations.length, replied: [], ambiguous: [], unmatched: 0, stale: 0, read_threads: [] };
   const pool = watched(account.id);
   if (!pool.length) {
     console.log(`[linkedin] inbox read (${account.name}): ${conversations.length} conversations, no contact to watch`);
@@ -151,7 +197,7 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
     if (n.includes(" ")) byName.set(n, [...(byName.get(n) ?? []), w]); // first AND last name, else too ambiguous
   }
 
-  const bodies = db.prepare(`SELECT body FROM li_actions WHERE campaign_contact_id = ? AND status = 'sent'`);
+  const bodies = db.prepare(SEQUENCE_BODIES);
   const done = new Set<number>();
   for (const conv of conversations) {
     if (!conv) continue;
@@ -169,7 +215,7 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
       continue;
     }
     if (done.has(match.cc_id)) continue;
-    // We spoke last: a reply only if that message isn't the sequence's (answered by hand).
+    // We spoke last: nothing new if that message is the sequence's.
     if (fromUs && sentBySequence(conv.snippet, (bodies.all(match.cc_id) as Array<{ body: string | null }>).map((r) => r.body))) continue;
 
     // The contact's message must postdate our first action (else it's an old conversation); unread
@@ -184,6 +230,18 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
     }
 
     done.add(match.cc_id);
+    const snippet = conv.snippet?.trim() ?? "";
+    if (fromUs && match.li_thread_read === snippet) continue; // already settled by reading its thread
+    if (fromUs && seenLast(match.li_thread_read, snippet)) {
+      // the user had this thread on screen after that message: settled then, no click
+      db.prepare("UPDATE campaign_contacts SET li_thread_read = ? WHERE id = ?").run(snippet, match.cc_id);
+      continue;
+    }
+    if (fromUs && readsThreads) {
+      // By hand or not? The thread says, read once per snippet.
+      if (conv.thread_url) report.read_threads.push({ thread_url: conv.thread_url, cc_ids: [match.cc_id], snippet });
+      continue;
+    }
     const optedOut = !fromUs && isOptOut(conv.snippet ?? "");
     terminate({ cc_id: match.cc_id, contact_id: match.contact_id }, optedOut ? "opted_out" : "replied", optedOut);
     db.prepare("UPDATE campaign_contacts SET li_thread_url = COALESCE(?, li_thread_url), li_reply_text = ? WHERE id = ?").run(
@@ -198,8 +256,249 @@ export function processInbox(account: LiAccount, conversations: LiConversation[]
   }
   console.log(
     `[linkedin] inbox read (${account.name}): ${conversations.length} conversations, ${pool.length} watched, ` +
-      `${report.replied.length} replies, ${report.unmatched} from unknown contacts, ${report.ambiguous.length} ambiguous, ${report.stale} older than our first action`
+      `${report.replied.length} replies, ${report.unmatched} from unknown contacts, ${report.ambiguous.length} ambiguous, ${report.stale} older than our first action` +
+      (report.read_threads.length ? `, ${report.read_threads.length} conversation(s) to read` : "")
   );
+  return report;
+}
+
+/** Message of a conversation read by the executor: `mine` null = author unreadable; `seen`: LinkedIn's
+ *  read receipt (the contact's photo) under it. */
+export interface ThreadMessage {
+  mine: boolean | null;
+  text: string;
+  seen?: boolean;
+}
+
+export interface ThreadRead extends ThreadToRead {
+  ok?: boolean;
+  messages?: ThreadMessage[];
+  error?: string;
+}
+
+// Same key as the extension's (content.js, textKey): first 200 characters, no accents, single spaces.
+const textKey = (s: string | null | undefined) =>
+  (s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim().slice(0, 200);
+
+export type ThreadVerdict =
+  | { kind: "replied"; text: string }
+  | { kind: "by_hand" }
+  | { kind: "nothing" } // nothing after the sequence's messages
+  | { kind: "unknown"; why: string };
+
+/**
+ * What a conversation says, read because its last message is ours but not the sequence's. Only what
+ * follows the sequence's first message counts (before it: an older conversation); without it in
+ * the thread, the whole thread when the sequence's invitation made the relation, else no
+ * conclusion. A message from the contact = reply; ours outside the sequence = written by hand. An
+ * attachment comes with an empty text.
+ */
+export function threadVerdict(messages: ThreadMessage[], bodies: Array<string | null>, invited: boolean): ThreadVerdict {
+  if (!messages.length) return { kind: "unknown", why: "conversation vide ou illisible" };
+  const anchors = new Set(bodies.map(textKey).filter(Boolean));
+  const msgs = messages.map((m) => (anchors.has(textKey(m.text)) ? { ...m, mine: true } : m));
+  const first = msgs.findIndex((m) => anchors.has(textKey(m.text)));
+  if (first < 0 && !invited) return { kind: "unknown", why: "message de la séquence absent du fil" };
+  const scope = first >= 0 ? msgs.slice(first + 1) : msgs;
+  const theirs = scope.filter((m) => m.mine === false);
+  if (theirs.length) return { kind: "replied", text: theirs.map((m) => m.text.trim() || "(pièce jointe)").join("\n\n") };
+  const extra = scope.filter((m) => !anchors.has(textKey(m.text)));
+  if (extra.some((m) => m.mine === null)) return { kind: "unknown", why: "auteur des messages illisible" };
+  return extra.length ? { kind: "by_hand" } : { kind: "nothing" };
+}
+
+export interface ThreadsReport {
+  replied: Array<{ cc_id: number; name: string; opted_out: boolean }>;
+  by_hand: number[];
+  unknown: number;
+}
+
+interface Settled {
+  cc_id: number;
+  contact_id: number;
+  first_name: string | null;
+  last_name: string | null;
+}
+
+/**
+ * Applies what a conversation says to a contact awaiting a reply. Reply: the sequence stops as from
+ * the inbox, with the contact's messages as text. Written by hand: the sequence stops (status
+ * stopped), no reply, and the contact stays watched. `memo` goes in li_thread_read.
+ */
+function settle(row: Settled, account: LiAccount, verdict: ThreadVerdict, memo: string, how: string, report: ThreadsReport): void {
+  const name = [row.first_name, row.last_name].filter(Boolean).join(" ") || `contact #${row.contact_id}`;
+  if (verdict.kind === "unknown") {
+    report.unknown++;
+    console.log(`[linkedin] ${name}: conversation ${how}, no conclusion (${account.name}): ${verdict.why}`);
+    return;
+  }
+  db.prepare("UPDATE campaign_contacts SET li_thread_read = ? WHERE id = ?").run(memo, row.cc_id);
+  if (verdict.kind === "replied") {
+    const optedOut = isOptOut(verdict.text);
+    terminate({ cc_id: row.cc_id, contact_id: row.contact_id }, optedOut ? "opted_out" : "replied", optedOut);
+    db.prepare("UPDATE campaign_contacts SET li_reply_text = ? WHERE id = ?").run(verdict.text.slice(0, 2000), row.cc_id);
+    report.replied.push({ cc_id: row.cc_id, name, opted_out: optedOut });
+    console.log(`[linkedin] ${name} replied on LinkedIn (${account.name}, conversation ${how})${optedOut ? " — opted out" : ""} — sequence stopped`);
+  } else if (verdict.kind === "by_hand") {
+    const reason = "message écrit à la main dans la conversation LinkedIn — séquence arrêtée, pas une réponse";
+    db.transaction(() => {
+      db.prepare(
+        `UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL, error = ?
+         WHERE id = ? AND status IN ('pending', 'in_progress', 'awaiting_li')`
+      ).run(`LinkedIn (${account.name}) : ${reason}`, row.cc_id);
+      cancelLinkedInActions(`campaign_contact_id = ?`, row.cc_id, reason);
+    })();
+    report.by_hand.push(row.cc_id);
+    console.log(`[linkedin] ${name}: message written by hand (${account.name}, conversation ${how}), no reply — sequence stopped`);
+  }
+}
+
+const invitedSql = `EXISTS (SELECT 1 FROM li_actions la WHERE la.campaign_contact_id = ? AND la.type = 'invite' AND la.status = 'sent') AS invited`;
+
+/**
+ * Conversations opened by the executor (read_threads of the inbox read). `accounts`: those of the
+ * executor's LinkedIn profile, the only ones whose contacts it may settle. Nothing after the
+ * sequence's messages counts as by hand here: the snippet showed an action of ours (attachment…).
+ */
+export function processThreads(accounts: LiAccount[], threads: ThreadRead[]): ThreadsReport {
+  const report: ThreadsReport = { replied: [], by_hand: [], unknown: 0 };
+  const byId = new Map(accounts.map((a) => [a.id, a]));
+  const rowOf = db.prepare(
+    `SELECT cc.id AS cc_id, cc.contact_id, cc.li_account_id, cc.replied_at, c.first_name, c.last_name, ${invitedSql}
+     FROM campaign_contacts cc
+     JOIN contacts_v c ON c.id = cc.contact_id
+     WHERE cc.id = ?`
+  );
+  const bodies = db.prepare(SEQUENCE_BODIES);
+  for (const t of threads.slice(0, 10)) {
+    if (!t || !Array.isArray(t.cc_ids)) continue;
+    for (const ccId of t.cc_ids.slice(0, 5)) {
+      const row = rowOf.get(Number(ccId), Number(ccId)) as
+        | (Settled & { li_account_id: number | null; replied_at: number | null; invited: number | boolean })
+        | undefined;
+      const account = row?.li_account_id != null ? byId.get(row.li_account_id) : undefined;
+      if (!row || !account || row.replied_at != null) continue;
+      const verdict: ThreadVerdict = t.ok
+        ? threadVerdict(cleanMessages(t.messages), (bodies.all(row.cc_id) as Array<{ body: string | null }>).map((r) => r.body), Boolean(row.invited))
+        : { kind: "unknown", why: t.error || "lecture impossible" };
+      // Read once per snippet, whatever it said: no new click until the conversation moves.
+      const memo = typeof t.snippet === "string" ? t.snippet : "";
+      if (verdict.kind === "unknown") db.prepare("UPDATE campaign_contacts SET li_thread_read = ? WHERE id = ?").run(memo, row.cc_id);
+      if (typeof t.thread_url === "string") {
+        db.prepare("UPDATE campaign_contacts SET li_thread_url = COALESCE(li_thread_url, ?) WHERE id = ?").run(t.thread_url, row.cc_id);
+      }
+      if (t.ok) markSeen(row.cc_id, seenTexts(cleanMessages(t.messages)));
+      settle(row, account, verdict.kind === "nothing" ? { kind: "by_hand" } : verdict, memo, "opened", report);
+    }
+  }
+  return report;
+}
+
+function cleanMessages(raw: unknown): ThreadMessage[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((m) => m && typeof m.text === "string")
+    .slice(-50)
+    .map((m) => ({ mine: typeof m.mine === "boolean" ? m.mine : null, text: String(m.text).slice(0, 2000), seen: m.seen === true }));
+}
+
+/** Our messages up to the last one LinkedIn shows as seen by the contact (read receipt). */
+export function seenTexts(messages: ThreadMessage[]): string[] {
+  let last = -1;
+  messages.forEach((m, i) => {
+    if (m.seen) last = i;
+  });
+  return messages.slice(0, last + 1).filter((m) => m.mine !== false && m.text.trim()).map((m) => m.text);
+}
+
+/** The sequence's LinkedIn messages to this contact found among `texts` (seen): seen_at set, once. */
+export function markSeen(ccId: number, texts: string[]): number {
+  const keys = new Set(texts.map(textKey).filter(Boolean));
+  if (!keys.size) return 0;
+  const rows = db
+    .prepare(`SELECT id, body FROM li_actions WHERE campaign_contact_id = ? AND type = 'message' AND status = 'sent' AND seen_at IS NULL`)
+    .all(ccId) as Array<{ id: number; body: string | null }>;
+  const now = Date.now();
+  let n = 0;
+  for (const r of rows) {
+    if (keys.has(textKey(r.body))) n += db.prepare("UPDATE li_actions SET seen_at = ? WHERE id = ? AND seen_at IS NULL").run(now, r.id).changes;
+  }
+  return n;
+}
+
+/**
+ * Read receipts seen by the executor in the conversation just before sending a follow-up
+ * (content.js, doMessage): `texts` = our messages LinkedIn shows as seen. Only this account's action.
+ */
+export function processSeenBeforeSend(account: LiAccount, actionId: number, texts: unknown): void {
+  if (!Array.isArray(texts) || !texts.length) return;
+  const row = db.prepare("SELECT campaign_contact_id AS cc_id, li_account_id FROM li_actions WHERE id = ?").get(actionId) as
+    | { cc_id: number; li_account_id: number | null }
+    | undefined;
+  if (!row || row.li_account_id !== account.id) return;
+  markSeen(row.cc_id, texts.filter((t): t is string => typeof t === "string").slice(0, 25));
+}
+
+const threadId = (url: string | null | undefined) => url?.match(/\/messaging\/thread\/([^/?#]+)/)?.[1] ?? null;
+
+/** Conversation the user had on screen in their own LinkedIn tab, read by the extension (passive). */
+export interface SeenThread {
+  thread_url?: string | null;
+  name?: string | null;
+  profile_urls?: unknown;
+  messages?: unknown;
+}
+
+/**
+ * A conversation the user opened. Its contact is found among those the accounts reached: by profile
+ * link, else by thread, else by full name (single match). Awaiting a reply: settled at once (reply,
+ * or written by hand), and remembered so that the executor doesn't open it again. Already replied:
+ * the text of the reply is completed with every message the contact wrote.
+ */
+export function processSeenThread(accounts: LiAccount[], t: SeenThread): ThreadsReport {
+  const report: ThreadsReport = { replied: [], by_hand: [], unknown: 0 };
+  const messages = cleanMessages(t.messages);
+  if (!messages.length) return report;
+  const slugs = new Set((Array.isArray(t.profile_urls) ? t.profile_urls : []).map((u) => linkedinSlug(String(u))).filter(Boolean));
+  const tid = threadId(t.thread_url);
+  const name = normName(t.name);
+  const find = (pool: Watched[]) => {
+    const bySlug = pool.filter((w) => slugs.has(linkedinSlug(w.linkedin) ?? ""));
+    // several contacts in one conversation (group): no conclusion
+    if (new Set(bySlug.map((w) => linkedinSlug(w.linkedin))).size > 1) return [];
+    if (bySlug.length) return bySlug;
+    const byThread = tid ? pool.filter((w) => threadId(w.li_thread_url) === tid) : [];
+    if (byThread.length) return byThread;
+    const byName = name.includes(" ") ? pool.filter((w) => normName(`${w.first_name ?? ""} ${w.last_name ?? ""}`) === name) : [];
+    return byName.length === 1 ? byName : [];
+  };
+  const bodies = db.prepare(SEQUENCE_BODIES);
+  const invited = db.prepare(`SELECT ${invitedSql}`);
+  const seen = seenTexts(messages);
+  const last = messages[messages.length - 1];
+  // contact's message last: "§" never matches a snippet of ours
+  const memo = SEEN + (last.mine === false ? "§" : last.text.trim().slice(0, 300));
+  for (const account of accounts) {
+    for (const w of find(watched(account.id))) {
+      const verdict = threadVerdict(
+        messages,
+        (bodies.all(w.cc_id) as Array<{ body: string | null }>).map((r) => r.body),
+        Boolean((invited.get(w.cc_id) as { invited: number | boolean }).invited)
+      );
+      if (t.thread_url && tid) db.prepare("UPDATE campaign_contacts SET li_thread_url = COALESCE(li_thread_url, ?) WHERE id = ?").run(t.thread_url, w.cc_id);
+      markSeen(w.cc_id, seen);
+      settle(w, account, verdict, memo, "seen on screen", report);
+    }
+    for (const w of find(watched(account.id, true))) {
+      const verdict = threadVerdict(
+        messages,
+        (bodies.all(w.cc_id) as Array<{ body: string | null }>).map((r) => r.body),
+        Boolean((invited.get(w.cc_id) as { invited: number | boolean }).invited)
+      );
+      if (verdict.kind === "replied") db.prepare("UPDATE campaign_contacts SET li_reply_text = ? WHERE id = ?").run(verdict.text.slice(0, 2000), w.cc_id);
+      markSeen(w.cc_id, seen);
+    }
+  }
   return report;
 }
 

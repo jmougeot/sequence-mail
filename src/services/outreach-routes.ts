@@ -12,7 +12,18 @@
  * how the server ensures the action came from the right account (see outreach.ts, recordResult).
  */
 import type express from "express";
-import { processAlreadyMessaged, processInbox, processThreadReply, type LiConversation } from "./li-inbox.js";
+import {
+  processAlreadyMessaged,
+  processInbox,
+  processThreadReply,
+  processSeenBeforeSend,
+  processSeenThread,
+  processThreads,
+  type LiConversation,
+  type SeenThread,
+  type ThreadRead,
+  type ThreadToRead,
+} from "./li-inbox.js";
 import {
   accountStatus,
   checkInboxMember,
@@ -46,6 +57,8 @@ import {
 const ACCOUNT_HEADER = "x-li-account";
 const RUNNER_HEADER = "x-li-runner";
 const RUNNER_ACCOUNT_HEADER = "x-li-account-id";
+// Conversations opened per inbox read (cf. /api/li/threads): the rest waits for the next read.
+const THREADS_PER_READ = 3;
 
 /** The calling executor's account and type; replies 401/409 itself if not found. */
 function caller(req: express.Request, res: express.Response): { account: LiAccount; via: LiMode } | undefined {
@@ -134,6 +147,8 @@ export function registerOutreachRoutes(app: express.Express): void {
       if (!markDoneByHand(c.account, id)) return res.status(404).json({ error: "Action inconnue pour ce compte" });
       return res.json({ ok: true, done_by_hand: true });
     }
+    // Read receipts noticed in the conversation before writing (extension ≥ 0.6.8).
+    if (!b.wrong_account) processSeenBeforeSend(c.account, id, b.seen_texts);
     // The contact wrote in the conversation: the executor sent nothing.
     if (b.replied && !b.ok && !b.wrong_account) {
       const text = typeof b.reply_text === "string" ? b.reply_text.slice(0, 2000) : "";
@@ -174,6 +189,7 @@ export function registerOutreachRoutes(app: express.Express): void {
       sent_invitations?: unknown; // [{ slug, sent_at }] pending invitations
       sent_invitations_complete?: unknown; // the whole list was read
       sent_invitations_since?: unknown; // or: read back to this date (what is new since the last read)
+      reads_threads?: boolean; // the executor opens the conversations in read_threads (extension ≥ 0.6.6)
     };
     if (!checkInboxMember(c.account, parseMember(b.member), Boolean(b.wrong_account))) {
       return res.json({ ok: true, processed: false, wrong_account: true });
@@ -191,8 +207,45 @@ export function registerOutreachRoutes(app: express.Express): void {
       return res.json({ ok: true, processed: false, connections });
     }
     const conversations = b.conversations.slice(0, 200);
-    for (const a of others) processInbox(a, conversations);
-    res.json({ ok: true, connections, ...processInbox(c.account, conversations) });
+    const readsThreads = Boolean(b.reads_threads);
+    const toRead: ThreadToRead[] = others.flatMap((a) => processInbox(a, conversations, readsThreads).read_threads);
+    const report = processInbox(c.account, conversations, readsThreads);
+    // One click per conversation, whatever the accounts; a few per read, the rest next time.
+    const byThread = new Map<string, ThreadToRead>();
+    for (const t of [...report.read_threads, ...toRead]) {
+      const seen = byThread.get(t.thread_url);
+      if (seen) seen.cc_ids.push(...t.cc_ids);
+      else byThread.set(t.thread_url, { ...t, cc_ids: [...t.cc_ids] });
+    }
+    res.json({ ok: true, connections, ...report, read_threads: [...byThread.values()].slice(0, THREADS_PER_READ) });
+  });
+
+  // Conversations opened by the extension at the server's request (read_threads of /api/li/inbox):
+  // { threads: [{ thread_url, cc_ids, snippet, ok, messages?: [{ mine, text }], error? }] }
+  app.post("/api/li/threads", (req, res) => {
+    const c = caller(req, res);
+    if (!c) return;
+    const b = req.body as { threads?: ThreadRead[]; member?: unknown; wrong_account?: boolean };
+    if (!checkInboxMember(c.account, parseMember(b.member), Boolean(b.wrong_account))) {
+      return res.json({ ok: true, processed: false, wrong_account: true });
+    }
+    if (!Array.isArray(b.threads)) return res.status(400).json({ error: "threads manquant" });
+    res.json({ ok: true, ...processThreads(sameProfile(c.account), b.threads) });
+  });
+
+  // Conversation the user opened in their own LinkedIn tab, read by the extension without a request
+  // to LinkedIn: { thread_url, name, profile_urls, messages: [{ mine, text }], member? }. All the
+  // browser's tokens; only the accounts of the connected LinkedIn profile.
+  app.post("/api/li/thread-seen", (req, res) => {
+    const c = callers(req, res);
+    if (!c) return;
+    const b = req.body as SeenThread & { member?: unknown };
+    const member = parseMember(b.member);
+    const accounts = new Map<number, LiAccount>();
+    for (const a of c.accounts.flatMap((x) => sameProfile(x))) {
+      if (!member || !a.member_slug || a.member_slug === member.slug) accounts.set(a.id, a);
+    }
+    res.json({ ok: true, ...processSeenThread([...accounts.values()], b) });
   });
 
   // The extension hands over its browser's LinkedIn session: the account switches to server mode

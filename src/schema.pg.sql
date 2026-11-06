@@ -66,7 +66,7 @@ CREATE TABLE campaign_contacts (
   thread_id TEXT,
   last_gmail_message_id TEXT,
   replied_at BIGINT,
-  error TEXT, unsub_token TEXT, li_account_id BIGINT REFERENCES li_accounts(id), li_thread_url TEXT, li_reply_text TEXT, inbox_seen_at BIGINT, inbox_done_at BIGINT, vars TEXT, external_key TEXT, li_accepted BIGINT,
+  error TEXT, unsub_token TEXT, li_account_id BIGINT REFERENCES li_accounts(id), li_thread_url TEXT, li_reply_text TEXT, inbox_seen_at BIGINT, inbox_done_at BIGINT, vars TEXT, external_key TEXT, li_accepted BIGINT, li_thread_read TEXT,
   UNIQUE (campaign_id, contact_id)
 );
 
@@ -84,7 +84,7 @@ CREATE TABLE li_actions (
   not_before BIGINT,
   created_at BIGINT NOT NULL DEFAULT (floor(extract(epoch from now()))::bigint * 1000),
   sent_at BIGINT
-, li_account_id BIGINT REFERENCES li_accounts(id), member_slug TEXT, ui_failures BIGINT NOT NULL DEFAULT 0, detached BIGINT NOT NULL DEFAULT 0);
+, li_account_id BIGINT REFERENCES li_accounts(id), member_slug TEXT, ui_failures BIGINT NOT NULL DEFAULT 0, detached BIGINT NOT NULL DEFAULT 0, seen_at BIGINT);
 
 CREATE TABLE li_connections (
   li_account_id BIGINT NOT NULL REFERENCES li_accounts(id) ON DELETE CASCADE,

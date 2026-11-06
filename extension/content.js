@@ -710,8 +710,15 @@ function threadRoot(editor) {
   return editor.closest(".msg-overlay-conversation-bubble, .msg-convo-wrapper, .msg-thread, .scaffold-layout__detail") || document;
 }
 
-/** Messages du fil, dans l'ordre : { mine: true | false | null (auteur illisible), text }. */
-function threadMessages(root, meName) {
+// Accusé de lecture de LinkedIn : la photo du contact sous le dernier message qu'il a vu
+// (« Vu par … » / « Seen by … »). Absent si l'un des deux a coupé les confirmations de lecture.
+const SEEN_RECEIPT =
+  '[class*="seen-receipt"] img, img[class*="seen-receipt"], img[alt^="Vu par"], img[alt^="Seen by"], [title^="Vu par"], [title^="Seen by"], [aria-label^="Vu par"], [aria-label^="Seen by"]';
+
+/** Messages du fil, dans l'ordre : { mine: true | false | null (auteur illisible), text, seen }.
+ *  `keepEmpty` : un message sans texte (pièce jointe) compte aussi, texte vide. `seen` : l'accusé
+ *  de lecture est sous ce message. */
+function threadMessages(root, meName, keepEmpty = false) {
   const events = [...root.querySelectorAll(".msg-s-event-listitem")];
   // LinkedIn marque les messages reçus (--other) ; à défaut, le nom de l'auteur.
   const marked = events.some((ev) => ev.classList.contains("msg-s-event-listitem--other"));
@@ -725,12 +732,25 @@ function threadMessages(root, meName) {
     if (marked) mine = !ev.classList.contains("msg-s-event-listitem--other");
     else if (sender && /^(vous|you)$/i.test(sender)) mine = true;
     else if (sender && me) mine = normWords(sender).startsWith(me);
+    let texts = 0;
     for (const body of ev.querySelectorAll(".msg-s-event-listitem__body")) {
       const t = (body.innerText || body.textContent || "").trim();
-      if (t) out.push({ mine, text: t });
+      if (t) {
+        out.push({ mine, text: t });
+        texts++;
+      }
     }
+    if (keepEmpty && !texts) out.push({ mine, text: "" });
+    if (out.length && (texts || keepEmpty) && (ev.closest("li") || ev).querySelector(SEEN_RECEIPT)) out[out.length - 1].seen = true;
   }
   return out;
+}
+
+/** Nos messages jusqu'au dernier que LinkedIn montre vu par le contact (pour le serveur). */
+function seenMine(msgs) {
+  let last = -1;
+  msgs.forEach((m, i) => { if (m.seen) last = i; });
+  return msgs.slice(0, last + 1).filter((m) => m.mine !== false && m.text).map((m) => m.text.slice(0, 2000));
 }
 
 /**
@@ -825,9 +845,12 @@ async function doMessage(text, inThread, guard, meName) {
   const editor = await waitFor(findEditor, 25000);
   if (!editor) return { ok: false, error: `zone de saisie du message introuvable — ${messageDiagnostic(msgClicked)}` };
 
+  // Accusés de lecture des messages déjà partis, relevés avant d'écrire (le serveur note « Vu »).
+  let seen_texts;
   if (guard) {
     const stop = await threadGuard(editor, text, guard, meName);
     if (stop) return stop;
+    seen_texts = seenMine(threadMessages(threadRoot(editor), meName));
   }
 
   // Saisie par COLLAGE (méthode principale : plus robuste et plus humaine — un
@@ -865,7 +888,7 @@ async function doMessage(text, inThread, guard, meName) {
   }, 10000);
   if (!gone) return { ok: false, error: `« Envoyer » cliqué mais le message est resté dans le champ — ${messageDiagnostic(msgClicked)}` };
   await human();
-  return { ok: true };
+  return seen_texts && seen_texts.length ? { ok: true, seen_texts } : { ok: true };
 }
 
 /**
@@ -911,6 +934,22 @@ async function doReadMessages(limit = 25, inThread) {
   }
   if (!out.length) return { ok: false, error: "aucun message lisible dans le fil (sélecteurs à mettre à jour ?)" };
   return { ok: true, data: { messages: out.slice(-limit) } };
+}
+
+/**
+ * Lit le fil ouvert (/messaging/thread/...) pour le serveur, qui y cherche une réponse du contact
+ * quand le dernier message est de notre main (cf. li-inbox.ts) : messages dans l'ordre, auteur
+ * compris. Lecture seule : rien n'est cliqué ni écrit.
+ */
+async function doReadThread(meName) {
+  const root = await waitFor(() => document.querySelector(".msg-s-message-list, .msg-s-message-list-content"), 10000);
+  if (!root) return { ok: false, error: "fil de discussion introuvable" };
+  await waitFor(() => root.querySelector(".msg-s-event-listitem__body"), 6000);
+  await sleep(rand(400, 900)); // laisse charger les derniers messages
+  const messages = threadMessages(root, meName, true);
+  // Pièce jointe seule : pas de texte, le fil n'est pas vide pour autant.
+  if (!messages.length && !root.querySelector(".msg-s-event-listitem")) return { ok: false, error: "aucun message lisible dans le fil (sélecteurs à mettre à jour ?)" };
+  return { ok: true, data: { messages: messages.slice(-25).map((m) => ({ mine: m.mine, text: m.text.slice(0, 2000), seen: m.seen || undefined })) } };
 }
 
 /**
@@ -1774,12 +1813,79 @@ async function doWhoami() {
   return { ok: true, data: { slug: normSlug(p.publicIdentifier), name, avatar: pictureUrl(p) } };
 }
 
+// --- Lecture passive des conversations ouvertes par la personne --------------
+// Quand la personne ouvre une conversation (page /messaging/thread/ ou bulle de messagerie), on lit
+// le fil déjà affiché et on le passe au serveur : il y voit une réponse du contact, ou une relance
+// écrite à la main, sans que l'extension ouvre elle-même ce fil plus tard. Aucune requête à
+// LinkedIn, aucun clic : lecture de la page seule. Le background ignore l'onglet de travail.
+
+const PASSIVE_EVERY_MS = 4000;
+const passiveState = new Map(); // fil → { pending, sent } : envoyé une fois stable, et à chaque changement
+
+function passiveThreads() {
+  const out = [];
+  const abs = (href) => {
+    try { return href ? new URL(href, location.origin).href : null; } catch { return null; }
+  };
+  // En-tête du fil et expéditeurs seulement : un profil partagé dans un message n'est pas le contact.
+  const profiles = (el) =>
+    [
+      ...new Set(
+        [...el.querySelectorAll('a[href*="/in/"]')]
+          .filter((a) => !a.closest(".msg-s-message-list, .msg-s-message-list-content") || a.matches(".msg-s-message-group__profile-link, .msg-s-message-group__meta a"))
+          .map((a) => abs(a.getAttribute("href")))
+          .filter(Boolean)
+      ),
+    ].slice(0, 10);
+  if (/^\/messaging\/thread\//.test(location.pathname)) {
+    const root = document.querySelector(".msg-s-message-list, .msg-s-message-list-content");
+    const detail = root && (root.closest(".scaffold-layout__detail, .msg-convo-wrapper, .msg-thread") || root);
+    if (detail) out.push({ root: detail, thread_url: location.origin + location.pathname, name: openThreadName(), profile_urls: profiles(detail) });
+  }
+  for (const b of document.querySelectorAll(".msg-overlay-conversation-bubble")) {
+    if (!b.querySelector(".msg-s-event-listitem")) continue;
+    const a = b.querySelector('a[href*="/messaging/thread/"]');
+    const title = b.querySelector(".msg-overlay-bubble-header__title, h2");
+    out.push({ root: b, thread_url: a ? abs(a.getAttribute("href")) : null, name: title ? title.textContent.trim() : null, profile_urls: profiles(b) });
+  }
+  return out;
+}
+
+function passiveTick() {
+  if (document.visibilityState !== "visible" || !chrome.runtime || !chrome.runtime.id) return;
+  for (const t of passiveThreads()) {
+    const messages = threadMessages(t.root, null, true).slice(-25);
+    if (!messages.length) continue;
+    const id = t.thread_url || t.name || "?";
+    const last = messages[messages.length - 1];
+    const sig = `${messages.length}|${last.mine}|${textKey(last.text)}|${messages.map((m) => (m.seen ? 1 : 0)).join("")}`;
+    const st = passiveState.get(id) || { pending: null, sent: null };
+    // fil encore en chargement : on attend deux lectures identiques
+    if (st.pending !== sig) {
+      passiveState.set(id, { ...st, pending: sig });
+      continue;
+    }
+    if (st.sent === sig) continue;
+    passiveState.set(id, { pending: sig, sent: sig });
+    chrome.runtime
+      .sendMessage({
+        type: "li-thread-seen",
+        thread_url: t.thread_url,
+        name: t.name,
+        profile_urls: t.profile_urls,
+        messages: messages.map((m) => ({ mine: m.mine, text: m.text.slice(0, 2000), seen: m.seen || undefined })),
+      })
+      .catch(() => {});
+  }
+}
+
 // Garde anti-doublon : le background peut ré-injecter content.js si le script du
 // manifest tarde (onglet endormi) — on ne doit jamais enregistrer deux listeners,
 // sinon chaque action serait exécutée deux fois (double envoi !).
 if (!window.__liMcpListenerRegistered) {
   window.__liMcpListenerRegistered = true;
   registerLiListener();
+  setInterval(() => { try { passiveTick(); } catch {} }, PASSIVE_EVERY_MS);
 }
 
 function registerLiListener() {
@@ -1855,6 +1961,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const r =
           action.type === "message" ? await doMessage(action.body, inThread, action.guard, member && member.name)
           : action.type === "read_messages" ? await doReadMessages(action.limit, inThread)
+          : action.type === "read_thread" ? await doReadThread(member && member.name)
           : action.type === "list_conversations" ? await doListConversations(action.limit)
           : action.type === "list_connections" ? await doListConnections(action.since)
           : action.type === "list_sent_invitations" ? await doListSentInvitations(action.since)

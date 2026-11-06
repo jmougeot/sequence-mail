@@ -361,7 +361,7 @@ export function registerInboxRoutes(app: express.Express): void {
         .all(cc.cc_id);
       const linkedin = db
         .prepare(
-          `SELECT step_number, type, body, status, sent_at, error, member_slug
+          `SELECT step_number, type, body, status, sent_at, error, member_slug, seen_at
            FROM li_actions WHERE campaign_contact_id = ?
            ORDER BY COALESCE(sent_at, created_at), id`
         )
