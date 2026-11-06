@@ -25,16 +25,32 @@ CREATE INDEX IF NOT EXISTS idx_enrollment_history_key ON enrollment_history (own
 -- table itself. Same columns, same order in both versions. A person's LinkedIn is her LinkedIn
 -- account in public.accounts (Azerit's ADR step 6, 6 Nov 2026: one row per account, pointing to
 -- its person), before that people.linkedin_key. Azerit's migration writes the same view and
--- function when it moves to accounts (db/_migrations.py, _sequence_reads_accounts).
+-- function when it moves to accounts (db/_migrations.py, _sequence_reads_accounts). A person's
+-- company is the name of her employer (people.company_id -> public.companies) once
+-- people.current_company is gone (ids everywhere, Nov 2026), before that people.current_company;
+-- without the right to read companies, the contact keeps its own company column.
 ALTER TABLE contacts ADD COLUMN IF NOT EXISTS person_id BIGINT;
 CREATE INDEX IF NOT EXISTS idx_contacts_person ON contacts (person_id);
 DO $$
 DECLARE
   li TEXT := 'p.linkedin_key';
+  co TEXT := 'NULLIF(p.current_company, '''')';               -- the person's company, as text
+  has_co TEXT := 'NULLIF(p.current_company, '''') IS NOT NULL'; -- the person holds a company
 BEGIN
   IF to_regclass('public.accounts') IS NOT NULL AND has_table_privilege('public.accounts', 'SELECT') THEN
     li := '(SELECT a.handle FROM public.accounts a WHERE a.person_id = p.id AND a.platform = ''linkedin'' '
           'AND a.deleted_at IS NULL ORDER BY a.id DESC LIMIT 1)';
+  END IF;
+  IF to_regclass('public.people') IS NOT NULL AND NOT EXISTS (
+       SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass('public.people')
+         AND attname = 'current_company' AND NOT attisdropped) THEN
+    IF to_regclass('public.companies') IS NOT NULL AND has_table_privilege('public.companies', 'SELECT') THEN
+      co := '(SELECT NULLIF(k.name, '''') FROM public.companies k WHERE k.id = p.company_id)';
+      has_co := 'p.company_id IS NOT NULL';
+    ELSE
+      co := 'NULL::text';
+      has_co := 'FALSE';
+    END IF;
   END IF;
   IF to_regclass('public.people') IS NOT NULL AND has_table_privilege('public.people', 'SELECT') THEN
     EXECUTE format($view$
@@ -43,11 +59,11 @@ BEGIN
              COALESCE(NULLIF(p.email, ''), c.email)::text AS email,
              COALESCE(NULLIF(p.first_name, ''), c.first_name)::text AS first_name,
              COALESCE(NULLIF(p.last_name, ''), c.last_name)::text AS last_name,
-             COALESCE(NULLIF(p.current_company, ''), c.company)::text AS company,
+             COALESCE(%2$s, c.company)::text AS company,
              COALESCE('https://www.linkedin.com/in/' || %1$s, c.linkedin)::text AS linkedin,
              c.extra, c.do_not_contact, c.created_at, c.person_id
       FROM contacts c LEFT JOIN public.people p ON p.id = c.person_id
-    $view$, li);
+    $view$, li, co);
   ELSE
     EXECUTE 'CREATE OR REPLACE VIEW contacts_v AS SELECT * FROM contacts';
   END IF;
@@ -75,19 +91,19 @@ BEGIN
             email      = CASE WHEN NULLIF(p.email, '') IS NOT NULL THEN NULL ELSE c.email END,
             first_name = CASE WHEN NULLIF(p.first_name, '') IS NOT NULL THEN NULL ELSE c.first_name END,
             last_name  = CASE WHEN NULLIF(p.last_name, '') IS NOT NULL THEN NULL ELSE c.last_name END,
-            company    = CASE WHEN NULLIF(p.current_company, '') IS NOT NULL THEN NULL ELSE c.company END,
+            company    = CASE WHEN %2$s THEN NULL ELSE c.company END,
             linkedin   = CASE WHEN %1$s IS NOT NULL THEN NULL ELSE c.linkedin END
           FROM public.people p
           WHERE p.id = c.person_id
             AND ((c.email IS NOT NULL AND NULLIF(p.email, '') IS NOT NULL)
               OR (c.first_name IS NOT NULL AND NULLIF(p.first_name, '') IS NOT NULL)
               OR (c.last_name IS NOT NULL AND NULLIF(p.last_name, '') IS NOT NULL)
-              OR (c.company IS NOT NULL AND NULLIF(p.current_company, '') IS NOT NULL)
+              OR (c.company IS NOT NULL AND %2$s)
               OR (c.linkedin IS NOT NULL AND %1$s IS NOT NULL))
           RETURNING 1)
         SELECT COUNT(*) FROM done
       $body$
-    $fn$, li);
+    $fn$, li, has_co);
   ELSE
     EXECUTE 'CREATE OR REPLACE FUNCTION forget_copied_identity() RETURNS BIGINT LANGUAGE sql AS $b$ SELECT 0::bigint $b$';
   END IF;
