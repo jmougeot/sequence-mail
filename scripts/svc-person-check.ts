@@ -197,7 +197,7 @@ try {
   check("hold twice: same enrollment", r.json.results?.[0]?.cc_id === ada?.cc_id && r.json.results[0].status === "held", r.json);
   check("hold twice: one enrollment for the person", ccs(job).filter((c) => c.person_id === 101).length === 1, ccs(job));
   check("hold twice: no contact for the other LinkedIn", !db.prepare("SELECT 1 FROM contacts WHERE linkedin = ?").get(li("ada-2")));
-  check("hold twice: new key and vars on the held enrollment", ccs(job).find((c) => c.person_id === 101)?.external_key === "k101-github");
+  check("hold twice: vars rewritten, first key kept", ccs(job).find((c) => c.person_id === 101)?.external_key === "k101" && (db.prepare("SELECT vars FROM campaign_contacts WHERE id = ?").get(ada?.cc_id) as { vars: string }).vars.includes("deux"), ccs(job));
 
   // 3. on another person's contact (Bob = 202 in prospection): the enrollment is 303's
   r = await call("POST", `/campaigns/${job}/hold`, { contacts: [{ person_id: 303, key: "k303", first_name: "Bobby", linkedin: li("bob") }] });
@@ -257,6 +257,70 @@ try {
   check("launch without keys nor person_ids → 400", r.status === 400, r);
   r = await call("POST", `/campaigns/${job}/launch`, { person_ids: ["x"] });
   check("launch with a bad person_id → 400", r.status === 400, r);
+
+  // 7b. keys beside person_ids reach the enrollments of the previous Azerit left without a person
+  const loose = async (key: string, slug: string) => {
+    const x = await call("POST", `/campaigns/${job}/hold`, { contacts: [{ key, linkedin: li(slug) }] });
+    return Number(x.json.results?.[0]?.cc_id);
+  };
+  const row = (id: number) => ccs(job).find((c) => c.id === id);
+  // stop, two people asked: every running one under their keys stopped, none tied
+  const amb = await loose("kamb", "hal");
+  r = await call("POST", `/campaigns/${job}/stop`, { person_ids: [901, 902], keys: ["kamb", "kx"] });
+  check("stop, two people: the enrollment without a person under their keys stopped", r.json.stopped === 1 && row(amb)?.status === "stopped", { r: r.json, row: row(amb) });
+  check("stop, two people: not tied to either", row(amb)?.person_id === null, row(amb));
+  // stop, one person: stopped and tied
+  const st = await loose("ks", "sam");
+  await call("POST", `/campaigns/${job}/launch`, { keys: ["ks"] });
+  r = await call("POST", `/campaigns/${job}/stop`, { person_ids: [941], keys: ["ks"] });
+  check("stop, one person: stopped and tied to her", r.json.stopped === 1 && row(st)?.status === "stopped" && row(st)?.person_id === 941, { r: r.json, row: row(st) });
+  // launch, two people asked: which key is whose is unknown, held and returned
+  const lu = await loose("ku1", "uma");
+  r = await call("POST", `/campaigns/${job}/launch`, { person_ids: [911, 912], keys: ["ku1"] });
+  check("launch, two people: nothing launched by key, returned in unresolved", JSON.stringify(r.json.launched) === "[]" && r.json.unresolved?.length === 1 && r.json.unresolved[0].key === "ku1" && r.json.unresolved[0].cc_id === lu, r.json);
+  check("launch, two people: still held, without a person", row(lu)?.status === "held" && row(lu)?.person_id === null, row(lu));
+  // launch, one person: tied, launched as hers
+  r = await call("POST", `/campaigns/${job}/launch`, { person_ids: [911], keys: ["ku1"] });
+  check("launch, one person: tied and launched", JSON.stringify(r.json.launched) === "[911]" && !r.json.unresolved && row(lu)?.status === "pending" && row(lu)?.person_id === 911, { r: r.json, row: row(lu) });
+  // launch, one person who already has her enrollment: hers goes, the other is returned, not tied
+  await call("POST", `/campaigns/${job}/hold`, { contacts: [{ person_id: 921, key: "k921", linkedin: li("vic") }] });
+  const lv = await loose("k921-old", "vic-old");
+  r = await call("POST", `/campaigns/${job}/launch`, { person_ids: [921], keys: ["k921", "k921-old"] });
+  check("launch, enrolled person: hers launched, the other returned", JSON.stringify(r.json.launched) === "[921]" && r.json.unresolved?.[0]?.cc_id === lv, r.json);
+  check("launch, enrolled person: one enrollment for her, the other untouched", ccs(job).filter((c) => c.person_id === 921).length === 1 && row(lv)?.status === "held" && row(lv)?.person_id === null, ccs(job));
+  // vars: the key is hers, tied and written
+  const vv = await loose("kv", "wes");
+  r = await call("POST", `/campaigns/${job}/vars`, { person_id: 931, key: "kv", vars: { perso: "quatre" } });
+  check("vars by person, enrollment without a person under her key: written and tied", r.status === 200 && row(vv)?.person_id === 931 && (db.prepare("SELECT vars FROM campaign_contacts WHERE id = ?").get(vv) as { vars: string }).vars.includes("quatre"), { r: r.json, row: row(vv) });
+  r = await call("POST", `/campaigns/${job}/vars`, { person_id: 932, key: "unknown", vars: { perso: "x" } });
+  check("vars by person, nothing under person nor key → 404", r.status === 404, r);
+  // hold by person: her key's enrollment without a person comes back, no second one
+  const hh = await loose("kh", "lou");
+  r = await call("POST", `/campaigns/${job}/hold`, { contacts: [{ person_id: 971, key: "kh", linkedin: li("lou-2"), vars: { perso: "cinq" } }] });
+  check("hold by person, her key's enrollment without a person: the same one, tied", r.json.results?.[0]?.cc_id === hh && r.json.results[0].status === "held" && row(hh)?.person_id === 971, { r: r.json, row: row(hh) });
+  check("hold by person, her key's enrollment: no contact for the other LinkedIn", !db.prepare("SELECT 1 FROM contacts WHERE linkedin = ?").get(li("lou-2")));
+  // two people with the same key in one request: the first takes it, the second is refused
+  const hd = await loose("kd", "max");
+  r = await call("POST", `/campaigns/${job}/hold`, {
+    contacts: [{ person_id: 981, key: "kd", linkedin: li("max-2") }, { person_id: 982, key: "kd", linkedin: li("max-3") }],
+  });
+  check("hold, one key for two people: the first gets it", r.json.results?.[0]?.cc_id === hd && row(hd)?.person_id === 981, { r: r.json, row: row(hd) });
+  check("hold, one key for two people: the second refused", r.json.results?.[1]?.status === "rejected" && r.json.results[1].enrolled_person_id === 981, r.json);
+
+  // 7c. the lead key of a held enrollment: kept when found by person, written when it had none,
+  // written over when found by contact (as before 7 Nov 2026)
+  r = await call("POST", `/campaigns/${job}/hold`, { contacts: [{ person_id: 951, key: "k951a", linkedin: li("ivy") }] });
+  await call("POST", `/campaigns/${job}/hold`, { contacts: [{ person_id: 951, key: "k951b", linkedin: li("ivy-2") }] });
+  check("key: kept when found by person", row(Number(r.json.results?.[0]?.cc_id))?.external_key === "k951a", ccs(job));
+  r = await call("POST", `/campaigns/${job}/launch`, { keys: ["k951a"] });
+  check("key: the previous Azerit still launches by the first", JSON.stringify(r.json.launched) === '["k951a"]', r.json);
+  r = await call("POST", `/campaigns/${job}/hold`, { contacts: [{ person_id: 961, linkedin: li("kim") }] });
+  const nk = Number(r.json.results?.[0]?.cc_id);
+  await call("POST", `/campaigns/${job}/hold`, { contacts: [{ person_id: 961, key: "k961", linkedin: li("kim") }] });
+  check("key: written when the enrollment had none", row(nk)?.external_key === "k961", row(nk));
+  const oc = await loose("kc1", "jo");
+  await loose("kc2", "jo");
+  check("key: written over when found by contact (old form)", row(oc)?.external_key === "kc2", row(oc));
 
   // 8. enroll (launches at once)
   r = await call("POST", `/campaigns/${job}/enroll`, { contacts: [{ person_id: 808, key: "k808", linkedin: li("gus") }] });

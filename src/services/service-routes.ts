@@ -183,6 +183,48 @@ function enrollmentsOf(campaignId: number, person: number, and = ""): Array<{ id
     .all(campaignId, person) as Array<{ id: number }>;
 }
 
+/** `keys` beside `person_ids` (Azerit since 7 Nov 2026): the lead keys sent, trimmed, without duplicates (none if absent). */
+function leadKeys(raw: unknown): string[] {
+  return Array.isArray(raw) ? [...new Set(raw.map(leadKey).filter(Boolean))].slice(0, 500) : [];
+}
+
+/**
+ * Enrollments still without a person under one of these lead keys: made by the previous Azerit
+ * and left unresolved by the migration (ambiguous key, contact without person). Azerit names its
+ * candidates by person but sends their keys beside: these are reached by key. Optional `and`
+ * narrows them (alias cc).
+ */
+function unresolvedOf(campaignId: number, keys: string[], and = ""): Array<{ id: number; key: string; status: string }> {
+  if (!keys.length) return [];
+  return (
+    db
+      .prepare(
+        `SELECT cc.id, cc.external_key AS key, cc.status FROM campaign_contacts cc
+         WHERE cc.campaign_id = ? AND cc.person_id IS NULL AND cc.external_key IN (${keys.map(() => "?").join(", ")}) ${and}
+         ORDER BY cc.id`
+      )
+      .all(campaignId, ...keys) as Array<{ id: number; key: string; status: string }>
+  ).map((r) => ({ ...r, id: Number(r.id) }));
+}
+
+/**
+ * Ties an enrollment without a person to `person`, only when the match is certain: the keys are
+ * hers (the caller knows), exactly one enrollment without a person carries them, and she has no
+ * enrollment in the campaign yet (one per person and campaign). True when tied.
+ */
+function claimUnresolved(campaignId: number, person: number, keys: string[]): boolean {
+  const rows = unresolvedOf(campaignId, keys);
+  if (rows.length !== 1) return false;
+  return (
+    db
+      .prepare(
+        `UPDATE campaign_contacts SET person_id = ? WHERE id = ? AND person_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM campaign_contacts o WHERE o.campaign_id = ? AND o.person_id = ?)`
+      )
+      .run(person, rows[0].id, campaignId, person).changes > 0
+  );
+}
+
 /** Enrollment variables: simple keys, text values. */
 function cleanVars(vars: unknown): Record<string, string> | null {
   if (!vars || typeof vars !== "object") return null;
@@ -462,9 +504,11 @@ export function registerServiceRoutes(app: express.Express): void {
    * (campaign_contacts.person_id) whatever contact the import keeps — a shared email or LinkedIn
    * can land on another person's contact, said by `contact_person_id` — and is how Azerit names her
    * afterwards (launch, vars, stop, statuses). One enrollment per person and campaign: a person
-   * already enrolled gets hers back (same `cc_id`), held ones taking the new `vars`/`key`, never a
-   * second one. A contact whose enrollment here belongs to another person is refused
-   * (`enrolled_person_id`): the same address would be written to twice.
+   * already enrolled gets hers back (same `cc_id`), held ones taking the new `vars` (their key kept,
+   * set only if they had none), never a second one — likewise the single enrollment left without a
+   * person under her `key` (previous Azerit), which becomes hers. A contact whose enrollment here
+   * belongs to another person is refused (`enrolled_person_id`): the same address would be written
+   * to twice.
    * `key`: the lead key, still kept (external_key) for the previous Azerit, which sends only it
    * (with person_id when known) and names its candidates by it: a row without person_id behaves
    * exactly as before 7 Nov 2026. Each result carries both.
@@ -527,18 +571,31 @@ export function registerServiceRoutes(app: express.Express): void {
 
     if (items.length) {
       // A person already enrolled here keeps that enrollment: her row is not imported again (its
-      // contact could differ, and a second enrollment would mean a second invitation).
+      // contact could differ, and a second enrollment would mean a second invitation). So does the
+      // single enrollment left without a person under her key (previous Azerit, unresolved).
       const ccOfPerson = db.prepare(
         "SELECT id, status, contact_id, person_id FROM campaign_contacts WHERE campaign_id = ? AND person_id = ? ORDER BY id LIMIT 1"
       );
-      const existing = items.map((it) => (it.person == null ? undefined : (ccOfPerson.get(campaign.id, it.person) as Cc | undefined)));
+      const ccById = db.prepare("SELECT id, status, contact_id, person_id FROM campaign_contacts WHERE id = ?");
+      const existing = items.map((it): Cc | undefined => {
+        if (it.person == null) return undefined;
+        const own = ccOfPerson.get(campaign.id, it.person) as Cc | undefined;
+        if (own || !it.key) return own;
+        const loose = unresolvedOf(campaign.id, [it.key]);
+        return loose.length === 1 ? (ccById.get(loose[0].id) as Cc) : undefined;
+      });
       const fresh = items.filter((_, i) => !existing[i]);
       const report = fresh.length ? await importContacts(campaign.id, fresh.map((it) => it.row), { withIds: true }) : { contact_ids: [] };
       const contactOf = new Map(fresh.map((it, i) => [it, report.contact_ids![i]]));
       const ccOf = db.prepare("SELECT id, status, contact_id, person_id FROM campaign_contacts WHERE campaign_id = ? AND contact_id = ?");
-      // vars as sent (none = cleared), the key when Azerit sent one, the person when the enrollment has none yet
-      const setMeta = db.prepare(
+      // vars as sent (none = cleared), the person when the enrollment has none yet, and the key Azerit
+      // sent: written over the enrollment's when found by contact (as before 7 Nov 2026), only where
+      // it has none when found by person — the previous Azerit follows that one under its first key.
+      const setMetaByContact = db.prepare(
         "UPDATE campaign_contacts SET vars = ?, external_key = COALESCE(?, external_key), person_id = COALESCE(person_id, ?) WHERE id = ?"
+      );
+      const setMetaByPerson = db.prepare(
+        "UPDATE campaign_contacts SET vars = ?, external_key = COALESCE(external_key, ?), person_id = COALESCE(person_id, ?) WHERE id = ?"
       );
       const claim = db.prepare("UPDATE campaign_contacts SET person_id = ? WHERE id = ? AND person_id IS NULL");
       const launch = db.prepare("UPDATE campaign_contacts SET status = 'pending', error = NULL WHERE id = ? AND status = 'held'");
@@ -549,7 +606,9 @@ export function registerServiceRoutes(app: express.Express): void {
         items.forEach((it, i) => {
           const { key, person, vars } = it;
           const base = { key, person_id: person };
-          let cc = existing[i];
+          // re-read: an earlier line of this request may have taken it
+          let cc = existing[i] && (ccById.get(existing[i]!.id) as Cc | undefined);
+          const byPerson = Boolean(cc);
           if (!cc) {
             const contactId = contactOf.get(it);
             if (contactId == null) {
@@ -582,7 +641,7 @@ export function registerServiceRoutes(app: express.Express): void {
             }
           }
           if (cc.status === "held") {
-            setMeta.run(vars ? JSON.stringify(vars) : null, key || null, person, cc.id);
+            (byPerson ? setMetaByPerson : setMetaByContact).run(vars ? JSON.stringify(vars) : null, key || null, person, cc.id);
             if (hold) {
               results.push({ ...base, cc_id: cc.id, status: "held", ...other });
               return;
@@ -604,9 +663,13 @@ export function registerServiceRoutes(app: express.Express): void {
   app.post("/api/svc/campaigns/:id/hold", enroll(true));
 
   /**
-   * Launches held candidates. By person (`person_ids`, Azerit since 7 Nov 2026, `keys` beside them
-   * ignored): her held enrollment goes out — only one, and none if another of hers in the campaign
-   * has already left 'held' (an older base may hold two). `launched`: the people launched.
+   * Launches held candidates. By person (`person_ids`, Azerit since 7 Nov 2026): her held enrollment
+   * goes out — only one, and none if another of hers in the campaign has already left 'held' (an
+   * older base may hold two). `launched`: the people launched. The `keys` beside them reach the
+   * enrollments still without a person (previous Azerit, unresolved): with one person asked, her
+   * single such enrollment becomes hers when she has none here, then launches as hers; otherwise
+   * which key is whose is unknown and nothing is launched by key — the held ones are returned in
+   * `unresolved` ({ key, cc_id }).
    * By lead key (`keys` alone, the previous Azerit): as before, `launched` = the keys launched.
    */
   app.post("/api/svc/campaigns/:id/launch", (req, res) => {
@@ -621,12 +684,15 @@ export function registerServiceRoutes(app: express.Express): void {
          WHERE id = (SELECT MIN(id) FROM campaign_contacts WHERE campaign_id = ? AND person_id = ? AND status = 'held')
            AND NOT EXISTS (SELECT 1 FROM campaign_contacts WHERE campaign_id = ? AND person_id = ? AND status <> 'held')`
       );
-      const launched = db.transaction(() => {
+      const keys = leadKeys(b.keys);
+      const out = db.transaction(() => {
+        if (people.length === 1) claimUnresolved(campaign.id, people[0], keys);
         const done = people.filter((person) => launch.run(campaign.id, person, campaign.id, person).changes > 0);
         if (done.length) db.prepare("UPDATE campaigns SET status = 'active' WHERE id = ?").run(campaign.id);
-        return done;
+        const unresolved = unresolvedOf(campaign.id, keys, "AND cc.status = 'held'").map((r) => ({ key: r.key, cc_id: r.id }));
+        return { launched: done, ...(unresolved.length ? { unresolved } : {}) };
       })();
-      return res.json({ launched });
+      return res.json(out);
     }
     const keys = b.keys;
     if (!Array.isArray(keys) || !keys.length || keys.length > 500) return res.status(400).json({ error: "keys[] : 1 à 500" });
@@ -643,7 +709,9 @@ export function registerServiceRoutes(app: express.Express): void {
 
   /**
    * Rewrites one candidate's enrollment variables, e.g. the message retouched in Azerit: by person
-   * (`person_id`, `key` beside it ignored) or, from the previous Azerit, by lead key (`key` alone).
+   * (`person_id`) or, from the previous Azerit, by lead key (`key` alone). By person, the `key`
+   * beside it also reaches the enrollments under it still without a person (previous Azerit,
+   * unresolved); the single one becomes hers when she has none here.
    * A LinkedIn action already queued but not yet sent, whose step uses one of these variables, is
    * re-rendered with them; what has gone out stays as it was. `requeued`: queued actions rewritten.
    */
@@ -656,7 +724,11 @@ export function registerServiceRoutes(app: express.Express): void {
     if (b.person_id !== undefined) {
       const person = personId(b.person_id);
       if (person == null || !vars) return res.status(400).json({ error: "person_id et vars requis" });
-      ccs = enrollmentsOf(campaign.id, person);
+      const keys = leadKeys([b.key]);
+      ccs = db.transaction(() => {
+        claimUnresolved(campaign.id, person, keys);
+        return [...enrollmentsOf(campaign.id, person), ...unresolvedOf(campaign.id, keys)];
+      })();
     } else {
       const key = typeof b.key === "string" ? b.key.trim() : "";
       if (!key || !vars) return res.status(400).json({ error: "key et vars requis" });
@@ -752,8 +824,11 @@ export function registerServiceRoutes(app: express.Express): void {
 
   /**
    * Stops candidates' sequences: nothing more goes out, queued actions cancelled. By person
-   * (`person_ids`, every running enrollment Azerit made for her here; `keys` beside them ignored)
-   * or, from the previous Azerit, by lead key (`keys` alone, as before). `stopped`: enrollments stopped.
+   * (`person_ids`, every running enrollment Azerit made for her here) or, from the previous Azerit,
+   * by lead key (`keys` alone, as before). By person, the `keys` beside them also stop every running
+   * enrollment under them still without a person (previous Azerit, unresolved); with one person
+   * asked, the single such enrollment becomes hers when she has none here, otherwise none is tied
+   * (which key is whose is unknown). `stopped`: enrollments stopped.
    */
   app.post("/api/svc/campaigns/:id/stop", (req, res) => {
     const campaign = ownedCampaign(req.params.id, ownerOf(req)!);
@@ -761,10 +836,16 @@ export function registerServiceRoutes(app: express.Express): void {
     const b = req.body as { person_ids?: unknown; keys?: unknown };
     const RUNNING = "AND cc.status IN ('held', 'pending', 'in_progress', 'awaiting_li')";
     let targets: Array<() => Array<{ id: number }>>;
+    let claim = () => {};
     if (b.person_ids !== undefined) {
       const people = personIds(b.person_ids);
       if (typeof people === "string") return res.status(400).json({ error: people });
-      targets = people.map((person) => () => enrollmentsOf(campaign.id, person, RUNNING));
+      const keys = leadKeys(b.keys);
+      if (people.length === 1) claim = () => void claimUnresolved(campaign.id, people[0], keys);
+      targets = [
+        ...people.map((person) => () => enrollmentsOf(campaign.id, person, RUNNING)),
+        () => unresolvedOf(campaign.id, keys, RUNNING),
+      ];
     } else {
       const keys = b.keys;
       if (!Array.isArray(keys) || !keys.length) return res.status(400).json({ error: "keys[] requis" });
@@ -776,6 +857,7 @@ export function registerServiceRoutes(app: express.Express): void {
     }
     const stop = db.prepare("UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL WHERE id = ?");
     const stopped = db.transaction(() => {
+      claim();
       let n = 0;
       for (const target of targets) {
         for (const cc of target()) {
