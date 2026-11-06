@@ -167,16 +167,19 @@ function personIds(raw: unknown, max?: number): number[] | string {
   return [...new Set(ids as number[])];
 }
 
+/** An Azerit lead key as the previous Azerit sends it (`key`): trimmed text, "" when missing. */
+function leadKey(raw: unknown): string {
+  return typeof raw === "string" ? raw.trim().slice(0, 300) : "";
+}
+
 /**
- * The enrollments of Azerit people in a campaign: those whose contact is the person (a person may
- * have several contacts, hence several enrollments). Optional `and` narrows them (alias cc).
+ * The enrollments Azerit made for a person in a campaign (campaign_contacts.person_id, set by
+ * /hold and /enroll), oldest first. Optional `and` narrows them (alias cc). One per person since
+ * 7 Nov 2026; an older base may hold two (counted by migrations.pg.sql).
  */
 function enrollmentsOf(campaignId: number, person: number, and = ""): Array<{ id: number }> {
   return db
-    .prepare(
-      `SELECT cc.id FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id
-       WHERE cc.campaign_id = ? AND c.person_id = ? ${and} ORDER BY cc.id`
-    )
+    .prepare(`SELECT cc.id FROM campaign_contacts cc WHERE cc.campaign_id = ? AND cc.person_id = ? ${and} ORDER BY cc.id`)
     .all(campaignId, person) as Array<{ id: number }>;
 }
 
@@ -399,9 +402,10 @@ export function registerServiceRoutes(app: express.Express): void {
   /**
    * The campaign as Azerit's Sequence page shows it: its steps in the dashboard's shape, its
    * sending accounts, its state, and each enrolled candidate's variables (the ones Azerit sent,
-   * plus any set here — Azerit shows and counts them), one line per enrollment with its person
-   * (`person_id`; enrollments without a person are not Azerit's). These steps are the sequence:
-   * Azerit keeps no copy.
+   * plus any set here — Azerit shows and counts them), one line per Azerit enrollment with its
+   * lead key (`key`, null if Azerit sent none) and its person (`person_id`, null for an enrollment
+   * of the previous Azerit not yet resolved). Enrollments made outside Azerit (prospection,
+   * dashboard) have neither and are not listed. These steps are the sequence: Azerit keeps no copy.
    */
   app.get("/api/svc/campaigns/:id", (req, res) => {
     const owner = ownerOf(req)!;
@@ -423,12 +427,13 @@ export function registerServiceRoutes(app: express.Express): void {
       contacts: (
         db
           .prepare(
-            `SELECT c.person_id, cc.vars FROM campaign_contacts cc JOIN contacts c ON c.id = cc.contact_id
-             WHERE cc.campaign_id = ? AND c.person_id IS NOT NULL ORDER BY cc.id`
+            `SELECT external_key AS key, person_id, vars FROM campaign_contacts
+             WHERE campaign_id = ? AND (external_key IS NOT NULL OR person_id IS NOT NULL) ORDER BY id`
           )
-          .all(campaign.id) as Array<{ person_id: number; vars: string | null }>
+          .all(campaign.id) as Array<{ key: string | null; person_id: number | null; vars: string | null }>
       ).map((c) => ({
-        person_id: Number(c.person_id),
+        key: c.key,
+        person_id: c.person_id == null ? null : Number(c.person_id),
         vars: c.vars ? (JSON.parse(c.vars) as Record<string, string>) : {},
       })),
     });
@@ -452,15 +457,21 @@ export function registerServiceRoutes(app: express.Express): void {
   });
 
   /**
-   * Enrolls candidates: [{ person_id, first_name, last_name, company, linkedin, email?, vars? }].
-   * `person_id`: the candidate in Azerit's people table, whose identity the contact then reads; it
-   * is how Azerit names the candidate afterwards (launch, vars, stop, statuses). A contact already
-   * tied to another person keeps it (shared address): the result then says which
-   * (`contact_person_id`), the enrollment answering to that person.
+   * Enrolls candidates: [{ person_id, key, first_name, last_name, company, linkedin, email?, vars? }].
+   * `person_id`: the candidate in Azerit's people table. The enrollment is made for her
+   * (campaign_contacts.person_id) whatever contact the import keeps — a shared email or LinkedIn
+   * can land on another person's contact, said by `contact_person_id` — and is how Azerit names her
+   * afterwards (launch, vars, stop, statuses). One enrollment per person and campaign: a person
+   * already enrolled gets hers back (same `cc_id`), held ones taking the new `vars`/`key`, never a
+   * second one. A contact whose enrollment here belongs to another person is refused
+   * (`enrolled_person_id`): the same address would be written to twice.
+   * `key`: the lead key, still kept (external_key) for the previous Azerit, which sends only it
+   * (with person_id when known) and names its candidates by it: a row without person_id behaves
+   * exactly as before 7 Nov 2026. Each result carries both.
    * `vars` (e.g. the message written for this candidate) stays specific to this enrollment.
    * `/enroll` launches them; `/hold` leaves them held — nothing goes out until `/launch`. A separate
    * route rather than a flag: a server without it answers 404 instead of sending. An already
-   * launched candidate isn't relaunched (nor put back on hold).
+   * launched candidate isn't relaunched (nor put back on hold): her status, error "déjà lancé".
    */
   const enroll = (hold: boolean) => async (req: express.Request, res: express.Response) => {
     const owner = ownerOf(req)!;
@@ -472,19 +483,28 @@ export function registerServiceRoutes(app: express.Express): void {
     const hasEmail = Boolean(
       db.prepare("SELECT 1 FROM steps WHERE campaign_id = ? AND channel = 'email' LIMIT 1").get(campaign.id)
     );
-    const results: Array<{
+    type Result = {
+      key: string;
       person_id: number | null;
       cc_id?: number;
       status: string;
       error?: string;
       contact_person_id?: number;
-    }> = [];
-    const rows: Array<Record<string, string>> = [];
-    const meta: Array<{ person: number; vars: Record<string, string> | null }> = [];
+      enrolled_person_id?: number;
+    };
+    type Cc = { id: number; status: string; contact_id: number; person_id: number | null };
+    const results: Result[] = [];
+    const items: Array<{ key: string; person: number | null; vars: Record<string, string> | null; row: Record<string, string> }> = [];
+    const seen = new Set<number>();
     for (const raw of list as Array<Record<string, unknown>>) {
+      const key = leadKey(raw?.key);
       const person = personId(raw?.person_id);
-      if (person == null) {
-        results.push({ person_id: null, status: "rejected", error: "person_id manquant" });
+      if (person == null && !key) {
+        results.push({ key: "", person_id: null, status: "rejected", error: "person_id ou key manquant" });
+        continue;
+      }
+      if (person != null && seen.has(person)) {
+        results.push({ key, person_id: person, status: "rejected", error: "person_id en double dans la requête" });
         continue;
       }
       const str = (x: unknown) => (typeof x === "string" ? x.trim().slice(0, 300) : "");
@@ -493,53 +513,85 @@ export function registerServiceRoutes(app: express.Express): void {
       const email = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(str(raw.email)) ? str(raw.email) : "";
       // Without email steps, a LinkedIn profile is required (the email is only kept on the contact).
       if (!linkedin && !(hasEmail && email)) {
-        results.push({ person_id: person, status: "rejected", error: hasEmail ? "ni profil LinkedIn ni email" : "profil LinkedIn manquant" });
+        results.push({ key, person_id: person, status: "rejected", error: hasEmail ? "ni profil LinkedIn ni email" : "profil LinkedIn manquant" });
         continue;
       }
-      rows.push({
-        email,
-        first_name: str(raw.first_name),
-        last_name: str(raw.last_name),
-        company: str(raw.company),
-        linkedin,
+      if (person != null) seen.add(person);
+      items.push({
+        key,
+        person,
+        vars: cleanVars(raw.vars),
+        row: { email, first_name: str(raw.first_name), last_name: str(raw.last_name), company: str(raw.company), linkedin },
       });
-      meta.push({ person, vars: cleanVars(raw.vars) });
     }
 
-    if (rows.length) {
-      const report = await importContacts(campaign.id, rows, { withIds: true });
-      const ccOf = db.prepare("SELECT id, status FROM campaign_contacts WHERE campaign_id = ? AND contact_id = ?");
-      const setVars = db.prepare("UPDATE campaign_contacts SET vars = ? WHERE id = ?");
+    if (items.length) {
+      // A person already enrolled here keeps that enrollment: her row is not imported again (its
+      // contact could differ, and a second enrollment would mean a second invitation).
+      const ccOfPerson = db.prepare(
+        "SELECT id, status, contact_id, person_id FROM campaign_contacts WHERE campaign_id = ? AND person_id = ? ORDER BY id LIMIT 1"
+      );
+      const existing = items.map((it) => (it.person == null ? undefined : (ccOfPerson.get(campaign.id, it.person) as Cc | undefined)));
+      const fresh = items.filter((_, i) => !existing[i]);
+      const report = fresh.length ? await importContacts(campaign.id, fresh.map((it) => it.row), { withIds: true }) : { contact_ids: [] };
+      const contactOf = new Map(fresh.map((it, i) => [it, report.contact_ids![i]]));
+      const ccOf = db.prepare("SELECT id, status, contact_id, person_id FROM campaign_contacts WHERE campaign_id = ? AND contact_id = ?");
+      // vars as sent (none = cleared), the key when Azerit sent one, the person when the enrollment has none yet
+      const setMeta = db.prepare(
+        "UPDATE campaign_contacts SET vars = ?, external_key = COALESCE(?, external_key), person_id = COALESCE(person_id, ?) WHERE id = ?"
+      );
+      const claim = db.prepare("UPDATE campaign_contacts SET person_id = ? WHERE id = ? AND person_id IS NULL");
       const launch = db.prepare("UPDATE campaign_contacts SET status = 'pending', error = NULL WHERE id = ? AND status = 'held'");
-      // a contact already tied to another person keeps it (shared address): logged, not overwritten
+      // a contact already tied to another person keeps it (shared address): said, not overwritten
       const setPerson = db.prepare("UPDATE contacts SET person_id = ? WHERE id = ? AND person_id IS NULL");
       const personOf = db.prepare("SELECT person_id FROM contacts WHERE id = ?");
       db.transaction(() => {
-        report.contact_ids!.forEach((contactId, i) => {
-          const { person, vars } = meta[i];
-          if (contactId == null) {
-            results.push({ person_id: person, status: "rejected", error: "désinscrit ou injoignable" });
-            return;
-          }
-          setPerson.run(person, contactId);
-          const has = Number((personOf.get(contactId) as { person_id: number | null } | undefined)?.person_id);
-          const other = has !== person ? { contact_person_id: has } : {};
-          if (has !== person) console.warn(`[enroll] contact ${contactId} is person ${has}, not ${person}`);
-          const cc = ccOf.get(campaign.id, contactId) as { id: number; status: string } | undefined;
+        items.forEach((it, i) => {
+          const { key, person, vars } = it;
+          const base = { key, person_id: person };
+          let cc = existing[i];
           if (!cc) {
-            results.push({ person_id: person, status: "rejected", error: "désinscrit (ne plus contacter)", ...other });
-            return;
+            const contactId = contactOf.get(it);
+            if (contactId == null) {
+              results.push({ ...base, status: "rejected", error: "désinscrit ou injoignable" });
+              return;
+            }
+            if (person != null) setPerson.run(person, contactId);
+            cc = ccOf.get(campaign.id, contactId) as Cc | undefined;
+            if (!cc) {
+              results.push({ ...base, status: "rejected", error: "désinscrit (ne plus contacter)" });
+              return;
+            }
+          }
+          const other: { contact_person_id?: number } = {};
+          if (person != null) {
+            const has = (personOf.get(cc.contact_id) as { person_id: number | null } | undefined)?.person_id;
+            if (has != null && Number(has) !== person) {
+              other.contact_person_id = Number(has);
+              console.warn(`[enroll] person ${person} enrolled on contact ${cc.contact_id}, which is person ${has}`);
+            }
+            if (cc.person_id != null && Number(cc.person_id) !== person) {
+              results.push({
+                ...base,
+                status: "rejected",
+                error: "contact déjà inscrit dans cette campagne pour une autre personne",
+                enrolled_person_id: Number(cc.person_id),
+                ...other,
+              });
+              return;
+            }
           }
           if (cc.status === "held") {
-            setVars.run(vars ? JSON.stringify(vars) : null, cc.id);
+            setMeta.run(vars ? JSON.stringify(vars) : null, key || null, person, cc.id);
             if (hold) {
-              results.push({ person_id: person, cc_id: cc.id, status: "held", ...other });
+              results.push({ ...base, cc_id: cc.id, status: "held", ...other });
               return;
             }
             launch.run(cc.id);
-            results.push({ person_id: person, cc_id: cc.id, status: "pending", ...other });
+            results.push({ ...base, cc_id: cc.id, status: "pending", ...other });
           } else {
-            results.push({ person_id: person, cc_id: cc.id, status: cc.status, error: "déjà lancé", ...other });
+            if (person != null) claim.run(person, cc.id);
+            results.push({ ...base, cc_id: cc.id, status: cc.status, error: "déjà lancé", ...other });
           }
         });
         if (results.some((r) => r.status === "pending")) db.prepare("UPDATE campaigns SET status = 'active' WHERE id = ?").run(campaign.id);
@@ -552,21 +604,37 @@ export function registerServiceRoutes(app: express.Express): void {
   app.post("/api/svc/campaigns/:id/hold", enroll(true));
 
   /**
-   * Launches held candidates (Azerit people): every held enrollment of each person.
-   * `launched`: the people who had one held and now go out.
+   * Launches held candidates. By person (`person_ids`, Azerit since 7 Nov 2026, `keys` beside them
+   * ignored): her held enrollment goes out — only one, and none if another of hers in the campaign
+   * has already left 'held' (an older base may hold two). `launched`: the people launched.
+   * By lead key (`keys` alone, the previous Azerit): as before, `launched` = the keys launched.
    */
   app.post("/api/svc/campaigns/:id/launch", (req, res) => {
     const campaign = ownedCampaign(req.params.id, ownerOf(req)!);
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
-    const people = personIds((req.body as { person_ids?: unknown }).person_ids, 500);
-    if (typeof people === "string") return res.status(400).json({ error: people });
+    const b = req.body as { person_ids?: unknown; keys?: unknown };
+    if (b.person_ids !== undefined) {
+      const people = personIds(b.person_ids, 500);
+      if (typeof people === "string") return res.status(400).json({ error: people });
+      const launch = db.prepare(
+        `UPDATE campaign_contacts SET status = 'pending', error = NULL
+         WHERE id = (SELECT MIN(id) FROM campaign_contacts WHERE campaign_id = ? AND person_id = ? AND status = 'held')
+           AND NOT EXISTS (SELECT 1 FROM campaign_contacts WHERE campaign_id = ? AND person_id = ? AND status <> 'held')`
+      );
+      const launched = db.transaction(() => {
+        const done = people.filter((person) => launch.run(campaign.id, person, campaign.id, person).changes > 0);
+        if (done.length) db.prepare("UPDATE campaigns SET status = 'active' WHERE id = ?").run(campaign.id);
+        return done;
+      })();
+      return res.json({ launched });
+    }
+    const keys = b.keys;
+    if (!Array.isArray(keys) || !keys.length || keys.length > 500) return res.status(400).json({ error: "keys[] : 1 à 500" });
     const launch = db.prepare(
-      `UPDATE campaign_contacts SET status = 'pending', error = NULL
-       WHERE campaign_id = ? AND status = 'held'
-         AND contact_id IN (SELECT id FROM contacts WHERE person_id = ?)`
+      "UPDATE campaign_contacts SET status = 'pending', error = NULL WHERE campaign_id = ? AND external_key = ? AND status = 'held'"
     );
     const launched = db.transaction(() => {
-      const done = people.filter((person) => launch.run(campaign.id, person).changes > 0);
+      const done = keys.map(String).filter((key) => launch.run(campaign.id, key).changes > 0);
       if (done.length) db.prepare("UPDATE campaigns SET status = 'active' WHERE id = ?").run(campaign.id);
       return done;
     })();
@@ -574,40 +642,50 @@ export function registerServiceRoutes(app: express.Express): void {
   });
 
   /**
-   * Rewrites one candidate's enrollment variables (Azerit person, all her enrollments in the
-   * campaign), e.g. the message retouched in Azerit. A LinkedIn action already queued but not yet
-   * sent, whose step uses one of these variables, is re-rendered with them; what has gone out
-   * stays as it was. `requeued`: queued actions rewritten.
+   * Rewrites one candidate's enrollment variables, e.g. the message retouched in Azerit: by person
+   * (`person_id`, `key` beside it ignored) or, from the previous Azerit, by lead key (`key` alone).
+   * A LinkedIn action already queued but not yet sent, whose step uses one of these variables, is
+   * re-rendered with them; what has gone out stays as it was. `requeued`: queued actions rewritten.
    */
   app.post("/api/svc/campaigns/:id/vars", (req, res) => {
     const campaign = ownedCampaign(req.params.id, ownerOf(req)!);
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
-    const b = req.body as { person_id?: unknown; vars?: unknown };
-    const person = personId(b.person_id);
+    const b = req.body as { person_id?: unknown; key?: unknown; vars?: unknown };
     const vars = cleanVars(b.vars);
-    if (person == null || !vars) return res.status(400).json({ error: "person_id et vars requis" });
-    const ccs = enrollmentsOf(campaign.id, person);
+    let ccs: Array<{ id: number }>;
+    if (b.person_id !== undefined) {
+      const person = personId(b.person_id);
+      if (person == null || !vars) return res.status(400).json({ error: "person_id et vars requis" });
+      ccs = enrollmentsOf(campaign.id, person);
+    } else {
+      const key = typeof b.key === "string" ? b.key.trim() : "";
+      if (!key || !vars) return res.status(400).json({ error: "key et vars requis" });
+      const cc = db
+        .prepare("SELECT id FROM campaign_contacts WHERE campaign_id = ? AND external_key = ?")
+        .get(campaign.id, key) as { id: number } | undefined;
+      ccs = cc ? [cc] : [];
+    }
     if (!ccs.length) return res.status(404).json({ error: "Candidat introuvable dans cette campagne" });
 
-    const requeued = ccs.reduce((n, cc) => n + setEnrollmentVars(campaign.id, cc.id, vars), 0);
+    const requeued = ccs.reduce((n, cc) => n + setEnrollmentVars(campaign.id, cc.id, vars!), 0);
     res.json({ ok: true, requeued });
   });
 
   /**
-   * Each candidate's progress, one line per enrollment with its Azerit person (`person_id`):
-   * status, LinkedIn actions, sender profile.
+   * Each candidate's progress, one line per Azerit enrollment (same ones as GET /campaigns/:id)
+   * with its lead key (`key`) and person (`person_id`): status, LinkedIn actions, sender profile.
    */
   app.get("/api/svc/campaigns/:id/contacts", (req, res) => {
     const campaign = ownedCampaign(req.params.id, ownerOf(req)!);
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
     const contacts = db
       .prepare(
-        `SELECT cc.id AS cc_id, c.person_id, cc.status, cc.current_step, cc.next_send_at, cc.replied_at,
+        `SELECT cc.id AS cc_id, cc.external_key AS key, cc.person_id, cc.status, cc.current_step, cc.next_send_at, cc.replied_at,
                 cc.error, cc.li_thread_url, c.linkedin, li.member_slug AS sender_slug, li.member_name AS sender_name
          FROM campaign_contacts cc
          JOIN contacts_v c ON c.id = cc.contact_id
          LEFT JOIN li_accounts li ON li.id = cc.li_account_id
-         WHERE cc.campaign_id = ? AND c.person_id IS NOT NULL
+         WHERE cc.campaign_id = ? AND (cc.external_key IS NOT NULL OR cc.person_id IS NOT NULL)
          ORDER BY cc.id`
       )
       .all(campaign.id) as Array<Record<string, unknown> & { cc_id: number }>;
@@ -636,7 +714,7 @@ export function registerServiceRoutes(app: express.Express): void {
       campaign: { id: campaign.id, status: campaign.status, steps },
       contacts: contacts.map((c) => ({
         ...c,
-        person_id: Number(c.person_id),
+        person_id: c.person_id == null ? null : Number(c.person_id),
         actions: byCc.get(c.cc_id) ?? [],
         emails: emailsByCc.get(c.cc_id) ?? [],
       })),
@@ -673,19 +751,34 @@ export function registerServiceRoutes(app: express.Express): void {
   });
 
   /**
-   * Stops candidates' sequences (Azerit people, all their enrollments in the campaign): nothing
-   * more goes out, queued actions cancelled. `stopped`: enrollments stopped.
+   * Stops candidates' sequences: nothing more goes out, queued actions cancelled. By person
+   * (`person_ids`, every running enrollment Azerit made for her here; `keys` beside them ignored)
+   * or, from the previous Azerit, by lead key (`keys` alone, as before). `stopped`: enrollments stopped.
    */
   app.post("/api/svc/campaigns/:id/stop", (req, res) => {
     const campaign = ownedCampaign(req.params.id, ownerOf(req)!);
     if (!campaign) return res.status(404).json({ error: "Campagne introuvable" });
-    const people = personIds((req.body as { person_ids?: unknown }).person_ids);
-    if (typeof people === "string") return res.status(400).json({ error: people });
+    const b = req.body as { person_ids?: unknown; keys?: unknown };
+    const RUNNING = "AND cc.status IN ('held', 'pending', 'in_progress', 'awaiting_li')";
+    let targets: Array<() => Array<{ id: number }>>;
+    if (b.person_ids !== undefined) {
+      const people = personIds(b.person_ids);
+      if (typeof people === "string") return res.status(400).json({ error: people });
+      targets = people.map((person) => () => enrollmentsOf(campaign.id, person, RUNNING));
+    } else {
+      const keys = b.keys;
+      if (!Array.isArray(keys) || !keys.length) return res.status(400).json({ error: "keys[] requis" });
+      const find = db.prepare(`SELECT cc.id FROM campaign_contacts cc WHERE cc.campaign_id = ? AND cc.external_key = ? ${RUNNING}`);
+      targets = keys.map((key) => () => {
+        const cc = find.get(campaign.id, String(key)) as { id: number } | undefined;
+        return cc ? [cc] : [];
+      });
+    }
     const stop = db.prepare("UPDATE campaign_contacts SET status = 'stopped', next_send_at = NULL WHERE id = ?");
     const stopped = db.transaction(() => {
       let n = 0;
-      for (const person of people) {
-        for (const cc of enrollmentsOf(campaign.id, person, "AND cc.status IN ('held', 'pending', 'in_progress', 'awaiting_li')")) {
+      for (const target of targets) {
+        for (const cc of target()) {
           stop.run(cc.id);
           cancelLinkedInActions("campaign_contact_id = ?", cc.id, "arrêté depuis Azerit");
           n++;
