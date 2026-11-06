@@ -833,6 +833,7 @@ async function threadSeen(tabId, msg) {
       name: msg.name || null,
       profile_urls: Array.isArray(msg.profile_urls) ? msg.profile_urls.slice(0, 10) : [],
       messages: Array.isArray(msg.messages) ? msg.messages.slice(-25) : [],
+      diag: msg.diag && typeof msg.diag === "object" ? msg.diag : undefined,
       member: (me && me.data) || undefined,
     }),
   }).catch(() => {});

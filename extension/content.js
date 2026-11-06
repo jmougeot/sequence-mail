@@ -719,7 +719,9 @@ const SEEN_RECEIPT =
  *  `keepEmpty` : un message sans texte (pièce jointe) compte aussi, texte vide. `seen` : l'accusé
  *  de lecture est sous ce message. */
 function threadMessages(root, meName, keepEmpty = false) {
-  const events = [...root.querySelectorAll(".msg-s-event-listitem")];
+  let events = [...root.querySelectorAll(".msg-s-event-listitem")];
+  // lectures seules (keepEmpty) : la classe a aussi été vue absente, le message est alors le <li>
+  if (!events.length && keepEmpty) events = [...root.querySelectorAll("li.msg-s-message-list__event")];
   // LinkedIn marque les messages reçus (--other) ; à défaut, le nom de l'auteur.
   const marked = events.some((ev) => ev.classList.contains("msg-s-event-listitem--other"));
   const me = normWords(meName);
@@ -1843,11 +1845,12 @@ function passiveThreads() {
           .filter(Boolean)
       ),
     ].slice(0, 10);
-  if (/^\/messaging\/thread\//.test(location.pathname)) {
+  if (/^\/messaging\//.test(location.pathname)) {
     const root = document.querySelector(".msg-s-message-list, .msg-s-message-list-content");
-    const detail = root && (root.closest(".scaffold-layout__detail, .msg-convo-wrapper, .msg-thread") || root);
+    const detail = (root && (root.closest(".scaffold-layout__detail, .msg-convo-wrapper, .msg-thread") || root)) || document.querySelector(".scaffold-layout__detail");
     const title = document.querySelector(".msg-thread .msg-entity-lockup__entity-title, .msg-title-bar__details h2, .msg-title-bar h2, .scaffold-layout__detail h2, .msg-thread h2");
-    if (detail) out.push({ root: detail, thread_url: location.origin + location.pathname, name: firstLine(title), profile_urls: profiles(detail) });
+    const thread = /^\/messaging\/thread\//.test(location.pathname) ? location.origin + location.pathname : null;
+    out.push({ root: detail || document.createElement("div"), page: true, thread_url: thread, name: firstLine(title), profile_urls: detail ? profiles(detail) : [] });
   }
   for (const b of document.querySelectorAll(".msg-overlay-conversation-bubble")) {
     if (!b.querySelector(".msg-s-event-listitem")) continue;
@@ -1858,12 +1861,42 @@ function passiveThreads() {
   return out;
 }
 
+const passiveDiagSent = new Map(); // fil → nombre de lectures sans message
+
+function passiveDiag(t, id) {
+  const n = (passiveDiagSent.get(id) || 0) + 1;
+  passiveDiagSent.set(id, n);
+  if (n !== 2) return;
+  const count = (sel) => document.querySelectorAll(sel).length;
+  const diag = {
+    path: location.pathname.replace(/thread\/[^/]+/, "thread/…"),
+    root: t.root.isConnected ? t.root.className.toString().slice(0, 80) : "aucun",
+    list: count(".msg-s-message-list, .msg-s-message-list-content"),
+    events: count(".msg-s-event-listitem"),
+    li_events: count("li.msg-s-message-list__event"),
+    bodies: count(".msg-s-event-listitem__body"),
+    groups: count(".msg-s-message-group"),
+    detail: count(".scaffold-layout__detail"),
+    iframes: count("iframe"),
+    shadow: [...document.querySelectorAll("*")].filter((e) => e.shadowRoot).length,
+    deep_events: deepQueryAll(".msg-s-event-listitem").length,
+  };
+  chrome.runtime
+    .sendMessage({ type: "li-thread-seen", thread_url: t.thread_url, name: t.name, profile_urls: t.profile_urls, messages: [], diag })
+    .catch(() => {});
+}
+
 function passiveTick() {
   if (document.visibilityState !== "visible" || !chrome.runtime || !chrome.runtime.id) return;
   for (const t of passiveThreads()) {
     const messages = threadMessages(t.root, null, true).slice(-25);
-    if (!messages.length) continue;
     const id = t.thread_url || t.name || "?";
+    if (!messages.length) {
+      // page Messagerie sans message lisible : relevé pour le serveur (comptes d'éléments, aucun
+      // texte), une fois par fil, après deux lectures
+      if (t.page) passiveDiag(t, id);
+      continue;
+    }
     const last = messages[messages.length - 1];
     const sig = `${messages.length}|${last.mine}|${textKey(last.text)}|${messages.map((m) => (m.seen ? 1 : 0)).join("")}`;
     const st = passiveState.get(id) || { pending: null, sent: null };

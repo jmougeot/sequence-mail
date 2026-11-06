@@ -447,6 +447,7 @@ export interface SeenThread {
   name?: string | null;
   profile_urls?: unknown;
   messages?: unknown;
+  diag?: unknown; // nothing readable on the page: what the extension saw there (element counts)
 }
 
 /**
@@ -458,7 +459,10 @@ export interface SeenThread {
 export function processSeenThread(accounts: LiAccount[], t: SeenThread): ThreadsReport {
   const report: ThreadsReport = { replied: [], by_hand: [], unknown: 0 };
   const messages = cleanMessages(t.messages);
-  if (!messages.length) return report;
+  if (!messages.length) {
+    if (t.diag) console.log(`[linkedin] conversation on screen, no message readable: « ${t.name ?? "?"} » ${JSON.stringify(t.diag).slice(0, 600)}`);
+    return report;
+  }
   const slugs = new Set((Array.isArray(t.profile_urls) ? t.profile_urls : []).map((u) => linkedinSlug(String(u))).filter(Boolean));
   const tid = threadId(t.thread_url);
   const name = normName(t.name);
