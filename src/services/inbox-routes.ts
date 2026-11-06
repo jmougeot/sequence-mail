@@ -282,7 +282,7 @@ export function registerInboxRoutes(app: express.Express): void {
       const cc = db
         .prepare(
           `SELECT cc.id AS cc_id, cc.status, cc.current_step, cc.replied_at, cc.error,
-                  cc.thread_id, cc.account_id, cc.li_thread_url, cc.li_reply_text, cc.inbox_seen_at, cc.inbox_done_at,
+                  cc.thread_id, cc.account_id, cc.li_thread_url, cc.li_reply_text, cc.li_thread, cc.inbox_seen_at, cc.inbox_done_at,
                   cp.id AS campaign_id, cp.name AS campaign_name, cp.owner_ref,
                   c.id AS contact_id, c.email, c.first_name, c.last_name, c.company, c.linkedin,
                   ${MERGED_EXTRA} AS extra,
@@ -305,6 +305,7 @@ export function registerInboxRoutes(app: express.Express): void {
             account_id: number | null;
             li_thread_url: string | null;
             li_reply_text: string | null;
+            li_thread: string | null;
             inbox_seen_at: number | null;
             inbox_done_at: number | null;
             campaign_id: number;
@@ -361,7 +362,7 @@ export function registerInboxRoutes(app: express.Express): void {
         .all(cc.cc_id);
       const linkedin = db
         .prepare(
-          `SELECT step_number, type, body, status, sent_at, error, member_slug
+          `SELECT step_number, type, body, status, sent_at, error, member_slug, seen_at
            FROM li_actions WHERE campaign_contact_id = ?
            ORDER BY COALESCE(sent_at, created_at), id`
         )
@@ -393,6 +394,8 @@ export function registerInboxRoutes(app: express.Express): void {
         linkedin,
         li_thread_url: cc.li_thread_url,
         li_reply_text: cc.li_reply_text,
+        // the whole LinkedIn conversation as last read on screen ({ at, messages: [{ mine, text, seen }] })
+        li_thread: parseJsonObject(cc.li_thread),
         seen: cc.inbox_seen_at != null,
         done: cc.inbox_done_at != null,
       });

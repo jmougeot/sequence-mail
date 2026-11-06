@@ -143,3 +143,12 @@ ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS owner_user_id BIGINT
 ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS job_id BIGINT
   GENERATED ALWAYS AS (CASE WHEN external_ref ~ '^job:[0-9]+$' THEN substr(external_ref, 5)::bigint END) STORED;
 CREATE INDEX IF NOT EXISTS idx_campaigns_job ON campaigns (job_id);
+
+-- Inbox snippet whose LinkedIn conversation was already read in full (services/li-inbox.ts), 6 Nov 2026
+ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS li_thread_read TEXT;
+
+-- LinkedIn message seen by the contact (read receipt), services/li-inbox.ts, 6 Nov 2026
+ALTER TABLE li_actions ADD COLUMN IF NOT EXISTS seen_at BIGINT;
+
+-- The LinkedIn conversation as last read, the user's messages included (services/li-inbox.ts), 6 Nov 2026
+ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS li_thread TEXT;
