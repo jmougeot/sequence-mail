@@ -123,3 +123,6 @@ ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS li_thread_read TEXT;
 
 -- LinkedIn message seen by the contact (read receipt), services/li-inbox.ts, 6 Nov 2026
 ALTER TABLE li_actions ADD COLUMN IF NOT EXISTS seen_at BIGINT;
+
+-- The LinkedIn conversation as last read, the user's messages included (services/li-inbox.ts), 6 Nov 2026
+ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS li_thread TEXT;

@@ -66,7 +66,7 @@ CREATE TABLE campaign_contacts (
   thread_id TEXT,
   last_gmail_message_id TEXT,
   replied_at BIGINT,
-  error TEXT, unsub_token TEXT, li_account_id BIGINT REFERENCES li_accounts(id), li_thread_url TEXT, li_reply_text TEXT, inbox_seen_at BIGINT, inbox_done_at BIGINT, vars TEXT, external_key TEXT, li_accepted BIGINT, li_thread_read TEXT,
+  error TEXT, unsub_token TEXT, li_account_id BIGINT REFERENCES li_accounts(id), li_thread_url TEXT, li_reply_text TEXT, inbox_seen_at BIGINT, inbox_done_at BIGINT, vars TEXT, external_key TEXT, li_accepted BIGINT, li_thread_read TEXT, li_thread TEXT,
   UNIQUE (campaign_id, contact_id)
 );
 

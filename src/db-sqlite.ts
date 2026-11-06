@@ -382,6 +382,8 @@ addColumnIfMissing("steps", "branch", "branch TEXT");
 addColumnIfMissing("campaign_contacts", "li_accepted", "li_accepted INTEGER");
 // li_thread_read: inbox snippet whose conversation was already read in full (li-inbox.ts), so it is read once.
 addColumnIfMissing("campaign_contacts", "li_thread_read", "li_thread_read TEXT");
+// li_thread: the LinkedIn conversation as last read (JSON { at, messages: [{ mine, text, seen }] }).
+addColumnIfMissing("campaign_contacts", "li_thread", "li_thread TEXT");
 // Step played at the same time as the previous one (email + LinkedIn), without delay. After a
 // LinkedIn step, its action is "detached": queued without holding the contact, who moves on to
 // the next step right away; its success or failure then moves nothing (see outreach.ts).

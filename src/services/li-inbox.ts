@@ -387,7 +387,10 @@ export function processThreads(accounts: LiAccount[], threads: ThreadRead[]): Th
       if (typeof t.thread_url === "string") {
         db.prepare("UPDATE campaign_contacts SET li_thread_url = COALESCE(li_thread_url, ?) WHERE id = ?").run(t.thread_url, row.cc_id);
       }
-      if (t.ok) markSeen(row.cc_id, seenTexts(cleanMessages(t.messages)));
+      if (t.ok) {
+        markSeen(row.cc_id, seenTexts(cleanMessages(t.messages)));
+        keepThread(row.cc_id, cleanMessages(t.messages), t.thread_url);
+      }
       settle(row, account, verdict.kind === "nothing" ? { kind: "by_hand" } : verdict, memo, "opened", report);
     }
   }
@@ -437,6 +440,16 @@ export function processSeenBeforeSend(account: LiAccount, actionId: number, text
     | undefined;
   if (!row || row.li_account_id !== account.id) return;
   markSeen(row.cc_id, texts.filter((t): t is string => typeof t === "string").slice(0, 25));
+}
+
+/** Keeps the conversation as read (both sides, in order) for the app, and its address. */
+function keepThread(ccId: number, messages: ThreadMessage[], threadUrl: string | null | undefined): void {
+  if (!messages.length) return;
+  db.prepare("UPDATE campaign_contacts SET li_thread = ?, li_thread_url = COALESCE(li_thread_url, ?) WHERE id = ?").run(
+    JSON.stringify({ at: Date.now(), messages: messages.map((m) => ({ mine: m.mine, text: m.text, ...(m.seen ? { seen: true } : {}) })) }),
+    threadId(threadUrl) ? threadUrl : null,
+    ccId
+  );
 }
 
 const threadId = (url: string | null | undefined) => url?.match(/\/messaging\/thread\/([^/?#]+)/)?.[1] ?? null;
@@ -502,7 +515,7 @@ export function processSeenThread(accounts: LiAccount[], t: SeenThread): Threads
         (bodies.all(w.cc_id) as Array<{ body: string | null }>).map((r) => r.body),
         Boolean((invited.get(w.cc_id) as { invited: number | boolean }).invited)
       );
-      if (t.thread_url && tid) db.prepare("UPDATE campaign_contacts SET li_thread_url = COALESCE(li_thread_url, ?) WHERE id = ?").run(t.thread_url, w.cc_id);
+      keepThread(w.cc_id, messages, t.thread_url);
       markSeen(w.cc_id, seen);
       settle(w, account, verdict, memo, "seen on screen", report);
     }
@@ -513,6 +526,7 @@ export function processSeenThread(accounts: LiAccount[], t: SeenThread): Threads
         Boolean((invited.get(w.cc_id) as { invited: number | boolean }).invited)
       );
       if (verdict.kind === "replied") db.prepare("UPDATE campaign_contacts SET li_reply_text = ? WHERE id = ?").run(verdict.text.slice(0, 2000), w.cc_id);
+      keepThread(w.cc_id, messages, t.thread_url);
       markSeen(w.cc_id, seen);
     }
   }
