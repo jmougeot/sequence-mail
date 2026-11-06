@@ -361,8 +361,6 @@ addColumnIfMissing("li_accounts", "sent_invitations_at", "sent_invitations_at IN
 // Per-enrollment variables (message written for THIS candidate on THIS job): take
 // precedence over contacts.extra, which is shared across campaigns.
 addColumnIfMissing("campaign_contacts", "vars", "vars TEXT");
-// Candidate key on the client side (Azerit lead): statuses are reported by this key.
-addColumnIfMissing("campaign_contacts", "external_key", "external_key TEXT");
 // Opt-outs per client (owner_ref): a refusal on a client's campaign only applies to that
 // client (see services/opt-out.ts). The dashboard (owner_ref NULL) keeps contacts.do_not_contact.
 db.exec(`
@@ -435,7 +433,8 @@ db.exec("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TE
 
 // Memory of deleted enrollments: removing contacts or deleting a campaign cascades to their
 // LinkedIn actions and emails, so one line per enrollment that had activity is kept here first
-// (services/history.ts). Append only: Azerit reads it to keep a candidate "contacted".
+// (services/history.ts), with the contact's Azerit person. Append only: Azerit reads it to keep a
+// candidate "contacted".
 db.exec(`
 CREATE TABLE IF NOT EXISTS enrollment_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -443,7 +442,7 @@ CREATE TABLE IF NOT EXISTS enrollment_history (
   owner_ref TEXT,
   external_ref TEXT,
   contact_id INTEGER,
-  external_key TEXT,
+  person_id INTEGER,
   status TEXT,
   invited_at INTEGER,
   messaged_at INTEGER,
@@ -451,7 +450,6 @@ CREATE TABLE IF NOT EXISTS enrollment_history (
   replied_at INTEGER,
   removed_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_enrollment_history_key ON enrollment_history (owner_ref, external_key);
 `);
 
 // Azerit candidate (5 Nov 2026): the contact's identity lives in Azerit's `people` table. On
@@ -459,3 +457,25 @@ CREATE INDEX IF NOT EXISTS idx_enrollment_history_key ON enrollment_history (own
 // the table itself. Every read of a contact's identity goes through contacts_v.
 addColumnIfMissing("contacts", "person_id", "person_id INTEGER");
 db.exec("DROP VIEW IF EXISTS contacts_v; CREATE VIEW contacts_v AS SELECT * FROM contacts;");
+
+// Azerit names its candidates by person (contacts.person_id), no longer by the key of its lead
+// (6 Nov 2026, same change as migrations.pg.sql): the history keeps the contact's person, the key
+// goes from the history and the enrollments. SQLite has no lead_people: a key whose contact has no
+// person is only dropped.
+addColumnIfMissing("enrollment_history", "person_id", "person_id INTEGER");
+{
+  const has = (table: string, column: string) =>
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).some((c) => c.name === column);
+  if (has("enrollment_history", "external_key")) {
+    db.transaction(() => {
+      db.exec(`
+        UPDATE enrollment_history SET person_id = (SELECT c.person_id FROM contacts c WHERE c.id = enrollment_history.contact_id)
+        WHERE person_id IS NULL;
+        DROP INDEX IF EXISTS idx_enrollment_history_key;
+        ALTER TABLE enrollment_history DROP COLUMN external_key;
+      `);
+    })();
+  }
+  if (has("campaign_contacts", "external_key")) db.exec("ALTER TABLE campaign_contacts DROP COLUMN external_key");
+}
+db.exec("CREATE INDEX IF NOT EXISTS idx_enrollment_history_person ON enrollment_history (owner_ref, person_id)");

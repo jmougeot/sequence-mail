@@ -66,7 +66,7 @@ CREATE TABLE campaign_contacts (
   thread_id TEXT,
   last_gmail_message_id TEXT,
   replied_at BIGINT,
-  error TEXT, unsub_token TEXT, li_account_id BIGINT REFERENCES li_accounts(id), li_thread_url TEXT, li_reply_text TEXT, inbox_seen_at BIGINT, inbox_done_at BIGINT, vars TEXT, external_key TEXT, li_accepted BIGINT, li_thread_read TEXT, li_thread TEXT,
+  error TEXT, unsub_token TEXT, li_account_id BIGINT REFERENCES li_accounts(id), li_thread_url TEXT, li_reply_text TEXT, inbox_seen_at BIGINT, inbox_done_at BIGINT, vars TEXT, li_accepted BIGINT, li_thread_read TEXT, li_thread TEXT,
   UNIQUE (campaign_id, contact_id)
 );
 
@@ -126,7 +126,7 @@ CREATE TABLE enrollment_history (
   owner_ref TEXT,
   external_ref TEXT,
   contact_id BIGINT,
-  external_key TEXT,
+  person_id BIGINT,
   status TEXT,
   invited_at BIGINT,
   messaged_at BIGINT,
@@ -170,7 +170,7 @@ CREATE INDEX idx_li_actions_status ON li_actions (status);
 CREATE INDEX idx_li_log_account ON li_log (li_account_id, sent_at);
 CREATE INDEX idx_li_log_sent ON li_log (sent_at);
 CREATE INDEX idx_messages_cc ON messages (campaign_contact_id);
-CREATE INDEX idx_enrollment_history_key ON enrollment_history (owner_ref, external_key);
+CREATE INDEX idx_enrollment_history_person ON enrollment_history (owner_ref, person_id);
 
 -- Identity of a contact (see migrations.pg.sql for the version that reads Azerit's people)
 CREATE VIEW contacts_v AS SELECT * FROM contacts;
