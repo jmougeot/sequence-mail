@@ -565,9 +565,13 @@ const rand = (min: number, max: number) => min + Math.random() * (max - min);
 function armNext(account: LiAccount, now: number): void {
   const ids = sameProfile(account).map((a) => a.id);
   const inIds = ids.map(() => "?").join(",");
-  const cur = db.prepare(`SELECT MIN(session_left) AS n FROM li_accounts WHERE id IN (${inIds})`).get(...ids) as { n: number | null };
+  const cur = db
+    .prepare(`SELECT MIN(session_left) AS n, MAX(next_allowed_at) AS at FROM li_accounts WHERE id IN (${inIds})`)
+    .get(...ids) as { n: number | null; at: number | null };
   const size = Math.max(1, Math.min(L.sessionMin, L.sessionMax) + Math.floor(Math.random() * (Math.abs(L.sessionMax - L.sessionMin) + 1)));
-  const left = (cur.n ?? size) - 1;
+  // Idle at least a minimum rest since the last action: that was the rest, a new session starts.
+  const rested = now - (cur.at ?? 0) >= L.restMinMin * 60_000;
+  const left = (cur.n != null && !rested ? cur.n : size) - 1;
   const next = left > 0 ? now + rand(L.minGapSec, L.maxGapSec) * 1000 : now + rand(L.restMinMin, L.restMaxMin) * 60_000;
   db.prepare(`UPDATE li_accounts SET session_left = ?, next_allowed_at = ? WHERE id IN (${inIds})`).run(
     left > 0 ? left : null,
