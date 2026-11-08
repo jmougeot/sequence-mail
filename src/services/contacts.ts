@@ -238,6 +238,15 @@ export function renderTemplate(
       /\{\{\s*([\p{L}\p{N}_]+)\s*:\s*([^|{}]*)\|([^{}]*)\}\}/gu,
       (_, key: string, masc: string, fem: string) => (isFeminine(vars[key]) ? fem : masc).trim()
     )
+    // French elision: "de {{offre}}" gives "d'Ingénieur…" when the value starts with a vowel,
+    // "de Développeur…" otherwise. Not before h (h aspiré is common: "de Head of Data").
+    .replace(
+      /(?<![\p{L}'’])([Dd])e\s+\{\{\s*([\p{L}\p{N}_]+)\s*\}\}/gu,
+      (_, d: string, key: string) => {
+        const value = (vars[key] ?? "").trim();
+        return /^[aeiouyàâäéèêëîïôöûüœæ]/iu.test(value) ? `${d}'${value}` : `${d}e ${value}`;
+      }
+    )
     // Simple variables: {{first_name}}
     .replace(/\{\{\s*([\p{L}\p{N}_]+)\s*\}\}/gu, (_, key: string) => vars[key] ?? "");
 }
