@@ -397,7 +397,7 @@ function findProfileMessageBtn() {
 /** Personne nommée par un libellé « Message X » / « Envoyer un message à X », sinon null. */
 function messagee(label) {
   const m = label.match(/^(?:message|envoyer un message à)\s+(.+)$/i);
-  return m ? normWords(m[1]) : null;
+  return m ? nameKey(m[1]) : null;
 }
 
 /** Degré de relation affiché à côté du nom (« · 1st », « · 2e »…) : 1, 2, 3, ou null s'il n'est pas lu. */
@@ -473,13 +473,13 @@ function findSendButton(editor) {
 
 /** Nom du profil ouvert, lu dans le titre de l'onglet (« (3) Prénom Nom | LinkedIn »). */
 function profileName() {
-  return normWords(document.title.replace(/^\(\d+\)\s*/, "").split("|")[0]);
+  return nameKey(document.title.replace(/^\(\d+\)\s*/, "").split("|")[0]);
 }
 
 /** Personne nommée par un libellé « Invite X to connect » / « Inviter X à … », sinon null. */
 function invitee(label) {
   const m = label.match(/^(?:invite|invitez|inviter)\s+(.+?)\s+(?:to connect|à (?:se connecter|rejoindre|vous connecter))/i);
-  return m ? normWords(m[1]) : null;
+  return m ? nameKey(m[1]) : null;
 }
 
 /** Comme findClickable, mais seulement parmi les actions DU PROFIL ouvert :
@@ -704,6 +704,17 @@ const normWords = (s) =>
 // Repère d'un message dans le fil : ses 200 premiers caractères, espaces et accents normalisés
 // (60 confondaient deux étapes à la même phrase d'ouverture : la relance passait pour déjà envoyée).
 const textKey = (s) => normWords(s).slice(0, 200);
+// Lettres cyrilliques et grecques identiques à l'œil à une lettre latine. Un nom affiché
+// « Mаthia Hаure » (deux « а » cyrilliques) dans le titre, mais avec un seul dans le bouton
+// « Inviter … » : le bon bouton passait pour celui de quelqu'un d'autre (« bouton introuvable »).
+const LOOKALIKES = {
+  а: "a", в: "b", е: "e", ё: "e", к: "k", м: "m", н: "h", о: "o", р: "p", с: "c", т: "t", у: "y", х: "x",
+  і: "i", ї: "i", ј: "j", ѕ: "s", ԁ: "d", һ: "h", ӏ: "l", ԛ: "q", ԝ: "w",
+  α: "a", β: "b", ε: "e", η: "n", ι: "i", κ: "k", ν: "v", ο: "o", ρ: "p", τ: "t", υ: "u", χ: "x",
+};
+const RE_LOOKALIKE = new RegExp(`[${Object.keys(LOOKALIKES).join("")}]`, "g");
+/** Nom comparable : normWords, puis sosies cyrilliques/grecs ramenés à la lettre latine. */
+const nameKey = (s) => normWords(s).replace(RE_LOOKALIKE, (c) => LOOKALIKES[c]);
 
 /** Conversation qui contient l'éditeur (bulle de messagerie ou page /messaging). */
 function threadRoot(editor) {
