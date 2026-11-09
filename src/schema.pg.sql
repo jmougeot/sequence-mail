@@ -84,7 +84,7 @@ CREATE TABLE li_actions (
   not_before BIGINT,
   created_at BIGINT NOT NULL DEFAULT (floor(extract(epoch from now()))::bigint * 1000),
   sent_at BIGINT
-, li_account_id BIGINT REFERENCES li_accounts(id), member_slug TEXT, ui_failures BIGINT NOT NULL DEFAULT 0, detached BIGINT NOT NULL DEFAULT 0, seen_at BIGINT);
+, li_account_id BIGINT REFERENCES li_accounts(id), member_slug TEXT, ui_failures BIGINT NOT NULL DEFAULT 0, detached BIGINT NOT NULL DEFAULT 0, seen_at BIGINT, gestures TEXT, real_input_refusals BIGINT NOT NULL DEFAULT 0);
 
 CREATE TABLE li_connections (
   li_account_id BIGINT NOT NULL REFERENCES li_accounts(id) ON DELETE CASCADE,

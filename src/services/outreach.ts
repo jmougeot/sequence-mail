@@ -1398,6 +1398,10 @@ const MAX_UI_RETRIES = 2;
 // display problem, nothing reached LinkedIn.
 const HIDDEN = /onglet caché/i;
 
+// No real gesture possible (debugger unavailable, target off screen…): nothing was sent. The action
+// is retried a few minutes later, without penalty, up to this many refusals in a row.
+const MAX_REAL_INPUT_REFUSALS = 4;
+
 /** An executor's verdict on a served action. */
 export interface LiVerdict {
   ok: boolean;
@@ -1406,6 +1410,72 @@ export interface LiVerdict {
   member?: LiMember | null; // profile read from the page just before acting
   wrong_account?: boolean; // the executor refused to act: another profile is logged in
   identity_unknown?: boolean; // logged-in profile unreadable: nothing was done
+  no_real_input?: boolean; // no real (trusted) gesture possible: nothing was sent (extension ≥ 0.7.0)
+}
+
+/**
+ * Gestures the extension played for an action (≥ 0.7.0): real ones (Chrome debugger, isTrusted),
+ * simulated ones it noticed (there should be none), why a gesture was refused, whether the work tab
+ * was hidden, and how the text went in (paste: delay between writing the clipboard and Cmd+V,
+ * whether the user's clipboard was restored).
+ */
+export interface LiGestures {
+  real: number;
+  simulated: number;
+  simulated_types?: Record<string, number>;
+  refused_reason?: string;
+  tab_hidden?: boolean;
+  paste_ms?: number;
+  fill?: string;
+  clipboard?: string;
+}
+
+/** The verdict's `gestures`, numbers and short texts only; null when absent or malformed. */
+export function parseGestures(v: unknown): LiGestures | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const g = v as Record<string, unknown>;
+  const count = (x: unknown) => (Number.isFinite(Number(x)) && Number(x) >= 0 ? Math.min(Math.round(Number(x)), 100_000) : null);
+  const text = (x: unknown) => (typeof x === "string" && x ? x.slice(0, 200) : undefined);
+  const real = count(g.real);
+  const simulated = count(g.simulated);
+  if (real == null || simulated == null) return null;
+  const out: LiGestures = { real, simulated };
+  if (g.simulated_types && typeof g.simulated_types === "object" && !Array.isArray(g.simulated_types)) {
+    const types: Record<string, number> = {};
+    for (const [k, n] of Object.entries(g.simulated_types as Record<string, unknown>).slice(0, 12)) {
+      const c = count(n);
+      if (c != null) types[k.slice(0, 20)] = c;
+    }
+    if (Object.keys(types).length) out.simulated_types = types;
+  }
+  const reason = text(g.refused_reason);
+  if (reason) out.refused_reason = reason;
+  if (g.tab_hidden === true) out.tab_hidden = true;
+  const ms = count(g.paste_ms);
+  if (ms != null && g.paste_ms != null) out.paste_ms = ms;
+  const fill = text(g.fill);
+  if (fill) out.fill = fill.slice(0, 20);
+  const clip = text(g.clipboard);
+  if (clip) out.clipboard = clip;
+  return out;
+}
+
+/** One log line per verdict, `[linkedin] gestes …`, and the gestures kept on the action (li_actions.gestures). */
+export function recordGestures(account: LiAccount, id: number, g: LiGestures | null, ok: boolean): void {
+  if (!g) return;
+  const row = db.prepare(`SELECT type, li_account_id FROM li_actions WHERE id = ?`).get(id) as
+    | { type: LiActionType; li_account_id: number | null }
+    | undefined;
+  if (!row || row.li_account_id !== account.id) return;
+  const parts = [`action=${id}`, `type=${row.type}`, `compte="${account.name}"`, `ok=${ok ? "oui" : "non"}`, `real=${g.real}`, `simulated=${g.simulated}`];
+  if (g.simulated_types) parts.push(`simulés=${Object.entries(g.simulated_types).map(([k, n]) => `${k}:${n}`).join(",")}`);
+  if (g.refused_reason) parts.push(`refus="${g.refused_reason}"`);
+  if (g.tab_hidden) parts.push("onglet_caché=oui");
+  if (g.fill) parts.push(`saisie=${g.fill}`);
+  if (g.paste_ms != null) parts.push(`paste_ms=${g.paste_ms}`);
+  if (g.clipboard) parts.push(`presse_papiers="${g.clipboard}"`);
+  (g.simulated ? console.warn : console.log)(`[linkedin] gestes ${parts.join(" ")}`);
+  db.prepare(`UPDATE li_actions SET gestures = ? WHERE id = ?`).run(JSON.stringify(g), id);
 }
 
 /** Puts a served action back in the queue, without counting it or penalizing the contact. */
@@ -1435,7 +1505,10 @@ function requeue(id: number, error: string): void {
  */
 export function recordResult(account: LiAccount, id: number, v: LiVerdict): boolean {
   const row = db
-    .prepare(`SELECT id, type, status, campaign_contact_id, step_number, li_account_id, created_at, ui_failures, detached FROM li_actions WHERE id = ?`)
+    .prepare(
+      `SELECT id, type, status, campaign_contact_id, step_number, li_account_id, created_at, ui_failures, detached, real_input_refusals
+       FROM li_actions WHERE id = ?`
+    )
     .get(id) as
     | {
         id: number;
@@ -1447,6 +1520,7 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
         created_at: number;
         ui_failures: number;
         detached: number;
+        real_input_refusals: number;
       }
     | undefined;
   if (!row || row.li_account_id !== account.id) return false;
@@ -1483,6 +1557,35 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
     if (v.ok) db.prepare(`INSERT INTO li_log (type, sent_at, li_account_id) VALUES (?, ?, ?)`).run(row.type, now, account.id);
     return true;
   }
+
+  // No real gesture possible: nothing reached LinkedIn. Back in the queue without using an attempt,
+  // without safety pause or interface failure, the account just waits a few minutes; the contact
+  // only fails after MAX_REAL_INPUT_REFUSALS refusals in a row, with the reason.
+  if (!v.ok && v.no_real_input) {
+    const refusals = Number(row.real_input_refusals ?? 0) + 1;
+    const msg = v.error ?? "vrais gestes impossibles — rien envoyé";
+    if (refusals < MAX_REAL_INPUT_REFUSALS) {
+      db.prepare(
+        `UPDATE li_actions SET status = 'pending', lease_at = NULL, attempts = MAX(attempts - 1, 0), real_input_refusals = ?, error = ? WHERE id = ?`
+      ).run(refusals, `${msg} — nouvel essai prévu (refus ${refusals}/${MAX_REAL_INPUT_REFUSALS})`, id);
+      db.prepare(`UPDATE li_accounts SET next_allowed_at = MAX(COALESCE(next_allowed_at, 0), ?) WHERE id = ?`).run(
+        Math.round(now + rand(5, 10) * 60_000),
+        account.id
+      );
+      return true;
+    }
+    const why = `vrais gestes impossibles ${refusals} fois de suite — rien envoyé (${msg})`;
+    db.prepare(`UPDATE li_actions SET status = 'failed', lease_at = NULL, real_input_refusals = ?, error = ? WHERE id = ?`).run(refusals, why, id);
+    if (!row.detached) {
+      db.prepare(`UPDATE campaign_contacts SET status = 'failed', error = ?, next_send_at = NULL WHERE id = ?`).run(
+        `LinkedIn (${account.name}) : ${why}`,
+        row.campaign_contact_id
+      );
+    }
+    return true;
+  }
+  // Refusals count only in a row: any other verdict starts them over.
+  if (row.real_input_refusals) db.prepare(`UPDATE li_actions SET real_input_refusals = 0 WHERE id = ?`).run(id);
 
   if (v.retry && !v.ok) {
     const deadline = acceptanceDeadline(row.campaign_contact_id, row.created_at);
