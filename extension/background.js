@@ -251,19 +251,17 @@ async function postVerdict(url, auth, body) {
 }
 
 /**
- * Onglet de travail : seul dans sa propre fenêtre Chrome, réduite, créée par
- * l'extension. Les onglets LinkedIn de la personne ne sont jamais touchés (avant,
- * le premier trouvé était pris et emmené sur le profil d'un prospect), et un clic
- * par erreur dans une fenêtre réduite est peu probable. Fermée, elle est recréée
- * à l'action suivante. L'onglet est protégé de l'économiseur de mémoire, qui le
- * déchargerait entre deux actions.
+ * Onglet de travail : seul dans sa propre fenêtre Chrome, créée par l'extension. Les onglets
+ * LinkedIn de la personne ne sont jamais touchés (avant, le premier trouvé était pris et emmené
+ * sur le profil d'un prospect). Fermée, elle est recréée à l'action suivante. L'onglet est
+ * protégé de l'économiseur de mémoire, qui le déchargerait entre deux actions.
  */
 const WORK_TAB = "workTab";
 // Taille d'un écran d'ordinateur : sans elle Chrome crée la fenêtre en 500×677, et
 // à cette largeur LinkedIn ouvre « Message » en page entière (/messaging/compose/)
-// au lieu de la bulle. Jamais réduite : posée dans un coin de l'écran, où la personne
-// peut la laisser (cf. showForMessage). `v` : une fenêtre notée par une version plus
-// ancienne (500 px, ou réduite) est recréée.
+// au lieu de la bulle. Jamais réduite ni à moitié hors de l'écran : un vrai clic au milieu
+// de la page y tomberait au-delà du bord de l'écran, ce qu'aucune souris ne peut faire.
+// `v` : une fenêtre notée par une version plus ancienne (500 px, ou réduite) est recréée.
 const WORK_WINDOW = { width: 1280, height: 900, v: 3 };
 
 async function ensureTab() {
@@ -274,7 +272,12 @@ async function ensureTab() {
   if (saved) {
     const tab = await chrome.tabs.get(saved.tabId).catch(() => null);
     const alone = tab && tab.windowId === saved.windowId && (await chrome.tabs.query({ windowId: tab.windowId })).length === 1;
-    if (alone && saved.v === WORK_WINDOW.v) return tab;
+    if (alone && saved.v === WORK_WINDOW.v) {
+      // Fenêtre à moitié hors de l'écran (placement « dans le coin » d'avant la 0.7.0) : ramenée
+      // entière, sinon chaque vrai clic serait refusé. Entière à l'écran : elle ne bouge pas.
+      await placeOnScreen(tab.windowId, tab.id, false);
+      return tab;
+    }
     if (alone) await chrome.windows.remove(tab.windowId).catch(() => {});
   }
   const win = await chrome.windows.create({
@@ -287,7 +290,7 @@ async function ensureTab() {
   await chrome.storage.local.set({ [WORK_TAB]: { tabId: tab.id, windowId: win.id, v: WORK_WINDOW.v } });
   await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
   await waitForLoad(tab.id, true);
-  await placeInCorner(win.id, tab.id);
+  await placeOnScreen(win.id, tab.id, true);
   return tab;
 }
 
@@ -296,22 +299,25 @@ async function ensureTab() {
  * requestAnimationFrame, que Chrome gèle dans un onglet caché (fenêtre réduite
  * ou entièrement recouverte — sur macOS, une fenêtre recouverte est « occluded ») :
  * la zone de saisie n'apparaît alors jamais. Les invitations n'en dépendent pas.
- * Appelée par le content script juste avant d'ouvrir la messagerie, pour que la
- * fenêtre ne gêne que quelques secondes : si l'onglet est déjà visible (un coin
- * dégagé suffit, c'est l'état recherché), rien ; sinon la fenêtre est posée dans
- * le coin bas droit de l'écran ; si elle reste recouverte, elle passe au premier
- * plan le temps du message, et la fenêtre suivante reprend le devant ensuite.
- * Rend la fonction qui termine l'affichage.
+ * Appelée par le content script juste avant d'ouvrir la messagerie : si l'onglet est
+ * déjà visible, rien ; sinon la fenêtre sort de la réduction et, si elle déborde de
+ * l'écran, y est ramenée entière (une fenêtre déjà entière à l'écran reste où la personne
+ * l'a mise) ; si elle reste recouverte, elle passe au premier plan le temps du message,
+ * mais seulement si la personne n'utilise pas l'ordinateur (chrome.idle) : on ne lui prend
+ * jamais le clavier pendant qu'elle tape. Rend la fonction qui termine l'affichage.
  */
-const MESSAGE_CORNER = { width: 320, height: 260 };
+// Sans clavier ni souris depuis ce délai, la fenêtre de travail peut passer devant.
+const IDLE_BEFORE_FOCUS_S = 60;
 
 async function showForMessage(tab) {
   const win = await chrome.windows.get(tab.windowId).catch(() => null);
   if (!win) return async () => {};
   if (await waitVisible(tab.id, 300)) return async () => {};
   if (win.state === "minimized") await chrome.windows.update(win.id, { state: "normal" }).catch(() => {});
-  await placeInCorner(win.id, tab.id);
+  await placeOnScreen(win.id, tab.id, false);
   if (await waitVisible(tab.id, 1500)) return async () => {};
+  const idle = await chrome.idle.queryState(IDLE_BEFORE_FOCUS_S).catch(() => "active");
+  if (idle !== "idle") return async () => {}; // la personne travaille : pas de vol du focus, le message attendra
   await chrome.windows.update(win.id, { focused: true }).catch(() => {});
   await waitVisible(tab.id, 1500);
   return async () => {
@@ -319,12 +325,43 @@ async function showForMessage(tab) {
   };
 }
 
-/** Pose la fenêtre de travail en bas à droite, un coin seulement à l'écran. */
-async function placeInCorner(winId, tabId) {
-  const area = await screenArea(tabId);
-  const left = Math.max(area.left, area.left + area.width - MESSAGE_CORNER.width);
-  const top = Math.max(area.top, area.top + area.height - MESSAGE_CORNER.height);
-  await chrome.windows.update(winId, { left, top, width: WORK_WINDOW.width, height: WORK_WINDOW.height }).catch(() => {});
+/** Bornes d'une fenêtre ramenées dans la zone utile de l'écran (taille réduite si besoin). */
+function fitInArea(b, area) {
+  const width = Math.min(b.width, area.width);
+  const height = Math.min(b.height, area.height);
+  const left = Math.min(Math.max(b.left, area.left), area.left + area.width - width);
+  const top = Math.min(Math.max(b.top, area.top), area.top + area.height - height);
+  return { left, top, width, height };
+}
+
+/** Fenêtre entière dans la zone utile de l'écran ? */
+function insideArea(b, area) {
+  return b.left >= area.left && b.top >= area.top && b.left + b.width <= area.left + area.width && b.top + b.height <= area.top + area.height;
+}
+
+/**
+ * Fenêtre de travail entière à l'écran. `created` : fenêtre que l'on vient d'ouvrir, posée
+ * en bas à droite. Sinon, une fenêtre déjà entière à l'écran ne bouge pas (la personne l'a
+ * peut-être placée elle-même) ; une fenêtre qui déborde (ancien placement « dans le coin »,
+ * écran changé) y est ramenée au plus près.
+ */
+async function placeOnScreen(winId, tabId, created) {
+  const measured = await screenArea(tabId);
+  // Écran pas lu (page non scriptable) : une fenêtre existante ne bouge pas sur une supposition.
+  if (!measured && !created) return;
+  const area = measured || { left: 0, top: 0, width: 1440, height: 900 };
+  const win = await chrome.windows.get(winId).catch(() => null);
+  if (!win) return;
+  const now = { left: win.left ?? 0, top: win.top ?? 0, width: win.width ?? WORK_WINDOW.width, height: win.height ?? WORK_WINDOW.height };
+  let to;
+  if (created) {
+    const size = fitInArea({ left: area.left, top: area.top, width: WORK_WINDOW.width, height: WORK_WINDOW.height }, area);
+    to = { ...size, left: area.left + area.width - size.width, top: area.top + area.height - size.height };
+  } else {
+    if (insideArea(now, area)) return;
+    to = fitInArea(now, area);
+  }
+  await chrome.windows.update(winId, to).catch(() => {});
 }
 
 /** Vrai dès que l'onglet est rendu (document.visibilityState « visible »), au plus tard après `ms`. */
@@ -342,7 +379,8 @@ async function waitVisible(tabId, ms) {
   return false;
 }
 
-/** Zone utile de l'écran, lue dans l'onglet de travail (le service worker n'a pas `screen`). */
+/** Zone utile de l'écran, lue dans l'onglet de travail (le service worker n'a pas `screen`) ;
+ *  null si l'onglet n'est pas scriptable. */
 async function screenArea(tabId) {
   try {
     const [r] = await chrome.scripting.executeScript({
@@ -351,9 +389,9 @@ async function screenArea(tabId) {
     });
     if (r && r.result && r.result.width > 0) return r.result;
   } catch {
-    // onglet sans page scriptable : valeurs d'un écran courant
+    // onglet sans page scriptable
   }
-  return { left: 0, top: 0, width: 1440, height: 900 };
+  return null;
 }
 
 /** Attend que l'onglet ait fini de charger. À appeler AVANT la navigation (tabs.update, reload)

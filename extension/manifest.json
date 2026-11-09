@@ -9,7 +9,8 @@
     "tabs",
     "scripting",
     "cookies",
-    "debugger"
+    "debugger",
+    "idle"
   ],
   "host_permissions": [
     "https://www.linkedin.com/*",
