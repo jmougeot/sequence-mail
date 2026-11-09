@@ -35,6 +35,19 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEq
 import { config } from "../config.js";
 import { db } from "../db.js";
 import { firstAccepted, firstNotAccepted, nextStep, unreachable } from "./branches.js";
+import {
+  gapSec,
+  nextOpen,
+  openTypes,
+  profileKey,
+  restMin,
+  sessionSize,
+  startOfLocalDay,
+  todayCap,
+  zoneOffsetMin,
+  zoneParts,
+  type LiActionType,
+} from "./li-cadence.js";
 import { linkedinSlug, nearSlug } from "./linkedin-url.js";
 
 const L = config.linkedin;
@@ -43,7 +56,7 @@ const LEASE_MS = 15 * 60 * 1000; // a message typed key by key takes a few minut
 const SEEN_TIMEOUT_MS = 2 * 60 * 1000; // the executor polls every ~60 s
 const WATCH_DAYS = 45; // how long replies are watched after the last sent action
 
-export type LiActionType = "invite" | "message";
+export type { LiActionType };
 export type LiMode = "extension" | "server";
 
 export type LiSessionState = "ok" | "expired" | "checkpoint" | "wrong_account";
@@ -411,29 +424,6 @@ export function runnerWindow() {
 
 // --- Account pacing ----------------------------------------------------------
 
-// Calendar day and clock in LI_HOUR_TZ: daily caps reset at its midnight and inbox reads follow
-// its hours (the container itself runs in UTC).
-const dayZone = new Intl.DateTimeFormat("en-US", {
-  timeZone: L.hourTimezone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric",
-});
-function zoneParts(ts: number): Record<string, number> {
-  const p: Record<string, number> = {};
-  for (const part of dayZone.formatToParts(ts)) if (part.type !== "literal") p[part.type] = Number(part.value);
-  return p;
-}
-/** Offset of LI_HOUR_TZ from UTC at `ts`, in minutes (Paris: 60 or 120). */
-function zoneOffsetMin(ts: number): number {
-  const p = zoneParts(ts);
-  return Math.round((Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(ts / 1000) * 1000) / 60_000);
-}
-/** Midnight of `ts`'s day in LI_HOUR_TZ. */
-function startOfLocalDay(ts: number): number {
-  const p = zoneParts(ts);
-  const midnight = Date.UTC(p.year, p.month - 1, p.day); // local midnight read as UTC
-  const guess = midnight - zoneOffsetMin(ts) * 60_000;
-  return midnight - zoneOffsetMin(guess) * 60_000; // offset at midnight itself (DST change days)
-}
-
 function sentToday(accountIds: number | number[], type: LiActionType): number {
   return sentSince(accountIds, type, startOfLocalDay(Date.now()));
 }
@@ -464,79 +454,9 @@ export function dailyCap(a: LiAccount, type: LiActionType): number {
   return Math.max(0, type === "invite" ? (a.invites_per_day ?? L.invitesPerDay) : (a.messages_per_day ?? L.messagesPerDay));
 }
 
-/** Draw in [0, 1) fixed for a calendar day (LI_HOUR_TZ) and a salt: the same all day, new each day. */
-function dayDraw(ts: number, salt: string): number {
-  const p = zoneParts(ts);
-  return createHash("sha256").update(`${p.year}-${p.month}-${p.day}:${salt}`).digest().readUInt32BE(0) / 2 ** 32;
-}
-
-/** Today's cap for a profile: between LI_CAP_FLOOR_PCT and 100 % of `cap`, drawn each day. */
-function todayCap(cap: number, ts: number, salt: string): number {
-  if (cap <= 0) return 0;
-  const floor = Math.min(100, Math.max(0, L.capFloorPct)) / 100;
-  return Math.max(1, Math.round(cap * (floor + (1 - floor) * dayDraw(ts, salt))));
-}
-
 /** Today's cap of a LinkedIn profile for a type: what nextAction enforces and the popup shows. */
 function profileCapToday(profile: LiAccount[], type: LiActionType, ts: number): number {
-  const slug = profile[0].member_slug ?? `account-${profile[0].id}`;
-  return todayCap(Math.min(...profile.map((a) => dailyCap(a, type))), ts, `${slug}:${type}`);
-}
-
-/** [from, until) in minutes of the day, moved each day: starts later, ends earlier (LI_WINDOW_JITTER_MIN). */
-function jittered(ts: number, from: number, until: number, salt: string): [number, number] {
-  const j = Math.max(0, Math.min(L.windowJitterMin, (until - from) / 4));
-  return [from + dayDraw(ts, `${salt}:from`) * j, until - dayDraw(ts, `${salt}:until`) * j];
-}
-
-// Messages: LI_HOUR_START to LI_HOUR_END in LI_HOUR_TZ.
-const messageZone = new Intl.DateTimeFormat("en-US", {
-  timeZone: L.hourTimezone, hourCycle: "h23", weekday: "short", hour: "numeric", minute: "numeric",
-});
-
-function withinWindow(ts: number): boolean {
-  const p: Record<string, string> = {};
-  for (const part of messageZone.formatToParts(ts)) p[part.type] = part.value;
-  if (L.workdaysOnly && p.weekday === "Sat") return false;
-  const min = Number(p.hour) * 60 + Number(p.minute);
-  const [from, until] = jittered(ts, L.hourStart * 60, L.hourEnd * 60, "message");
-  return min >= from && min < until;
-}
-
-// Invites: from L.inviteFrom until L.inviteUntil in the email window's time zone, weekends included
-// (both windows shrink by a different random amount each day).
-const inviteZone = new Intl.DateTimeFormat("en-US", {
-  timeZone: config.deliverability.sendWindowTimezone, hourCycle: "h23", hour: "numeric", minute: "numeric",
-});
-const hhmm = (s: string) => (([h, m]) => h * 60 + (m || 0))(s.split(":").map(Number));
-const INVITE_FROM_MIN = hhmm(L.inviteFrom);
-const INVITE_UNTIL_MIN = hhmm(L.inviteUntil);
-
-function withinInviteWindow(ts: number): boolean {
-  const p: Record<string, string> = {};
-  for (const part of inviteZone.formatToParts(ts)) p[part.type] = part.value;
-  const min = Number(p.hour) * 60 + Number(p.minute);
-  const [from, until] = jittered(ts, INVITE_FROM_MIN, INVITE_UNTIL_MIN, "invite");
-  return min >= from && min < until;
-}
-
-/** Next instant the invite window opens (LI_INVITE_FROM, in its time zone). */
-function nextInviteOpen(ts: number): number {
-  // Every UTC offset in use is a multiple of 15 min: a start time on a quarter hour is hit exactly.
-  const step = 15 * 60_000;
-  for (let t = Math.ceil((ts + 1) / step) * step; t < ts + 8 * DAY_MS; t += step) {
-    if (withinInviteWindow(t)) return t;
-  }
-  return ts + DAY_MS;
-}
-
-/** Action types whose hours allow them at `ts`: messages in LI_HOUR_*, invites in LI_INVITE_FROM–LI_INVITE_UNTIL. */
-function openTypes(ts: number): LiActionType[] {
-  return (["invite", "message"] as LiActionType[]).filter((t) => (t === "invite" ? withinInviteWindow(ts) : withinWindow(ts)));
-}
-
-function nextOpen(type: LiActionType, ts: number): number {
-  return type === "invite" ? nextInviteOpen(ts) : nextWindowOpen(ts);
+  return todayCap(Math.min(...profile.map((a) => dailyCap(a, type))), ts, `${profileKey(profile[0])}:${type}`);
 }
 
 /** Inbox reads: wider hours, weekends included (reading is not sending). */
@@ -546,21 +466,13 @@ function withinInboxWindow(ts: number): boolean {
   return h >= w.hour_start && h < w.hour_end;
 }
 
-function nextWindowOpen(ts: number): number {
-  // Every UTC offset in use is a multiple of 15 min: the start hour falls on a quarter hour.
-  const step = 15 * 60_000;
-  for (let t = Math.ceil((ts + 1) / step) * step; t < ts + 8 * DAY_MS; t += step) {
-    if (withinWindow(t)) return t;
-  }
-  return ts + DAY_MS;
-}
-
 const rand = (min: number, max: number) => min + Math.random() * (max - min);
 
 /**
  * After a sent action: actions go in short sessions on the whole LinkedIn profile. Within one,
- * the next comes LI_MIN_GAP_SEC–LI_MAX_GAP_SEC later; once the session's LI_SESSION_MIN–MAX
- * actions are done, the profile rests LI_REST_MIN–LI_REST_MAX minutes.
+ * the next comes after a delay drawn from LI_MIN/MAX_GAP_SEC; once the session's actions (drawn
+ * from LI_SESSION_MIN–MAX) are done, the profile rests (drawn from LI_REST_MIN–MAX minutes).
+ * Long-tailed draws with the old uniform draws' means, see li-cadence.ts.
  */
 function armNext(account: LiAccount, now: number): void {
   const ids = sameProfile(account).map((a) => a.id);
@@ -568,11 +480,11 @@ function armNext(account: LiAccount, now: number): void {
   const cur = db
     .prepare(`SELECT MIN(session_left) AS n, MAX(next_allowed_at) AS at FROM li_accounts WHERE id IN (${inIds})`)
     .get(...ids) as { n: number | null; at: number | null };
-  const size = Math.max(1, Math.min(L.sessionMin, L.sessionMax) + Math.floor(Math.random() * (Math.abs(L.sessionMax - L.sessionMin) + 1)));
+  const size = sessionSize();
   // Idle at least a minimum rest since the last action: that was the rest, a new session starts.
   const rested = now - (cur.at ?? 0) >= L.restMinMin * 60_000;
   const left = (cur.n != null && !rested ? cur.n : size) - 1;
-  const next = left > 0 ? now + rand(L.minGapSec, L.maxGapSec) * 1000 : now + rand(L.restMinMin, L.restMaxMin) * 60_000;
+  const next = left > 0 ? now + gapSec() * 1000 : now + restMin() * 60_000;
   db.prepare(`UPDATE li_accounts SET session_left = ?, next_allowed_at = ? WHERE id IN (${inIds})`).run(
     left > 0 ? left : null,
     Math.round(next),
@@ -1111,7 +1023,7 @@ function askConnections(account: LiAccount, row: ActionRow, now: number): LiServ
   if (!Number.isFinite(since)) return null;
   db.prepare(`UPDATE li_accounts SET connections_try_at = ?, next_allowed_at = MAX(COALESCE(next_allowed_at, 0), ?) WHERE id IN (${inIds})`).run(
     now,
-    Math.round(now + rand(40, 120) * 1000),
+    Math.round(now + gapSec(40, 120) * 1000),
     ...ids
   );
   return {
@@ -1216,7 +1128,7 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   ) {
     db.prepare(`UPDATE li_accounts SET last_inbox_at = ?, next_allowed_at = MAX(COALESCE(next_allowed_at, 0), ?) WHERE id IN (${inIds})`).run(
       now,
-      Math.round(now + rand(40, 120) * 1000),
+      Math.round(now + gapSec(40, 120) * 1000),
       ...ids
     );
     // Connections page too, back to the oldest unanswered invite (minus a day of margin).
@@ -1247,8 +1159,8 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   }
 
   const types: LiActionType[] = ["invite", "message"];
-  const open = openTypes(now);
-  const untilOpen = (ts: LiActionType[]) => Math.ceil((Math.min(...ts.map((t) => nextOpen(t, now))) - now) / 1000);
+  const open = openTypes(now, account);
+  const untilOpen = (ts: LiActionType[]) => Math.ceil((Math.min(...ts.map((t) => nextOpen(t, now, account))) - now) / 1000);
   if (!open.length) return { wait: untilOpen(types), reason: "Hors plage horaire d'envoi" };
   if (nextAllowed > now) {
     const resting = profile.every((a) => a.session_left == null) && nextAllowed - now > 10 * 60_000;
@@ -1261,7 +1173,7 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
   // or has nothing left to send today.
   const tomorrow = startOfLocalDay(now) + DAY_MS;
   const nextStart = () =>
-    Math.min(...types.map((t) => nextOpen(t, underCap.includes(t) && !open.includes(t) ? now : tomorrow - 1)));
+    Math.min(...types.map((t) => nextOpen(t, underCap.includes(t) && !open.includes(t) ? now : tomorrow - 1, account)));
   const untilNext = (...at: number[]) => Math.ceil((Math.min(nextStart(), ...at) - now) / 1000);
   if (!underCap.length) return { wait: untilNext(), reason: "Quota du jour atteint" };
   const capReason = underCap.includes("invite") ? "Quota de messages atteint" : "Quota d'invitations atteint";
@@ -1307,7 +1219,7 @@ export function nextAction(account: LiAccount, via: LiMode): NextResult {
           .prepare(`SELECT MIN(la.not_before) AS at ${ELIGIBLE} AND la.type = '${t}' AND la.not_before > @now`)
           .get({ acc: account.id, owner: account.owner_ref, dash: account.serves_dashboard, now }) as { at: number | null };
         if (at == null) return [];
-        return [openTypes(Number(at)).includes(t) ? Number(at) : nextOpen(t, Number(at))];
+        return [openTypes(Number(at), account).includes(t) ? Number(at) : nextOpen(t, Number(at), account)];
       });
       return {
         wait: untilNext(...retries),
@@ -1656,7 +1568,7 @@ export function accountStatus(a: LiAccount) {
     has_proxy: Boolean(a.has_proxy),
     last_inbox_at: a.last_inbox_at,
     watching: watchedCount(a.id),
-    within_window: openTypes(now).length > 0,
+    within_window: openTypes(now, a).length > 0,
     paused_until: (a.paused_until ?? 0) > now ? a.paused_until : null,
     next_allowed_at: (a.next_allowed_at ?? 0) > now ? a.next_allowed_at : null,
     invites_per_day: a.invites_per_day ?? L.invitesPerDay,
@@ -1782,7 +1694,6 @@ export function profileStatus(a: LiAccount) {
  */
 export function outreachStatus() {
   reclaimStale();
-  const now = Date.now();
   const accounts = listAccounts().map(accountStatus);
   const sum = (f: (a: (typeof accounts)[number]) => number) => accounts.reduce((n, a) => n + f(a), 0);
   const unassigned = count(`SELECT COUNT(*) AS n FROM li_actions WHERE li_account_id IS NULL AND status = 'pending'`);
@@ -1792,7 +1703,8 @@ export function outreachStatus() {
     enabled,
     connected: accounts.some((a) => a.connected),
     last_seen_at: lastSeen || null,
-    within_window: openTypes(now).length > 0,
+    // Each profile has its own hours: open as soon as one account's are.
+    within_window: accounts.some((a) => a.within_window),
     server_mode_ready: Boolean(L.secretKey && L.runnerSecret),
     today: {
       invite: { sent: sum((a) => a.today.invite.sent), cap: sum((a) => (a.active ? a.today.invite.cap : 0)) },
