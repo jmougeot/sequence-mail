@@ -85,8 +85,29 @@ chrome.runtime.onStartup.addListener(() => {
   chrome.alarms.create(ALARM, { periodInMinutes: 1 });
 });
 chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === ALARM) tick();
+  if (a.name === ALARM || a.name === WAKE_ALARM) tick();
 });
+
+// Réveil à l'heure que donne le serveur (`wait` de /api/li/next) : sans lui, l'action suivante
+// attendait en plus le tick de la minute (0 à 60 s), qui s'ajoutait au délai voulu par le serveur.
+// Alarme à l'instant dit (plancher MV3 : 30 s) ; en dessous, minuterie du service worker tant
+// qu'il est éveillé. L'alarme de la minute reste le filet de sécurité. Après une action, un
+// nouvel appel quelques secondes plus tard rapporte le délai que le serveur vient d'armer.
+const WAKE_ALARM = "li-wake";
+const WAKE_MARGIN_MS = 1500; // le serveur arrondit `wait` à la seconde supérieure : l'instant est alors permis
+const AFTER_ACTION_S = 3;
+let wakeTimer = null;
+
+function scheduleWake(seconds) {
+  clearTimeout(wakeTimer);
+  wakeTimer = null;
+  chrome.alarms.clear(WAKE_ALARM).catch(() => {});
+  const s = Number(seconds);
+  if (!Number.isFinite(s) || s <= 0) return;
+  const ms = s * 1000 + WAKE_MARGIN_MS;
+  if (ms < 30_000) wakeTimer = setTimeout(() => { wakeTimer = null; tick(); }, ms);
+  else chrome.alarms.create(WAKE_ALARM, { when: Date.now() + ms });
+}
 
 /**
  * Ce navigateur exécute-t-il des actions pour Sequence Mail ? La prod est
@@ -145,7 +166,9 @@ async function tick() {
   busy = true;
   const SERVER = await getServer();
   try {
-    await setStatus(await withRefusal(await serve(SERVER, await accountTokens())));
+    const { wake, ...status } = await serve(SERVER, await accountTokens());
+    scheduleWake(wake);
+    await setStatus(await withRefusal(status));
   } catch (e) {
     await setStatus({ kind: "err", text: `Serveur injoignable (${SERVER}). Lancez l'app Sequence Mail.` });
   } finally {
@@ -207,12 +230,12 @@ async function serve(SERVER, tokens) {
     }
     if (res.action.connections_only) {
       return r.ok
-        ? { kind: "ok", text: "Relations lues" }
-        : { kind: "err", text: `Relations : ${r.error || "illisibles"}` };
+        ? { kind: "ok", text: "Relations lues", wake: AFTER_ACTION_S }
+        : { kind: "err", text: `Relations : ${r.error || "illisibles"}`, wake: AFTER_ACTION_S };
     }
     return r.ok
-      ? { kind: "ok", text: "Messagerie lue" }
-      : { kind: "err", text: `Messagerie : ${r.error || "illisible"}` };
+      ? { kind: "ok", text: "Messagerie lue", wake: AFTER_ACTION_S }
+      : { kind: "err", text: `Messagerie : ${r.error || "illisible"}`, wake: AFTER_ACTION_S };
   }
   if (res.action) {
     await setStatus({ kind: "run", text: `${res.action.type === "invite" ? "Invitation" : "Message"} en cours…` });
@@ -235,16 +258,17 @@ async function serve(SERVER, tokens) {
       // Gestes joués pour cette action (vrais, simulés, refus, onglet caché, collage).
       gestures: verdict.gestures,
     });
+    const wake = AFTER_ACTION_S;
     if (verdict.no_real_input) {
       const why = (verdict.gestures && verdict.gestures.refused_reason) || verdict.error || "raison inconnue";
-      return { kind: "wait", text: `Envoi en pause : vrais gestes indisponibles (${why})`, refused: why };
+      return { kind: "wait", text: `Envoi en pause : vrais gestes indisponibles (${why})`, wake, refused: why };
     }
-    if (verdict.ok) return { kind: "ok", text: "Dernière action : réussie", acted: true };
+    if (verdict.ok) return { kind: "ok", text: "Dernière action : réussie", wake, acted: true };
     // Invitation pas encore acceptée : le serveur reporte le message, ce n'est pas un échec.
-    if (verdict.retry) return { kind: "wait", text: "Message reporté : invitation pas encore acceptée", acted: true };
-    return { kind: "err", text: `Échec : ${verdict.error || "inconnu"}`, acted: true };
+    if (verdict.retry) return { kind: "wait", text: "Message reporté : invitation pas encore acceptée", wake, acted: true };
+    return { kind: "err", text: `Échec : ${verdict.error || "inconnu"}`, wake, acted: true };
   }
-  if (res.wait != null) return { kind: "wait", text: `${res.reason} — reprise dans ~${formatWait(res.wait)}` };
+  if (res.wait != null) return { kind: "wait", text: `${res.reason} — reprise dans ~${formatWait(res.wait)}`, wake: res.wait };
   return { kind: "idle", text: res.reason || "File vide" };
 }
 
