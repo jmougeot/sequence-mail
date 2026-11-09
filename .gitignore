@@ -6,10 +6,7 @@ node_modules/
 .env.local
 
 # Local data (databases, prospect exports, logs)
-data/*.db
-data/*.db-wal
-data/*.db-shm
-data/*.csv
+data/
 *.db
 *.db-wal
 *.db-shm
@@ -27,7 +24,6 @@ dist/
 
 # Rendered by setup.sh (contains the password hash); the template is Caddyfile.template.
 Caddyfile
-data/
 
 # Build de développement de l'extension (make-dev.sh)
 extension-dev/
