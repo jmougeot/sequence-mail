@@ -108,6 +108,25 @@ async function getEnabled() {
   return enabled !== false; // activé par défaut
 }
 
+/**
+ * Dernier refus faute de vrais gestes : le popup le garde en tête de l'état tant que l'action n'a
+ * pas été rejouée (sinon le tick suivant l'effacerait par « Délai entre deux actions »).
+ */
+async function withRefusal(status) {
+  const { refusal } = await chrome.storage.session.get("refusal");
+  if (status.refused) {
+    await chrome.storage.session.set({ refusal: { reason: status.refused, at: Date.now() } });
+    delete status.refused;
+    return status;
+  }
+  if (status.acted) await chrome.storage.session.remove("refusal");
+  delete status.acted;
+  if (refusal && status.kind === "wait" && Date.now() - refusal.at < 15 * 60_000) {
+    return { ...status, text: `Envoi en pause : vrais gestes indisponibles (${refusal.reason}) — ${status.text}` };
+  }
+  return status;
+}
+
 async function setStatus(status) {
   await chrome.storage.local.set({ lastStatus: { ...status, at: Date.now() } });
 }
@@ -126,7 +145,7 @@ async function tick() {
   busy = true;
   const SERVER = await getServer();
   try {
-    await setStatus(await serve(SERVER, await accountTokens()));
+    await setStatus(await withRefusal(await serve(SERVER, await accountTokens())));
   } catch (e) {
     await setStatus({ kind: "err", text: `Serveur injoignable (${SERVER}). Lancez l'app Sequence Mail.` });
   } finally {
@@ -211,11 +230,19 @@ async function serve(SERVER, tokens) {
       reply_text: verdict.reply_text,
       already_messaged: verdict.already_messaged,
       seen_texts: verdict.seen_texts,
+      // Aucun vrai geste possible : rien n'est parti, le serveur reprend l'action sans pénalité.
+      no_real_input: verdict.no_real_input,
+      // Gestes joués pour cette action (vrais, simulés, refus, onglet caché, collage).
+      gestures: verdict.gestures,
     });
-    if (verdict.ok) return { kind: "ok", text: "Dernière action : réussie" };
+    if (verdict.no_real_input) {
+      const why = (verdict.gestures && verdict.gestures.refused_reason) || verdict.error || "raison inconnue";
+      return { kind: "wait", text: `Envoi en pause : vrais gestes indisponibles (${why})`, refused: why };
+    }
+    if (verdict.ok) return { kind: "ok", text: "Dernière action : réussie", acted: true };
     // Invitation pas encore acceptée : le serveur reporte le message, ce n'est pas un échec.
-    if (verdict.retry) return { kind: "wait", text: "Message reporté : invitation pas encore acceptée" };
-    return { kind: "err", text: `Échec : ${verdict.error || "inconnu"}` };
+    if (verdict.retry) return { kind: "wait", text: "Message reporté : invitation pas encore acceptée", acted: true };
+    return { kind: "err", text: `Échec : ${verdict.error || "inconnu"}`, acted: true };
   }
   if (res.wait != null) return { kind: "wait", text: `${res.reason} — reprise dans ~${formatWait(res.wait)}` };
   return { kind: "idle", text: res.reason || "File vide" };
@@ -420,11 +447,13 @@ function waitForLoad(tabId, settled = false) {
 // position écran, pression ni touche enfoncée : un script LinkedIn le voit en une ligne.
 // Envoyés par le protocole DevTools, ils sortent de Chrome comme ceux d'une vraie souris
 // et d'un vrai clavier (mesuré : mêmes propriétés que la main de l'utilisateur). Le
-// content script mesure la cible, le background joue le geste ; refus ou échec → le
-// content script revient aux gestes simulés.
-// Le débogueur reste attaché le temps d'une session (bandeau « débogage » de Chrome) :
-// attaché AVANT la navigation, la page visitée naît avec le bandeau, sans redimensionnement
-// au moment d'agir ; détaché après DEBUGGER_IDLE_MS sans action.
+// content script mesure la cible, le background joue le geste. Il n'y a plus de geste
+// simulé : un geste refusé (débogueur absent, cible hors de l'écran…) revient au content
+// script avec sa raison, qui réessaie ou renonce (« rien envoyé », sans pénalité côté serveur).
+// Le débogueur reste attaché le temps d'une session (bandeau « débogage » de Chrome, sauf
+// avec --silent-debugger-extension-api) : attaché AVANT la navigation, la page visitée naît
+// avec le bandeau, sans redimensionnement au moment d'agir ; détaché après DEBUGGER_IDLE_MS
+// sans action.
 const DEBUGGER_IDLE_MS = 12 * 60_000;
 // Bandeau fermé par la personne (« Annuler ») : pas de nouvel attachement avant ce délai.
 const DEBUGGER_REFUSED_MS = 60 * 60_000;
@@ -436,6 +465,14 @@ const lognormal = (median, sigma, min, max) => {
   const z = Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
   return Math.min(max, Math.max(min, median * Math.exp(sigma * z)));
 };
+
+/** Geste refusé avant d'être joué (ou interrompu) : `reason` part au content script. */
+class Refused extends Error {
+  constructor(reason) {
+    super(reason);
+    this.reason = reason;
+  }
+}
 
 async function debuggerState() {
   const { dbg } = await chrome.storage.session.get("dbg");
@@ -451,17 +488,30 @@ chrome.debugger.onDetach.addListener(async (source, reason) => {
   await setDebuggerState({ tabId: null, ...(reason === "canceled_by_user" ? { refusedAt: Date.now() } : {}) });
 });
 
-/** Attache le débogueur à l'onglet de travail (sans effet s'il l'est déjà). Faux si refusé. */
+/**
+ * Attache le débogueur à l'onglet de travail (sans effet s'il l'est déjà). Rend { ok, reason }.
+ * « already attached » ne prouve pas que c'est nous : Chrome dit la même chose quand un AUTRE
+ * débogueur tient l'onglet (DevTools ouvert, autre extension), et l'on croyait alors l'attache
+ * réussie. Une commande Input anodine tranche : elle ne passe que si l'attache est la nôtre.
+ */
 async function attachDebugger(tabId) {
   const st = await debuggerState();
-  if (st.refusedAt && Date.now() - st.refusedAt < DEBUGGER_REFUSED_MS) return false;
+  if (st.refusedAt && Date.now() - st.refusedAt < DEBUGGER_REFUSED_MS) {
+    return { ok: false, reason: "débogueur refusé (bandeau « débogage » fermé il y a moins d'1 h)" };
+  }
   try {
     await chrome.debugger.attach({ tabId }, "1.3");
   } catch (e) {
-    if (!/already attached/i.test(String(e && e.message))) return false;
+    const m = String(e && e.message ? e.message : e);
+    if (!/already attached/i.test(m)) return { ok: false, reason: `débogueur indisponible (${m.slice(0, 80)})` };
+    try {
+      await chrome.debugger.sendCommand({ tabId }, "Input.setIgnoreInputEvents", { ignore: false });
+    } catch {
+      return { ok: false, reason: "autre débogueur attaché à l'onglet (DevTools ouvert ?)" };
+    }
   }
   await setDebuggerState({ tabId, lastUse: Date.now() });
-  return true;
+  return { ok: true };
 }
 
 /** Détache le débogueur après une session (appelé à chaque tick). */
@@ -472,13 +522,42 @@ async function detachIfIdle() {
   await setDebuggerState({ tabId: null });
 }
 
+/** Commande au débogueur : seulement des gestes (domaine Input). Jamais de lecture ni de script
+ *  dans la page par ce canal, qui y aurait tous les droits. */
 async function cdp(tabId, method, params) {
+  if (!/^Input\.[A-Za-z]+$/.test(method)) throw new Error(`commande du débogueur interdite : ${method}`);
   try {
     return await chrome.debugger.sendCommand({ tabId }, method, params);
   } catch (e) {
-    if (!/not attached/i.test(String(e && e.message)) || !(await attachDebugger(tabId))) throw e;
+    if (!/not attached/i.test(String(e && e.message))) throw e;
+    const a = await attachDebugger(tabId);
+    if (!a.ok) throw new Refused(a.reason);
     return await chrome.debugger.sendCommand({ tabId }, method, params);
   }
+}
+
+// Géométrie de l'onglet au moment du geste, mesurée par le content script : position de la
+// fenêtre à l'écran, taille extérieure et du contenu, zone utile de l'écran.
+let geom = null;
+
+/** Position à l'écran d'un point du contenu de la page (px CSS, zoom 100 %). */
+function screenPoint(g, x, y) {
+  return { x: g.sx + Math.max(0, (g.ow - g.iw) / 2) + x, y: g.sy + Math.max(0, g.oh - g.ih) + y };
+}
+
+/** Un vrai pointeur ne sort pas de l'écran : un point du contenu au-delà du bord physique (fenêtre
+ *  à moitié hors de l'écran) trahirait un geste de programme. Refusé avant d'être joué. */
+function assertOnScreen(x, y) {
+  if (!geom) return;
+  const p = screenPoint(geom, x, y);
+  if (p.x < geom.al || p.y < geom.at || p.x >= geom.al + geom.aw || p.y >= geom.at + geom.ah) {
+    throw new Refused(`cible hors écran (${Math.round(p.x)},${Math.round(p.y)} pour un écran utile ${geom.aw}×${geom.ah} en ${geom.al},${geom.at})`);
+  }
+}
+
+async function mouse(tabId, params) {
+  assertOnScreen(params.x, params.y);
+  await cdp(tabId, "Input.dispatchMouseEvent", params);
 }
 
 // Dernière position du curseur dans l'onglet de travail (CSS px de la fenêtre de la page).
@@ -529,7 +608,7 @@ async function moveTo(tabId, x, y, vw, vh) {
     pts = [...mousePath(from, over), ...mousePath(over, to)];
   }
   for (const p of pts) {
-    await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseMoved", x: p.x, y: p.y, button: "none", buttons: 0 });
+    await mouse(tabId, { type: "mouseMoved", x: p.x, y: p.y, button: "none", buttons: 0 });
     await sleepMs(between(14.5, 18.5));
   }
   Object.assign(cursor, to);
@@ -538,9 +617,9 @@ async function moveTo(tabId, x, y, vw, vh) {
 /** Appui et relâche du bouton gauche là où est le curseur (80–150 ms, comme mesuré). */
 async function press(tabId) {
   const at = { x: cursor.x, y: cursor.y };
-  await cdp(tabId, "Input.dispatchMouseEvent", { type: "mousePressed", ...at, button: "left", buttons: 1, clickCount: 1, force: 0.5 });
+  await mouse(tabId, { type: "mousePressed", ...at, button: "left", buttons: 1, clickCount: 1, force: 0.5 });
   await sleepMs(between(80, 150));
-  await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseReleased", x: at.x, y: at.y + between(0, 0.3), button: "left", buttons: 0, clickCount: 1 });
+  await mouse(tabId, { type: "mouseReleased", x: at.x, y: at.y + between(0, 0.3), button: "left", buttons: 0, clickCount: 1 });
 }
 
 /** Défilement à la molette/pavé tactile : une rafale d'à-coups décroissants (inertie). */
@@ -550,7 +629,7 @@ async function wheel(tabId, dy, vw, vh) {
   const w = Array.from({ length: n }, (_, i) => (1 - i / n) ** 1.6);
   const sum = w.reduce((a, b) => a + b, 0);
   for (const wi of w) {
-    await cdp(tabId, "Input.dispatchMouseEvent", { type: "mouseWheel", x: cursor.x, y: cursor.y, button: "none", deltaX: 0, deltaY: (dy * wi) / sum });
+    await mouse(tabId, { type: "mouseWheel", x: cursor.x, y: cursor.y, button: "none", deltaX: 0, deltaY: (dy * wi) / sum });
     await sleepMs(between(14.5, 18.5));
   }
 }
@@ -630,12 +709,126 @@ async function typeText(tabId, text) {
   }
 }
 
-/** Dépose `text` d'un coup : événements beforeinput/input de confiance, sans touche, comme un
- *  collage, une dictée ou un remplissage automatique. Pas de disposition de clavier à imiter,
- *  pas de session de frappe de plusieurs minutes. Une courte pause avant, le temps de « coller ». */
+/** Dépose `text` d'un coup : événements beforeinput/input de confiance, sans touche (dictée,
+ *  remplissage automatique). Repli du collage quand le presse-papiers de la personne ne pourrait
+ *  pas lui être rendu (image, fichier) ou ne répond pas. */
 async function insertText(tabId, text) {
   await sleepMs(lognormal(600, 0.4, 250, 2000));
   await cdp(tabId, "Input.insertText", { text });
+}
+
+let platformOs = null;
+async function isMac() {
+  if (!platformOs) platformOs = (await chrome.runtime.getPlatformInfo().catch(() => ({ os: "mac" }))).os;
+  return platformOs === "mac";
+}
+
+/** Touche de commande du système (Cmd sur Mac, Ctrl ailleurs) et son bit de modificateur CDP. */
+async function commandKey() {
+  return (await isMac())
+    ? { k: { key: "Meta", code: "MetaLeft", vk: 91 }, mods: 4 }
+    : { k: { key: "Control", code: "ControlLeft", vk: 17 }, mods: 2 };
+}
+
+/** Raccourci Cmd/Ctrl + lettre. `commands` : commande d'édition que Chrome joue avec la touche
+ *  (sur Mac, Cmd+A et Cmd+V passent par le menu de l'application, pas par la page : sans elle la
+ *  page reçoit la touche mais rien n'est sélectionné ni collé). */
+async function shortcut(tabId, letter, commands, { before = async () => {}, pressed = () => {} } = {}) {
+  const { k: mod, mods } = await commandKey();
+  const kk = { key: letter, code: `Key${letter.toUpperCase()}`, vk: letter.toUpperCase().charCodeAt(0) };
+  await key(tabId, "rawKeyDown", mod, { modifiers: mods });
+  try {
+    await sleepMs(between(40, 90));
+    await before();
+    await key(tabId, "rawKeyDown", kk, { modifiers: mods, commands });
+    pressed();
+    await sleepMs(lognormal(90, 0.3, 50, 180));
+    await key(tabId, "keyUp", kk, { modifiers: mods });
+    await sleepMs(between(20, 60));
+  } finally {
+    await key(tabId, "keyUp", mod).catch(() => {});
+  }
+}
+
+/** Vide le champ qui a le focus : Cmd+A puis Retour arrière, au vrai clavier. */
+async function clearField(tabId) {
+  await shortcut(tabId, "a", ["selectAll"]);
+  await sleepMs(between(120, 300));
+  const bs = { key: "Backspace", code: "Backspace", vk: 8 };
+  await key(tabId, "rawKeyDown", bs);
+  await sleepMs(lognormal(90, 0.3, 50, 180));
+  await key(tabId, "keyUp", bs);
+}
+
+// --- Presse-papiers (document offscreen) ---------------------------------------
+// Le service worker n'a pas accès au presse-papiers : un document offscreen le lit et l'écrit
+// (execCommand paste/copy, permissions clipboardRead/clipboardWrite).
+const OFFSCREEN_URL = "offscreen.html";
+
+async function ensureOffscreen() {
+  const url = chrome.runtime.getURL(OFFSCREEN_URL);
+  const open = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"], documentUrls: [url] }).catch(() => []);
+  if (open.length) return;
+  await chrome.offscreen
+    .createDocument({ url: OFFSCREEN_URL, reasons: ["CLIPBOARD"], justification: "Coller le message LinkedIn puis rendre son presse-papiers à la personne" })
+    .catch((e) => {
+      if (!/single offscreen|already/i.test(String(e && e.message))) throw e;
+    });
+}
+
+async function clipboard(op, items) {
+  try {
+    await ensureOffscreen();
+    const r = await chrome.runtime.sendMessage({ target: "offscreen", op, items });
+    return r || { ok: false, error: "document offscreen muet" };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+/**
+ * Colle `text` au vrai clavier (Cmd+V : un `paste` puis un `input` insertFromPaste de confiance,
+ * comme une personne qui colle son message). Le presse-papiers de la personne est lu avant, le
+ * message y est écrit Cmd déjà enfoncé, V suit aussitôt (`paste_ms` : délai entre l'écriture et
+ * l'appui), puis l'ancien contenu est remis. Un Cmd+C de la personne dans cet intervalle ferait
+ * coller autre chose : le content script relit le champ et n'envoie rien s'il diffère.
+ * Presse-papiers illisible ou impossible à rendre (image, fichier) : dépôt direct à la place
+ * (`fill: "insert"`), jamais d'écrasement de ce que la personne a copié.
+ */
+async function pasteText(tabId, text) {
+  const before = await clipboard("read");
+  if (!before.ok || !before.restorable) {
+    await insertText(tabId, text);
+    return { fill: "insert", clipboard: before.ok ? `non restaurable (${(before.types || []).join(", ")})` : `illisible (${before.error})` };
+  }
+  await sleepMs(lognormal(600, 0.4, 250, 2000)); // le temps d'aller chercher le raccourci
+  let written = null; // instant où le message est entré dans le presse-papiers
+  let pasteMs = null;
+  let restored = null;
+  try {
+    await shortcut(tabId, "v", ["paste"], {
+      before: async () => {
+        const w = await clipboard("write", { "text/plain": text });
+        if (!w.ok) throw new Refused(`presse-papiers non écrit (${w.error})`);
+        written = performance.now();
+      },
+      // V traitée par la page (collage fait) : fin de l'intervalle où un Cmd+C changerait le texte
+      pressed: () => { pasteMs = Math.round(performance.now() - written); },
+    });
+  } catch (e) {
+    if (written == null && e instanceof Refused) {
+      // rien n'a été collé (la touche V n'est pas partie) : dépôt direct
+      await insertText(tabId, text);
+      return { fill: "insert", clipboard: e.reason };
+    }
+    throw e;
+  } finally {
+    if (written != null) {
+      const back = await clipboard("write", before.items);
+      restored = back.ok ? "restauré" : `non restauré (${back.error})`;
+    }
+  }
+  return { fill: "paste", paste_ms: pasteMs, clipboard: restored };
 }
 
 /** Touche isolée (Échap…). */
@@ -648,20 +841,43 @@ async function pressKey(tabId, name) {
   await key(tabId, "keyUp", k);
 }
 
-/** Geste demandé par le content script de l'onglet de travail. */
+/** Géométrie envoyée par le content script : nombres seulement, sinon pas de contrôle d'écran. */
+function readGeom(g) {
+  if (!g || typeof g !== "object") return null;
+  const out = {};
+  for (const k of ["sx", "sy", "ow", "oh", "iw", "ih", "al", "at", "aw", "ah"]) {
+    const v = Number(g[k]);
+    if (!Number.isFinite(v)) return null;
+    out[k] = v;
+  }
+  return out.aw > 0 && out.ah > 0 ? out : null;
+}
+
+/** Geste demandé par le content script de l'onglet de travail. Rend { ok } ou { ok: false, reason }
+ *  (rien joué, ou geste interrompu : `partial`). */
 async function realInput(tabId, msg) {
-  if (!(await attachDebugger(tabId))) return { ok: false, error: "débogueur indisponible" };
+  const a = await attachDebugger(tabId);
+  if (!a.ok) return { ok: false, reason: a.reason };
   await setDebuggerState({ lastUse: Date.now() });
+  geom = readGeom(msg.geom);
   const vw = Number(msg.vw) || 1280, vh = Number(msg.vh) || 800;
-  if (msg.op === "move") await moveTo(tabId, Number(msg.x), Number(msg.y), vw, vh);
-  else if (msg.op === "press") await press(tabId);
-  else if (msg.op === "wheel") await wheel(tabId, Number(msg.dy), vw, vh);
-  else if (msg.op === "type") await typeText(tabId, String(msg.text || ""));
-  else if (msg.op === "insert") await insertText(tabId, String(msg.text || ""));
-  else if (msg.op === "key") await pressKey(tabId, msg.key);
-  else return { ok: false, error: `geste inconnu : ${msg.op}` };
+  let extra = {};
+  try {
+    if (msg.op === "move") await moveTo(tabId, Number(msg.x), Number(msg.y), vw, vh);
+    else if (msg.op === "press") await press(tabId);
+    else if (msg.op === "wheel") await wheel(tabId, Number(msg.dy), vw, vh);
+    else if (msg.op === "type") await typeText(tabId, String(msg.text || ""));
+    else if (msg.op === "insert") await insertText(tabId, String(msg.text || ""));
+    else if (msg.op === "paste") extra = await pasteText(tabId, String(msg.text || ""));
+    else if (msg.op === "clear") await clearField(tabId);
+    else if (msg.op === "key") await pressKey(tabId, msg.key);
+    else return { ok: false, reason: `geste inconnu : ${msg.op}` };
+  } catch (e) {
+    const reason = e instanceof Refused ? e.reason : `débogueur : ${String(e && e.message ? e.message : e).slice(0, 120)}`;
+    return { ok: false, reason, partial: msg.op !== "move" };
+  }
   await setDebuggerState({ lastUse: Date.now() });
-  return { ok: true };
+  return { ok: true, ...extra };
 }
 
 // Profil connecté lu par l'API LinkedIn (/voyager/api/me) : gardé quelques heures au lieu

@@ -79,97 +79,85 @@ function findClickable(re) {
   return null;
 }
 
-// --- Simulation « souris humaine » -------------------------------------------
-// Un bot se trahit par : clic pile au centre, au pixel près, sans déplacement de
-// curseur, avec un appui instantané. On corrige les trois : point aléatoire dans
-// l'élément, trajectoire de curseur en plusieurs paliers, durée de pression
-// variable. On garde en mémoire la dernière position pour enchaîner les gestes
-// de façon cohérente (le curseur ne se téléporte pas).
-let _lastPointer = { x: null, y: null };
+// --- Vrais gestes ---------------------------------------------------------------
+// Souris, molette et clavier joués par le background via le débogueur de Chrome (événements
+// isTrusted, comme une vraie main — cf. background.js « Vrais gestes »). Ici on mesure la cible
+// et l'on corrige ce qui empêcherait le geste : cible hors de la vue (défilement à la vraie
+// molette), recouverte (autre point de la cible), survol pas arrivé (nouvelle mesure) ; jusqu'à
+// trois essais. Sans vrai geste possible, l'action s'arrête sur NoRealInput : rien n'est envoyé
+// et le serveur la reprend quelques minutes plus tard, sans pénalité. Plus aucun geste simulé
+// (événement fabriqué par la page, el.click(), scrollTop) : LinkedIn les reconnaît en une ligne.
+// Le runner (faux chrome.runtime, sans sendMessage) n'a donc plus de gestes : ses actions refusent.
 
-/** Point légèrement aléatoire dans l'élément — jamais deux fois le même pixel. */
-function jitterPoint(el) {
-  const r = el.getBoundingClientRect();
-  const padX = Math.min(r.width * 0.32, 14);
-  const padY = Math.min(r.height * 0.32, 10);
+/** Aucun vrai geste possible : rien n'a été envoyé. `maybePressed` : l'appui est peut-être parti
+ *  (geste interrompu après l'appui), à vérifier avant de dire « rien envoyé ». */
+class NoRealInput extends Error {
+  constructor(reason, maybePressed = false) {
+    super(`vrais gestes impossibles (${reason}) — rien envoyé`);
+    this.reason = reason;
+    this.maybePressed = maybePressed;
+  }
+}
+
+const canRealInput = () => typeof chrome !== "undefined" && !!(chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.id);
+
+// Gestes de l'action en cours, joints au verdict : vrais gestes joués, gestes simulés repérés,
+// onglet caché, collage (délai, presse-papiers rendu ou non).
+let gestures = { real: 0, simulated: 0 };
+let acting = false;
+
+/** Ce que le verdict rapporte des gestes de l'action. */
+function gestureReport() {
+  const g = { ...gestures };
+  if (document.visibilityState === "hidden") g.tab_hidden = true;
+  return g;
+}
+
+// Garde-fou : un événement d'entrée NON fiable (fabriqué par un script) pendant une action compte
+// comme geste simulé. Ce fichier n'en produit plus ; un chemin oublié se verrait ici (un script de
+// LinkedIn qui en fabrique lui-même aussi : `simulated_types` dit lesquels).
+for (const type of ["click", "mousedown", "mouseup", "pointerdown", "pointerup", "keydown", "keyup", "paste", "wheel"]) {
+  document.addEventListener(type, (e) => {
+    if (!acting || e.isTrusted) return;
+    gestures.simulated++;
+    gestures.simulated_types = { ...(gestures.simulated_types || {}), [type]: ((gestures.simulated_types || {})[type] || 0) + 1 };
+  }, { capture: true, passive: true });
+}
+
+/** Position de la fenêtre et de son contenu à l'écran, zone utile de l'écran : le background
+ *  refuse un geste qui tomberait hors de l'écran physique. */
+function geometry() {
   return {
-    x: Math.round(r.left + r.width / 2 + rand(-padX, padX)),
-    y: Math.round(r.top + r.height / 2 + rand(-padY, padY)),
+    sx: window.screenX, sy: window.screenY, ow: window.outerWidth, oh: window.outerHeight, iw: window.innerWidth, ih: window.innerHeight,
+    al: screen.availLeft || 0, at: screen.availTop || 0, aw: screen.availWidth, ah: screen.availHeight,
   };
 }
 
-/** Déplace le curseur vers (x,y) en quelques mousemove intermédiaires, avec une
- *  trajectoire adoucie (smoothstep) et un léger bruit — comme une vraie main. */
-async function moveMouseTo(x, y) {
-  const from = _lastPointer.x == null
-    ? { x: x - rand(80, 240), y: y - rand(60, 180) } // 1re fois : départ plausible hors cible
-    : { x: _lastPointer.x, y: _lastPointer.y };
-  const steps = 3 + Math.floor(rand(0, 4)); // 3 à 6 paliers
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    const ease = t * t * (3 - 2 * t); // smoothstep : accélère puis ralentit
-    const px = Math.round(from.x + (x - from.x) * ease + rand(-2, 2));
-    const py = Math.round(from.y + (y - from.y) * ease + rand(-2, 2));
-    const el = document.elementFromPoint(px, py) || document.body;
-    const o = { bubbles: true, cancelable: true, view: window, clientX: px, clientY: py };
-    el.dispatchEvent(new PointerEvent("pointermove", { ...o, pointerId: 1, pointerType: "mouse", isPrimary: true }));
-    el.dispatchEvent(new MouseEvent("mousemove", o));
-    await sleep(rand(12, 45));
-  }
-  _lastPointer = { x, y };
-}
+let lastRefusal = null; // raison du dernier geste refusé par le background
 
-/** Appui souris « humain » sur (x,y) SANS le click final : survol → appui →
- *  durée de pression → relâche. Le déclenchement se fait ensuite au choix de
- *  l'appelant (click natif proven pour les boutons, click synthétique pour la
- *  liste de conversations où le natif n'a aucun effet). Évite tout double-tir. */
-async function pressAt(el, x, y) {
-  const o = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0 };
-  const p = { ...o, pointerId: 1, pointerType: "mouse", isPrimary: true };
-  el.dispatchEvent(new PointerEvent("pointerover", p));
-  el.dispatchEvent(new MouseEvent("mouseover", o));
-  el.dispatchEvent(new PointerEvent("pointerdown", p));
-  el.dispatchEvent(new MouseEvent("mousedown", o));
-  try { el.focus && el.focus(); } catch {}
-  await sleep(rand(80, 170)); // temps de pression
-  el.dispatchEvent(new PointerEvent("pointerup", p));
-  el.dispatchEvent(new MouseEvent("mouseup", o));
-  return o;
-}
-
-/** Clic « humain » sur un vrai bouton (Message, Envoyer, Se connecter…) :
- *  défilement doux, déplacement du curseur vers un point aléatoire, hésitation,
- *  séquence d'appui souris, puis UN SEUL déclenchement via le .click() natif
- *  (celui qui a toujours fonctionné ici — pas de synthétique en plus, sinon on
- *  risquerait un double envoi). */
-async function clickHuman(el) {
-  if (await realClick(el)) return;
-  try { el.scrollIntoView({ block: "center", behavior: "smooth" }); }
-  catch { el.scrollIntoView({ block: "center" }); }
-  await sleep(rand(400, 950)); // laisse le défilement se stabiliser (coords fiables)
-  const { x, y } = jitterPoint(el);
-  await moveMouseTo(x, y);
-  await sleep(rand(50, 160)); // petite hésitation avant d'appuyer
-  await pressAt(el, x, y);
-  await sleep(rand(20, 70));
-  el.click(); // déclenchement unique et éprouvé
-}
-
-// --- Vrais gestes ---------------------------------------------------------------
-// Souris, molette et clavier joués par le background via le débogueur de Chrome
-// (événements isTrusted, comme une vraie main — cf. background.js « Vrais gestes »).
-// Ici on mesure la cible et on vérifie ; tout refus ou doute → gestes simulés comme avant.
-// Le runner (faux chrome.runtime, sans sendMessage) n'en a pas : gestes simulés.
-const canRealInput = () => typeof chrome !== "undefined" && !!(chrome.runtime && chrome.runtime.sendMessage && chrome.runtime.id);
-
+/** Demande un vrai geste au background. Vrai s'il a été joué ; sinon `lastRefusal` dit pourquoi. */
 async function realInput(cmd) {
-  if (!canRealInput()) return false;
-  try {
-    const r = await chrome.runtime.sendMessage({ type: "real-input", vw: window.innerWidth, vh: window.innerHeight, ...cmd });
-    return Boolean(r && r.ok);
-  } catch {
+  if (!canRealInput()) {
+    lastRefusal = "pas de débogueur (exécutant sans extension)";
     return false;
   }
+  let r;
+  try {
+    r = await chrome.runtime.sendMessage({ type: "real-input", vw: window.innerWidth, vh: window.innerHeight, geom: geometry(), ...cmd });
+  } catch (e) {
+    lastRefusal = `extension injoignable (${e && e.message ? e.message : e})`;
+    return false;
+  }
+  if (!r || !r.ok) {
+    lastRefusal = (r && (r.reason || r.error)) || "geste refusé";
+    return false;
+  }
+  gestures.real++;
+  if (document.visibilityState === "hidden") gestures.tab_hidden = true;
+  if (r.fill) gestures.fill = r.fill;
+  if (r.paste_ms != null) gestures.paste_ms = r.paste_ms;
+  if (r.clipboard) gestures.clipboard = r.clipboard;
+  return true;
 }
 
 // Dernier survol réel : avant d'appuyer, le vrai curseur doit être sur la cible.
@@ -193,75 +181,137 @@ function composedContains(el, node) {
   return false;
 }
 
-/** Amène `el` à l'écran à la molette, la main d'abord posée sur le contenu. Faux si la
- *  molette n'a rien fait défiler (curseur sur un bandeau fixe, onglet caché…). */
+/** Point légèrement aléatoire dans l'élément — jamais deux fois le même pixel. */
+function jitterPoint(el) {
+  const r = el.getBoundingClientRect();
+  const padX = Math.min(r.width * 0.32, 14);
+  const padY = Math.min(r.height * 0.32, 10);
+  return {
+    x: Math.round(r.left + r.width / 2 + rand(-padX, padX)),
+    y: Math.round(r.top + r.height / 2 + rand(-padY, padY)),
+  };
+}
+
+/** Amène `el` à l'écran à la vraie molette, la main posée sur le contenu (près de la cible, puis
+ *  au milieu de la page si la molette n'a rien fait : curseur sur un bandeau fixe). Faux si `el`
+ *  n'est toujours pas entièrement visible ; `lastRefusal` est posé si un geste a été refusé. */
 async function realScrollIntoView(el) {
-  for (let i = 0; i < 4; i++) {
+  let stuck = 0;
+  for (let i = 0; i < 6 && stuck < 2; i++) {
     const r = el.getBoundingClientRect();
     if (r.top >= 70 && r.bottom <= window.innerHeight - 40) return true;
-    const x = Math.min(window.innerWidth - 20, Math.max(20, r.left + r.width / 2 + rand(-60, 60)));
+    const x = stuck
+      ? window.innerWidth * rand(0.3, 0.6)
+      : Math.min(window.innerWidth - 20, Math.max(20, r.left + r.width / 2 + rand(-60, 60)));
     if (!(await realInput({ op: "move", x, y: window.innerHeight * rand(0.4, 0.7) }))) return false;
     if (!(await realInput({ op: "wheel", dy: r.top + r.height / 2 - window.innerHeight * rand(0.35, 0.6) }))) return false;
     await sleep(rand(300, 650));
-    if (Math.abs(el.getBoundingClientRect().top - r.top) < 2) return false;
+    stuck = Math.abs(el.getBoundingClientRect().top - r.top) < 2 ? stuck + 1 : 0;
   }
   const r = el.getBoundingClientRect();
   return r.top >= 0 && r.bottom <= window.innerHeight;
 }
 
-/** Vrai clic : défilement à la molette, trajectoire de main vers un point de la cible,
- *  hésitation, appui. Avant d'appuyer, la cible doit être sous le curseur (survol réel
- *  reçu ; onglet caché, où Chrome retient les survols : élément sous le point). Une fois
- *  l'appui parti, jamais de second clic simulé (pas de double envoi). Faux = rien appuyé. */
-async function realClick(el) {
-  if (!canRealInput()) return false;
-  if (!(await realScrollIntoView(el))) {
-    try { el.scrollIntoView({ block: "center" }); } catch {}
-    await sleep(rand(300, 600));
+/** Un essai de vrai clic : défilement à la molette, point de la cible à l'écran et non recouvert,
+ *  trajectoire de main, hésitation, appui. Avant d'appuyer, la cible doit être sous le curseur
+ *  (survol réel reçu ; onglet caché, où Chrome retient les survols : élément sous le point).
+ *  Rend { ok } ou { reason, pressed? } (`pressed` : l'appui a pu partir). */
+async function realClickOnce(el) {
+  if (!el.isConnected || !isShown(el)) return { reason: "cible disparue de la page" };
+  lastRefusal = null;
+  if (!(await realScrollIntoView(el)) && lastRefusal) return { reason: lastRefusal };
+  let pt = null;
+  for (let k = 0; k < 6 && !pt; k++) {
+    const p = jitterPoint(el);
+    if (p.x < 1 || p.y < 1 || p.x > window.innerWidth - 1 || p.y > window.innerHeight - 1) continue;
+    if (composedContains(el, deepElementFromPoint(p.x, p.y))) pt = p;
   }
-  const { x, y } = jitterPoint(el);
-  if (x < 1 || y < 1 || x > window.innerWidth - 1 || y > window.innerHeight - 1) return false;
-  if (!composedContains(el, deepElementFromPoint(x, y))) return false; // recouvert (fenêtre, bandeau)
-  if (!(await realInput({ op: "move", x, y }))) return false;
+  if (!pt) {
+    const r = el.getBoundingClientRect();
+    const inView = r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth;
+    return { reason: inView ? "cible recouverte (fenêtre, bandeau)" : "cible hors de la vue (la molette ne l'amène pas)" };
+  }
+  if (!(await realInput({ op: "move", x: pt.x, y: pt.y }))) return { reason: lastRefusal };
   await sleep(rand(70, 220)); // hésitation avant d'appuyer
   const onTarget = document.visibilityState === "hidden"
-    ? composedContains(el, deepElementFromPoint(x, y))
+    ? composedContains(el, deepElementFromPoint(pt.x, pt.y))
     : lastTrustedPath.includes(el);
-  if (!onTarget) return false;
-  // Appui refusé (débogueur détaché entre le déplacement et l'appui) : rien n'a été cliqué,
-  // l'appelant reprend en simulé. Avant, « vrai » quand même : ni clic réel ni repli.
-  return realInput({ op: "press" });
+  if (!onTarget) return { reason: "survol pas arrivé sur la cible" };
+  if (!(await realInput({ op: "press" }))) return { reason: lastRefusal, pressed: true };
+  return { ok: true };
 }
 
-// Texte déposé d'un coup par le débogueur (événements de confiance, sans touche). Vrai : touche
-// par touche à la place (rythme humain, mais disposition de clavier à imiter et 1 à 2 min par message).
+// Refus que quelques secondes n'y changent rien : pas de nouvel essai tout de suite.
+const HOPELESS = /débogueur refusé|autre débogueur|pas de débogueur|hors onglet de travail/;
+
+/** Vrai clic sur un bouton (Message, Envoyer, Se connecter…), jusqu'à trois essais (nouvelle
+ *  mesure à chaque fois). Une fois l'appui parti, jamais de second clic (pas de double envoi).
+ *  Sans vrai clic possible : NoRealInput. */
+async function clickHuman(el) {
+  let last = { reason: "geste refusé" };
+  for (let i = 0; i < 3; i++) {
+    if (i) await sleep(rand(600, 1400)); // le temps qu'un bandeau passe, qu'une animation finisse
+    last = await realClickOnce(el);
+    if (last.ok) return;
+    if (last.pressed) throw new NoRealInput(last.reason || "appui interrompu", true);
+    if (HOPELESS.test(last.reason || "")) break;
+  }
+  throw new NoRealInput(last.reason || "geste refusé");
+}
+
+// Texte collé (Cmd+V) par le débogueur. Vrai : touche par touche à la place (rythme humain, mais
+// disposition de clavier à imiter et 1 à 2 min par message).
 const TYPE_KEY_BY_KEY = false;
 
-/** Texte dans un champ vide : clic réel dedans si besoin, puis insertion par le débogueur. Vrai si
- *  le champ contient exactement `text` ensuite (sinon l'appelant remplace par la saisie simulée). */
-async function realFill(el, text) {
-  const fieldText = () => (el.tagName === "TEXTAREA" || el.tagName === "INPUT" ? el.value : el.innerText) || "";
-  if (!canRealInput() || normWords(fieldText())) return false; // brouillon déjà là : saisie simulée, qui remplace
+/** Texte d'un champ (textarea ou éditeur contenteditable). */
+const fieldText = (el) => (el.tagName === "TEXTAREA" || el.tagName === "INPUT" ? el.value : el.innerText) || "";
+/** Texte à la mise en page près : tout blanc (espaces, retours à la ligne, paragraphes de
+ *  l'éditeur LinkedIn) compte pour un espace ; casse, accents et ponctuation comptent. */
+const flatText = (s) => String(s || "").normalize("NFC").replace(/[\s\u00a0\u200b\ufeff]+/g, " ").trim();
+const sameText = (a, b) => flatText(a) === flatText(b);
+
+/** Focus dans le champ par un vrai clic (deux essais). */
+async function focusField(el) {
   const focused = () => composedContains(el, activeDeep());
-  if (!focused()) {
-    await realClick(el);
+  for (let i = 0; i < 2 && !focused(); i++) {
+    await clickHuman(el);
     await sleep(rand(200, 500));
   }
-  if (!focused()) return false;
-  if (!(await realInput({ op: TYPE_KEY_BY_KEY ? "type" : "insert", text }))) return false;
-  await sleep(rand(300, 700));
-  return normWords(fieldText()) === normWords(text);
+  if (!focused()) throw new NoRealInput("focus pas arrivé dans le champ");
 }
 
-/** Échap au vrai clavier, sinon simulé. */
+/** Vide le champ qui a le focus au vrai clavier (Cmd+A, Retour arrière), deux essais. */
+async function emptyField(el) {
+  for (let i = 0; i < 2 && flatText(fieldText(el)); i++) {
+    if (!(await realInput({ op: "clear" }))) throw new NoRealInput(lastRefusal || "effacement refusé");
+    await sleep(rand(200, 450));
+  }
+  if (flatText(fieldText(el))) throw new NoRealInput("brouillon impossible à effacer");
+}
+
+/** Écrit `text` dans le champ : focus par vrai clic, brouillon effacé au vrai clavier, collage
+ *  (Cmd+V), relecture. Vrai si le champ contient exactement le message ; sinon il est vidé et l'on
+ *  recommence une fois ; faux après deux échecs (champ vidé, rien envoyé). */
+async function realFill(el, text) {
+  await focusField(el);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await emptyField(el);
+    if (!(await realInput({ op: TYPE_KEY_BY_KEY ? "type" : "paste", text }))) throw new NoRealInput(lastRefusal || "collage refusé");
+    await sleep(rand(300, 700));
+    if (sameText(fieldText(el), text)) return true;
+  }
+  await emptyField(el).catch(() => {});
+  return false;
+}
+
+/** Échap au vrai clavier, sinon rien. */
 async function pressEscape() {
-  if (await realInput({ op: "key", key: "Escape" })) return;
-  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+  return realInput({ op: "key", key: "Escape" });
 }
 
-/** Avant d'agir sur un profil : le temps de le lire. Un arrêt sur le haut de la page,
- *  un à trois défilements vers le bas, puis retour en haut (8 à 25 s en tout). À la vraie
- *  molette ; à défaut, défilement direct (scrollTop), qui marche aussi dans un onglet caché. */
+/** Avant d'agir sur un profil : le temps de le lire. Un arrêt sur le haut de la page, un à trois
+ *  défilements vers le bas, puis retour en haut (8 à 25 s en tout), à la vraie molette. Sans elle
+ *  (débogueur absent, molette sans effet dans un onglet caché) : le même temps, sans défiler. */
 async function glanceProfile() {
   if (!/^\/in\//.test(location.pathname)) return;
   await sleep(rand(3000, 7000));
@@ -269,76 +319,24 @@ async function glanceProfile() {
     (el) => el && el.scrollHeight > el.clientHeight + 200 &&
       (el === document.scrollingElement || /(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY))
   );
-  if (!scroller) return;
   const steps = 1 + Math.floor(rand(0, 3));
-  if (await realInput({ op: "move", x: window.innerWidth * rand(0.35, 0.65), y: window.innerHeight * rand(0.45, 0.75) })) {
+  if (scroller && (await realInput({ op: "move", x: window.innerWidth * rand(0.35, 0.65), y: window.innerHeight * rand(0.45, 0.75) }))) {
     let wheeled = true;
     for (let i = 0; i < steps && wheeled; i++) {
       const before = scroller.scrollTop;
       wheeled = (await realInput({ op: "wheel", dy: window.innerHeight * rand(0.4, 0.9) })) && scroller.scrollTop !== before;
       await sleep(rand(1500, 4500));
     }
+    for (let i = 0; i < 3 && scroller.scrollTop > 0; i++) {
+      if (!(await realInput({ op: "wheel", dy: -scroller.scrollTop - rand(50, 200) }))) break;
+      await sleep(rand(400, 900));
+    }
     if (wheeled) {
-      for (let i = 0; i < 3 && scroller.scrollTop > 0; i++) {
-        await realInput({ op: "wheel", dy: -scroller.scrollTop - rand(50, 200) });
-        await sleep(rand(400, 900));
-      }
       await sleep(rand(800, 2000));
       return;
     }
   }
-  for (let i = 0; i < steps; i++) {
-    // par petits pas, comme une molette
-    const target = scroller.scrollTop + Math.round(window.innerHeight * rand(0.4, 0.9));
-    while (scroller.scrollTop < target - 5) {
-      const before = scroller.scrollTop;
-      scroller.scrollTop += Math.round(rand(60, 140));
-      if (scroller.scrollTop === before) break; // bas de page
-      await sleep(rand(30, 90));
-    }
-    await sleep(rand(1500, 4500));
-  }
-  while (scroller.scrollTop > 0) {
-    const before = scroller.scrollTop;
-    scroller.scrollTop -= Math.round(rand(150, 300));
-    if (scroller.scrollTop === before) break;
-    await sleep(rand(20, 60));
-  }
-  await sleep(rand(800, 2000));
-}
-
-/** Saisit du texte dans un textarea ou un contenteditable, en déclenchant les events React. */
-async function typeInto(el, text) {
-  el.focus();
-  await sleep(rand(200, 500));
-  if (el.tagName === "TEXTAREA" || el.tagName === "INPUT") {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")
-      || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value");
-    setter.set.call(el, text);
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-  } else {
-    // contenteditable (éditeur LinkedIn) : on NE vide PAS via textContent (ça casse
-    // la structure interne et laisse le modèle « vide » → bouton Envoyer grisé).
-    // On efface proprement via l'éditeur, puis insertText, puis un InputEvent complet.
-    try { document.execCommand("selectAll", false, null); document.execCommand("delete", false, null); } catch {}
-    document.execCommand("insertText", false, text);
-    el.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertText", data: text }));
-  }
-  await sleep(rand(400, 900));
-}
-
-/** Repli : simule un COLLAGE. De nombreux éditeurs (React/Quill) n'activent le
- *  bouton Envoyer que sur un vrai `paste` — on efface puis on colle le texte. */
-async function pasteInto(el, text) {
-  el.focus();
-  try { document.execCommand("selectAll", false, null); document.execCommand("delete", false, null); } catch {}
-  try {
-    const dt = new DataTransfer();
-    dt.setData("text/plain", text);
-    el.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: dt }));
-  } catch {}
-  el.dispatchEvent(new InputEvent("input", { bubbles: true, cancelable: true, inputType: "insertFromPaste", data: text }));
-  await sleep(rand(400, 800));
+  await sleep(rand(5000, 15000));
 }
 
 /** Page d'erreur LinkedIn (profil supprimé, URL erronée, slug renommé…).
@@ -550,7 +548,12 @@ async function dismissDialog() {
     .flatMap((r) => [...r.querySelectorAll("button[aria-label]")])
     .find((b) => isShown(b) && RE_DISMISS.test(b.getAttribute("aria-label") || ""));
   if (!btn) return;
-  await clickHuman(btn);
+  try {
+    await clickHuman(btn);
+  } catch (e) {
+    if (!(e instanceof NoRealInput)) throw e;
+    return; // fermeture au mieux : la page suivante la refermera
+  }
   await human();
 }
 
@@ -637,7 +640,15 @@ async function doInvite(note, target) {
   }
   if (!invitePage && !connect) return { ok: false, error: `bouton « Se connecter » introuvable ; ${connectDiagnostic()}` };
   if (connect) {
-    await clickHuman(connect);
+    try {
+      await clickHuman(connect);
+    } catch (e) {
+      // Appui peut-être parti : certains profils envoient l'invitation dès « Se connecter ».
+      if (!(e instanceof NoRealInput) || !e.maybePressed) throw e;
+      await sleep(rand(1500, 2500));
+      if (findOwnClickable(RE_PENDING)) return { ok: true, error: "invitation envoyée dès le clic sur « Se connecter » (geste interrompu après l'appui)" };
+      throw e;
+    }
     await human();
   }
 
@@ -659,7 +670,9 @@ async function doInvite(note, target) {
         return deepQueryAll('textarea[name="message"], #custom-message').find(isShown) || null;
       }, 4000);
       if (box) {
-        if (!(await realFill(box, clean))) await typeInto(box, clean);
+        if (!(await realFill(box, clean))) {
+          return { ok: false, error: "note d'invitation mal saisie (différente du texte prévu) — rien envoyé" };
+        }
         noted = true;
       } else {
         dropped = "plus de note personnalisée disponible sur ce compte (offre Premium affichée)";
@@ -689,7 +702,17 @@ async function doInvite(note, target) {
     dropped = dropped || (clean ? "LinkedIn l'a envoyée dès le clic sur « Se connecter »" : null);
     return dropped ? { ok: true, error: `invitation envoyée sans note — ${dropped}` } : { ok: true };
   }
-  await clickHuman(send);
+  try {
+    await clickHuman(send);
+  } catch (e) {
+    // L'appui a peut-être eu lieu : on regarde avant de dire « rien envoyé ».
+    if (!(e instanceof NoRealInput) || !e.maybePressed) throw e;
+    await sleep(rand(1500, 2500));
+    if (!findOwnClickable(RE_PENDING) && send.isConnected && isShown(send)) throw e; // fenêtre et bouton toujours là : rien n'est parti
+    if (!findOwnClickable(RE_PENDING)) {
+      return { ok: false, error: "clic « Envoyer » de l'invitation interrompu, invitation peut-être partie — à vérifier à la main" };
+    }
+  }
   await human();
   return dropped ? { ok: true, error: `invitation envoyée sans note — ${dropped}` } : { ok: true };
 }
@@ -866,33 +889,29 @@ async function doMessage(text, inThread, guard, meName) {
     seen_texts = seenMine(threadMessages(threadRoot(editor), meName));
   }
 
-  // Saisie par COLLAGE (méthode principale : plus robuste et plus humaine — un
-  // vrai éditeur active le bouton Envoyer sur un paste).
-  // Clic dans le champ d'abord : sans curseur dedans (onglet en arrière-plan),
-  // l'éditeur ignore le collage comme la saisie et Envoyer reste grisé.
-  await clickHuman(editor);
-  // Insertion réelle d'abord ; sinon collage, qui remplace ce qui a pu être déposé.
-  let send = (await realFill(editor, text.trim())) ? await waitFor(() => findSendButton(editor), 4000) : null;
+  // Collage au vrai clavier (Cmd+V) : focus par vrai clic dans le champ (sans curseur dedans,
+  // l'éditeur ignore le collage et Envoyer reste grisé), brouillon effacé, relecture.
+  const clean = text.trim();
+  if (!(await realFill(editor, clean))) return { ok: false, error: "texte mal saisi dans le champ (différent du message) — rien envoyé" };
+  const send = await waitFor(() => findSendButton(editor), 4000);
   if (!send) {
-    await pasteInto(editor, text.trim());
-    send = await waitFor(() => findSendButton(editor), 4000);
+    await emptyField(editor).catch(() => {});
+    return { ok: false, error: "le champ n'a pas été reconnu par LinkedIn (bouton Envoyer resté désactivé après le collage)" };
   }
-  if (!send) {
-    // Repli : saisie directe si le collage n'a pas réveillé l'éditeur.
-    await typeInto(editor, text.trim());
-    send = await waitFor(() => findSendButton(editor), 4000);
+  // Relu juste avant d'envoyer : exactement le message, ni tronqué, ni en double, ni autre chose
+  // (un Cmd+C de la personne entre l'écriture du presse-papiers et le collage).
+  if (!sameText(fieldText(editor), clean)) {
+    await emptyField(editor).catch(() => {});
+    return { ok: false, error: "texte mal saisi dans le champ (différent du message) — rien envoyé" };
   }
-  if (!send) return { ok: false, error: "le champ n'a pas été reconnu par LinkedIn (bouton Envoyer resté désactivé après collage et saisie)" };
-  // Le champ doit contenir exactement le message (ni tronqué, ni en double) avant d'envoyer.
-  if (normWords(editor.innerText) !== normWords(text)) {
-    await typeInto(editor, text.trim());
-    send = await waitFor(() => findSendButton(editor), 4000);
-    if (!send || normWords(editor.innerText) !== normWords(text)) {
-      try { document.execCommand("selectAll", false, null); document.execCommand("delete", false, null); } catch {}
-      return { ok: false, error: "texte mal saisi dans le champ (différent du message) — rien envoyé" };
-    }
+  try {
+    await clickHuman(send);
+  } catch (e) {
+    // L'appui a peut-être eu lieu : champ vidé ou message dans le fil = parti.
+    if (!(e instanceof NoRealInput) || !e.maybePressed) throw e;
+    const left = await waitFor(() => !editor.isConnected || !flatText(fieldText(editor)), 4000);
+    if (!left) throw e; // le message est toujours dans le champ : rien n'est parti
   }
-  await clickHuman(send);
   // Parti = LinkedIn vide le champ (ou le retire) et le message apparaît dans le fil.
   const root = threadRoot(editor);
   const gone = await waitFor(() => {
@@ -1144,10 +1163,19 @@ async function doListConnections(since) {
   for (let i = 0; i < 40 && stale < 3; i++) {
     const o = oldest();
     if (o != null && o < since) break;
-    // La liste défile par la page ou par <main> selon le design ; chargement de 10 en 10.
-    for (const el of [document.scrollingElement, ...document.querySelectorAll("main")]) if (el) el.scrollTop = el.scrollHeight;
+    // La liste défile par la page ou par <main> selon le design ; chargement de 10 en 10. À la vraie
+    // molette et au vrai clic seulement : sans eux, on s'arrête sur ce qui est déjà lu.
+    if (!(await realInput({ op: "move", x: window.innerWidth * rand(0.35, 0.6), y: window.innerHeight * rand(0.4, 0.75) }))) break;
+    if (!(await realInput({ op: "wheel", dy: window.innerHeight * rand(1.5, 2.5) }))) break;
     const more = findClickable(/^(show more results|load more|afficher plus de résultats|voir plus de résultats)/i);
-    if (more) more.click();
+    if (more) {
+      try {
+        await clickHuman(more);
+      } catch (e) {
+        if (!(e instanceof NoRealInput)) throw e;
+        break;
+      }
+    }
     await sleep(rand(1200, 2000));
     const before = cards.size;
     cards = connectionCards();
@@ -1480,10 +1508,19 @@ async function doViewProfile() {
   let stableBottom = 0;
   let maxY = 0;
   let scroller = findScroller();
-  for (let i = 0; i < 30 && stableBottom < 2 && !sectionsSeen(); i++) {
+  // À la vraie molette seulement : sans elle (débogueur absent, onglet caché), on lit ce qui est rendu.
+  const wheelBy = async (dy) => {
+    const before = scroller.scrollTop;
+    if (!(await realInput({ op: "move", x: window.innerWidth * rand(0.35, 0.65), y: window.innerHeight * rand(0.4, 0.75) }))) return false;
+    if (!(await realInput({ op: "wheel", dy }))) return false;
+    await sleep(rand(150, 300));
+    return scroller.scrollTop !== before;
+  };
+  let wheels = true;
+  for (let i = 0; i < 30 && stableBottom < 2 && !sectionsSeen() && wheels; i++) {
     if (!scroller.isConnected) scroller = findScroller(); // re-rendu React : élément remplacé
     const before = scroller.scrollHeight;
-    scroller.scrollTop += Math.round(window.innerHeight * rand(0.6, 0.9));
+    wheels = await wheelBy(Math.round(window.innerHeight * rand(0.6, 0.9)));
     await sleep(rand(250, 550));
     maxY = Math.max(maxY, scroller.scrollTop);
     const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 100;
@@ -1493,12 +1530,12 @@ async function doViewProfile() {
   // fenêtre cachée…) : 2e passe PLUS LENTE depuis le haut — certains modules ne
   // se chargent qu'après un vrai temps de présence. Ne coûte rien aux profils
   // complets (la passe rapide leur suffit).
-  if (!sectionsSeen()) {
-    scroller.scrollTop = 0;
+  if (!sectionsSeen() && wheels) {
+    if (scroller.scrollTop > 0) await wheelBy(-scroller.scrollTop - rand(50, 200));
     await sleep(rand(1200, 2000));
     for (let i = 0; i < 10 && !sectionsSeen(); i++) {
       if (!scroller.isConnected) scroller = findScroller();
-      scroller.scrollTop += Math.round(window.innerHeight * rand(0.5, 0.7));
+      if (!(await wheelBy(Math.round(window.innerHeight * rand(0.5, 0.7))))) break;
       await sleep(rand(800, 1200));
       maxY = Math.max(maxY, scroller.scrollTop);
       if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 100) {
@@ -1509,7 +1546,7 @@ async function doViewProfile() {
     }
   }
   await sleep(rand(300, 700));
-  scroller.scrollTop = 0;
+  if (scroller.scrollTop > 0) await wheelBy(-scroller.scrollTop - rand(50, 200));
   await sleep(rand(500, 900)); // laisse les sections révélées finir de charger
   debug.visibilite_fin = document.visibilityState;
   debug.conteneur = scroller === document.scrollingElement
@@ -1604,33 +1641,6 @@ async function doViewProfile() {
 
 const norm = (s) => (s || "").trim().toLowerCase().replace(/\s+/g, " ");
 
-/**
- * Clic « musclé » qui déclenche vraiment la navigation SPA de LinkedIn.
- * LinkedIn n'expose ni lien ni id dans la liste : le fil s'ouvre au clic JS,
- * et le gestionnaire est sur un élément ENFANT — cliquer le <li> parent ne le
- * déclenche pas. On vise donc l'élément réellement sous le centre de la carte
- * (elementFromPoint) et on émet la séquence pointer+souris complète, qui remonte
- * jusqu'au bon gestionnaire.
- */
-async function robustClick(container) {
-  try { container.scrollIntoView({ block: "center", behavior: "smooth" }); }
-  catch { container.scrollIntoView({ block: "center" }); }
-  await sleep(rand(350, 750)); // stabilisation du défilement
-  const r = container.getBoundingClientRect();
-  // point aléatoire dans la moitié haute de la carte (là où se trouve le nom/handler),
-  // jamais pile au centre : plus proche d'un vrai clic.
-  const x = Math.round(r.left + rand(r.width * 0.2, r.width * 0.8));
-  const y = Math.round(r.top + rand(8, Math.min(Math.max(r.height - 6, 10), 40)));
-  let el = document.elementFromPoint(x, y);
-  if (!el || !container.contains(el)) el = container;
-  await moveMouseTo(x, y);            // déplacement de curseur humain vers la carte
-  await sleep(rand(40, 140));         // hésitation
-  const o = await pressAt(el, x, y);  // survol → appui → relâche (positions cohérentes)
-  // ici le click SYNTHÉTIQUE est nécessaire : LinkedIn n'ouvre pas le fil sur un
-  // .click() natif du <li> (le gestionnaire est sur un enfant, capté par elementFromPoint).
-  el.dispatchEvent(new MouseEvent("click", o));
-}
-
 /** Nom du contact affiché dans l'en-tête du fil actuellement ouvert (best-effort). */
 function openThreadName() {
   const sels = [
@@ -1674,7 +1684,9 @@ async function openConversationByName(name) {
   const card = await waitFor(pick, 6000);
   if (!card) return { ok: false, error: `conversation avec « ${name} » introuvable dans la liste` };
 
-  await robustClick(card);
+  // Vrai clic sur la carte : l'événement part de l'élément réellement sous le pointeur (le
+  // gestionnaire de LinkedIn est sur un enfant de la carte).
+  await clickHuman(card);
   await human();
 
   // Vérifie que le BON fil est ouvert : en-tête au nom voulu OU le panneau de
@@ -1943,6 +1955,15 @@ function registerLiListener() {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.type === "li-action") {
     const { action } = msg;
+    // Gestes comptés pour cette action (joints à chaque réponse, cf. gestureReport).
+    gestures = { real: 0, simulated: 0 };
+    acting = true;
+    let member = null;
+    const sendResponse_ = sendResponse;
+    sendResponse = (r) => {
+      acting = false;
+      sendResponse_({ ...r, gestures: gestureReport() });
+    };
     (async () => {
       try {
         // Sécurité : si LinkedIn affiche un contrôle de sécurité / captcha, on s'arrête net.
@@ -1958,7 +1979,6 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         // Action servie par Sequence Mail (elle porte `expect_member`) : on ne
         // joue rien tant que le profil connecté n'est pas vérifié. Autre profil
         // → refus ; profil illisible → refus aussi (dans le doute, on n'envoie pas).
-        let member = null;
         if ("expect_member" in action) {
           const me = await cachedWhoami();
           if (!me.ok) {
@@ -2020,6 +2040,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           : await doInvite(action.body, action.linkedin);
         respond(r);
       } catch (e) {
+        if (e instanceof NoRealInput) {
+          // Aucun vrai geste possible : rien n'est parti, le serveur reprend l'action plus tard sans pénalité.
+          gestures.refused_reason = e.reason;
+          sendResponse({ ok: false, no_real_input: true, error: e.message, ...(member ? { member } : {}) });
+          return;
+        }
         sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
       }
     })();
