@@ -2,7 +2,7 @@
 
 *[Français](README.fr.md)*
 
-**Self-hosted cold outreach: Gmail + LinkedIn sequences, on your own server, driven from Claude.**
+**Self-hosted cold outreach: Gmail + LinkedIn sequences, on your own server.**
 A free, open-source alternative to lemlist and Instantly. Your data lives in one SQLite file, and emails go out through the Gmail API of your own accounts.
 
 ## ⚡ Install in one command
@@ -55,27 +55,6 @@ Inboxes are checked every few minutes. A reply stops the sequence for that conta
 
 Sends are spread across your Google accounts, with automatic warm-up (5/day, +5 every week), daily quotas, a sending window and random gaps between sends. LinkedIn actions run in your own browser session through a [Chrome extension](extension/README.md), with conservative daily limits.
 
-## 🤖 Run it all from Claude (MCP)
-
-The goal is that you don't need the dashboard day to day. An MCP server ([`mcp/`](mcp/README.md), 42 tools) lets Claude Desktop, Claude Code or any MCP client run the whole workflow:
-
-> *"Create a campaign for CTOs of seed-stage startups, write a 3-step email + LinkedIn sequence, import `leads.csv` and show me the preview."*
->
-> *"Who replied since yesterday? Draft an answer to each one."*
->
-> *"Pause the agencies campaign and list everyone who bounced."*
-
-Claude creates campaigns, imports contacts and fills their variables, previews every email, reads replies and drafts answers. Nothing goes out without your explicit OK: Claude shows a preview before every launch or reply.
-
-```bash
-cd mcp && npm install && npm run build
-claude mcp add sequence-mail \
-  -e SEQUENCE_MAIL_BASE_URL=https://go.yourdomain.com \
-  -e SEQUENCE_MAIL_BASIC_AUTH=admin:yourpassword \
-  -- node "$PWD/dist/index.js"
-```
-
----
 
 ## Good to know
 

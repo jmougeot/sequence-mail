@@ -50,12 +50,6 @@ Les envois passent par l'API Gmail avec **vos** identifiants OAuth. La page
 
 Une fois cela fait, les jetons sont rafraîchis automatiquement et persistés en base : aucune reconnexion n'est nécessaire. Si Google révoque malgré tout un accès (changement de mot de passe, révocation manuelle…), le compte se désactive proprement dans le dashboard ; le reconnecter le réactive.
 
-### Piloter depuis Claude (serveur MCP)
-
-Un serveur **MCP** (lecture + écriture) permet de gérer campagnes, contacts et
-comptes depuis Claude Desktop / Claude Code. Il appelle l'API HTTP de l'app (local
-ou serveur) — voir **`mcp/README.md`** pour l'installation et le branchement.
-
 ### Développement
 
 ```bash

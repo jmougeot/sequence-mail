@@ -1,4 +1,4 @@
-# Type-checks the app and the MCP server, then boots the Docker image and
+# Type-checks the app, then boots the Docker image and
 # checks that it answers.
 name: ci
 
@@ -21,13 +21,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             package-lock.json
-            mcp/package-lock.json
       - name: App
-        run: |
-          npm ci
-          npx tsc --noEmit
-      - name: MCP server
-        working-directory: mcp
         run: |
           npm ci
           npx tsc --noEmit
