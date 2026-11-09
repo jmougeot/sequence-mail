@@ -220,3 +220,8 @@ ALTER TABLE li_actions ADD COLUMN IF NOT EXISTS seen_at BIGINT;
 
 -- The LinkedIn conversation as last read, the user's messages included (services/li-inbox.ts), 6 Nov 2026
 ALTER TABLE campaign_contacts ADD COLUMN IF NOT EXISTS li_thread TEXT;
+
+-- Gestures played by the extension for each action (JSON) and refusals in a row for lack of real
+-- gestures (services/outreach.ts, recordGestures / recordResult), 9 Nov 2026
+ALTER TABLE li_actions ADD COLUMN IF NOT EXISTS gestures TEXT;
+ALTER TABLE li_actions ADD COLUMN IF NOT EXISTS real_input_refusals BIGINT NOT NULL DEFAULT 0;

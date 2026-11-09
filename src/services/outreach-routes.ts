@@ -34,11 +34,13 @@ import {
   markDoneByHand,
   nextForAccounts,
   outreachStatus,
+  parseGestures,
   parseMember,
   pauseForCheckpoint,
   profileStatus,
   recordConnections,
   recordSentInvitations,
+  recordGestures,
   recordResult,
   resolveAccount,
   rotateToken,
@@ -147,6 +149,8 @@ export function registerOutreachRoutes(app: express.Express): void {
       if (!markDoneByHand(c.account, id)) return res.status(404).json({ error: "Action inconnue pour ce compte" });
       return res.json({ ok: true, done_by_hand: true });
     }
+    // Gestures played for the action (extension ≥ 0.7.0): logged and kept on the action, whatever the verdict.
+    recordGestures(c.account, id, parseGestures(b.gestures), Boolean(b.ok));
     // Read receipts noticed in the conversation before writing (extension ≥ 0.6.8).
     if (!b.wrong_account) processSeenBeforeSend(c.account, id, b.seen_texts);
     // The contact wrote in the conversation: the executor sent nothing.
@@ -167,6 +171,7 @@ export function registerOutreachRoutes(app: express.Express): void {
       member: parseMember(b.member),
       wrong_account: Boolean(b.wrong_account),
       identity_unknown: Boolean(b.identity_unknown),
+      no_real_input: Boolean(b.no_real_input),
     });
     if (!ok) return res.status(404).json({ error: "Action inconnue pour ce compte" });
     res.json({ ok: true });

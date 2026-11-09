@@ -391,6 +391,10 @@ addColumnIfMissing("steps", "with_previous", "with_previous INTEGER NOT NULL DEF
 addColumnIfMissing("li_actions", "detached", "detached INTEGER NOT NULL DEFAULT 0");
 // seen_at: LinkedIn showed this message as seen by the contact (read receipt), noted at that time.
 addColumnIfMissing("li_actions", "seen_at", "seen_at INTEGER");
+// Gestures the extension played for the action (JSON: real, simulated, refused_reason, tab_hidden,
+// paste_ms…), and refusals in a row for lack of real gestures (the contact fails at the 4th).
+addColumnIfMissing("li_actions", "gestures", "gestures TEXT");
+addColumnIfMissing("li_actions", "real_input_refusals", "real_input_refusals INTEGER NOT NULL DEFAULT 0");
 
 // Campaign description (audience, which contacts to add, message angle), read by
 // agents (MCP) before adding contacts or editing the sequence.
