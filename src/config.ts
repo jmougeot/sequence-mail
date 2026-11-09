@@ -44,10 +44,12 @@ export const config = {
     workdaysOnly: (process.env.LI_WORKDAYS_ONLY ?? "1") !== "0",
     // Each day's cap is drawn between this share and 100 % of the cap above (no flat daily volume).
     capFloorPct: int("LI_CAP_FLOOR_PCT", 85),
-    // Hours move each day: start up to N min later, stop up to N min earlier.
+    // Hours move each day, drawn apart for each LinkedIn profile: start up to N min later, stop up
+    // to N min earlier.
     windowJitterMin: int("LI_WINDOW_JITTER_MIN", 75),
     // Actions go in short sessions (LI_SESSION_MIN–MAX actions, LI_MIN/MAX_GAP_SEC apart), then
-    // the profile rests LI_REST_MIN–MAX minutes; inbox reads happen at a session start.
+    // the profile rests LI_REST_MIN–MAX minutes; inbox reads happen at a session start. These
+    // bounds set long-tailed draws with a uniform draw's mean (li-cadence.ts), not hard limits.
     sessionMin: int("LI_SESSION_MIN", 2),
     sessionMax: int("LI_SESSION_MAX", 5),
     minGapSec: int("LI_MIN_GAP_SEC", 120),
