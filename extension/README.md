@@ -20,15 +20,47 @@ Le serveur (`outreach.ts`) répond en appliquant :
   pour tout le profil LinkedIn ;
 - **lecture du profil** (arrêt, défilement, retour en haut) avant chaque invitation
   ou message ;
-- **vrais gestes** : clics, molette et dépôt du texte passent par le débogueur de Chrome
-  (permission `debugger`) et sortent comme ceux d'une vraie souris et d'un vrai
-  clavier (`isTrusted`, trajectoire à 60 Hz ; le texte est déposé d'un coup, sans
-  touche, comme un collage — `TYPE_KEY_BY_KEY` dans `content.js` le remplace par une
-  frappe touche par touche). Chrome affiche alors le bandeau « a commencé le débogage de ce navigateur »
-  le temps d'une session (détaché après 12 min sans action) ; le fermer coupe les
-  vrais gestes pendant 1 h (retour aux gestes simulés) ;
-- **pause de sécurité longue** (60 min) dès qu'une action échoue, et arrêt net
-  si LinkedIn affiche un contrôle de sécurité / captcha.
+- **vrais gestes, et seulement eux** (0.7.0) : clics, molette, touches et collage passent par
+  le débogueur de Chrome (permission `debugger`) et sortent comme ceux d'une vraie souris et
+  d'un vrai clavier (`isTrusted`, trajectoire à 60 Hz). Il n'y a plus aucun geste simulé
+  (événement fabriqué par la page, `el.click()`, `scrollTop`). Ce qui empêchait le vrai geste
+  est corrigé avant de renoncer : cible ramenée à l'écran à la vraie molette, autre point de la
+  cible si un bandeau la recouvre, nouvelle mesure si le survol n'est pas arrivé, trois essais.
+  Sans vrai geste possible (débogueur refusé ou tenu par DevTools, cible hors de l'écran…),
+  l'action s'arrête **sans rien envoyer** : le serveur la reprend 5 à 10 min plus tard, sans
+  pause de sécurité ni échec, et ne met le contact en échec qu'au 4e refus de suite (« vrais
+  gestes impossibles 4 fois de suite »). Le popup affiche alors « Envoi en pause : vrais gestes
+  indisponibles (raison) ». Le débogueur n'accepte que des commandes `Input.*`. Le bandeau
+  « a commencé le débogage de ce navigateur » n'apparaît pas avec
+  `--silent-debugger-extension-api` (lanceur `scripts/macos-chrome-linkedin-launcher.sh`) ;
+  fermé, il coupe les vrais gestes pendant 1 h (donc les envois) ;
+- **collage du texte** : le message (ou la note) est collé par Cmd+V (Ctrl+V hors Mac) : un
+  `paste` puis un `input` `insertFromPaste` de confiance, comme une personne qui colle. Un
+  brouillon déjà dans le champ est d'abord effacé au vrai clavier (Cmd+A, Retour arrière). Le
+  presse-papiers de la personne est lu juste avant (document `offscreen.html`, permissions
+  `clipboardRead`/`clipboardWrite`), le message y est écrit Cmd déjà enfoncé, V suit en
+  quelques ms (`paste_ms`), puis l'ancien contenu (texte, HTML) est remis. Le champ est relu
+  avant tout clic sur Envoyer : s'il diffère du message (un Cmd+C de la personne pile à ce
+  moment), il est vidé et rien ne part. Presse-papiers impossible à rendre tel quel (image,
+  fichier) : le texte est déposé sans passer par lui (`Input.insertText`) plutôt que d'écraser
+  ce que la personne a copié. `TYPE_KEY_BY_KEY` dans `content.js` remplace le collage par une
+  frappe touche par touche ;
+- **fenêtre de travail entière à l'écran** : un vrai clic ne tombe jamais au-delà du bord de
+  l'écran (chaque point est vérifié contre `screen.avail*`, sinon « cible hors écran »). Une
+  fenêtre neuve est posée en bas à droite, entière ; une fenêtre qui déborde (ancien placement
+  « dans le coin ») y est ramenée ; une fenêtre déjà entière à l'écran ne bouge jamais. Pour un
+  message dans un onglet caché, elle ne passe au premier plan que si l'ordinateur est inutilisé
+  depuis 60 s (`chrome.idle`) : jamais pendant que la personne tape ;
+- **traçabilité** : chaque verdict porte `gestures` (`real`, `simulated` — toujours 0, un
+  événement non fiable vu pendant l'action y serait compté —, `refused_reason`, `tab_hidden`,
+  `fill`, `paste_ms`, `clipboard`). Le serveur l'écrit dans une ligne `[linkedin] gestes …` et
+  dans `li_actions.gestures` (JSON) ;
+- **reprise à l'heure du serveur** : quand `/api/li/next` répond « attendre N s », l'extension
+  se réveille à cet instant (alarme, minuterie sous 30 s) au lieu d'attendre le tick suivant ;
+  après chaque action, elle redemande quelques secondes plus tard. Le tick d'une minute reste ;
+- **pause de sécurité** (`LI_PAUSE_AFTER_ERROR_MIN`, 15 min par défaut) dès qu'une action
+  échoue (hors refus faute de vrais gestes, cf. plus haut), et arrêt net si LinkedIn affiche un
+  contrôle de sécurité / captcha.
 
 Tous ces réglages sont dans `.env` (préfixe `LI_`). **Les baisser est sûr ; les
 gonfler augmente le risque de restriction du compte.**
@@ -93,6 +125,9 @@ c'est plus lent mais beaucoup moins détectable.
    (`/settings`) et dans le popup.
 
 ## Quand une action échoue
+
+Un refus faute de vrais gestes n'est pas un échec : rien n'est parti, l'action revient seule
+quelques minutes plus tard. Après 4 refus de suite, elle passe en échec comme les autres.
 
 Le popup liste sous « À faire à la main » chaque invitation ou message en échec :
 lien vers le profil LinkedIn, texte à copier, et bouton **Fait à la main**. Ce bouton
