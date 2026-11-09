@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import Client from "pg-native";
 import { insertReturnsId, toPg, type PgStatement } from "./sql-dialect.js";
 
@@ -166,8 +165,4 @@ export class PgDatabase implements Db {
   close(): void {
     retire(this.client);
   }
-}
-
-export function loadSchema(pg: PgDatabase, schemaUrl: URL): void {
-  pg.exec(fs.readFileSync(schemaUrl, "utf8"));
 }
