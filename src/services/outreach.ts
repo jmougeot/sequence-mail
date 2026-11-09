@@ -839,19 +839,29 @@ export function placeAtStep(
 }
 
 /**
- * Message to a contact not yet connected: past this deadline the invite counts as not
- * accepted. Branched campaign: delay of the first "not accepted" step, counted from the
- * invite; otherwise LI_MESSAGE_RETRY_MAX_DAYS from when the message was queued.
- * `branch`: the campaign has "not accepted" steps to switch to.
+ * Message to a contact not yet connected. Two deadlines:
+ * - `at`: the invite counts as not accepted. Branched campaign: delay of the first "not
+ *   accepted" step, counted from the invite (`branch`: the contact switches to those steps);
+ *   otherwise the same as `giveUpAt`.
+ * - `giveUpAt`: the message is dropped, LI_MESSAGE_RETRY_MAX_DAYS after it was queued (never
+ *   before `at`). Between the two, the message stays queued: an invite accepted late still gets it.
  */
-function acceptanceDeadline(ccId: number, actionCreatedAt: number): { at: number; days: number; branch: boolean } {
+function acceptanceDeadline(
+  ccId: number,
+  actionCreatedAt: number
+): { at: number; days: number; branch: boolean; giveUpAt: number; giveUpDays: number } {
   const cc = db.prepare(`SELECT campaign_id FROM campaign_contacts WHERE id = ?`).get(ccId) as { campaign_id: number };
   const fallback = firstNotAccepted(campaignSteps(cc.campaign_id));
-  if (!fallback) return { at: actionCreatedAt + L.messageRetryMaxDays * DAY_MS, days: L.messageRetryMaxDays, branch: false };
+  const retryEnd = actionCreatedAt + L.messageRetryMaxDays * DAY_MS;
+  if (!fallback) {
+    return { at: retryEnd, days: L.messageRetryMaxDays, branch: false, giveUpAt: retryEnd, giveUpDays: L.messageRetryMaxDays };
+  }
   const invite = db
     .prepare(`SELECT MAX(sent_at) AS t FROM li_actions WHERE campaign_contact_id = ? AND type = 'invite' AND status = 'sent'`)
     .get(ccId) as { t: number | null };
-  return { at: (invite.t ?? actionCreatedAt) + fallback.wait_days * DAY_MS, days: fallback.wait_days, branch: true };
+  const at = (invite.t ?? actionCreatedAt) + fallback.wait_days * DAY_MS;
+  const giveUp = at >= retryEnd ? { giveUpAt: at, giveUpDays: fallback.wait_days } : { giveUpAt: retryEnd, giveUpDays: L.messageRetryMaxDays };
+  return { at, days: fallback.wait_days, branch: true, ...giveUp };
 }
 
 // --- Dispatcher: what may this account do, now? ------------------------------
@@ -1056,11 +1066,15 @@ function inviteState(account: LiAccount, row: ActionRow, now: number): InviteSta
   const cc = db.prepare(`SELECT li_accepted FROM campaign_contacts WHERE id = ?`).get(row.campaign_contact_id) as
     | { li_accepted: number | null }
     | undefined;
-  if (!cc || cc.li_accepted != null) return "doubt";
+  // Accepted: nothing to read. Not accepted (deadline passed, message kept queued until it gives
+  // up): the reads still tell whether the invite was answered since.
+  if (!cc || cc.li_accepted === 1) return "doubt";
   const invitedAt = inviteSentAt(row.campaign_contact_id);
   const slug = linkedinSlug(row.linkedin);
   if (!invitedAt || !slug) return "doubt";
-  if (now >= acceptanceDeadline(row.campaign_contact_id, row.created_at).at) return "doubt";
+  // Deadline due (switch to the "not accepted" steps, then giving up): the profile is checked.
+  const deadline = acceptanceDeadline(row.campaign_contact_id, row.created_at);
+  if (now >= (cc.li_accepted === 0 ? deadline.giveUpAt : deadline.at)) return "doubt";
   const ids = sameProfile(account).map((a) => a.id);
   const inIds = ids.map(() => "?").join(",");
   const acc = (db
@@ -1408,7 +1422,8 @@ function requeue(id: number, error: string): void {
  *   and the account stops (wrong profile) or pauses;
  * - `retry` (message to a profile not yet connected) → postponed a few hours, no pause
  *   or progress, until the acceptance deadline (acceptanceDeadline); past it the invite
- *   counts as ignored: the contact moves to the "not accepted" steps, or the sequence ends;
+ *   counts as ignored: the contact moves to the "not accepted" steps while the message stays
+ *   queued (detached) until it gives up, or, without such steps, the sequence ends;
  * - success → logged (account cap, sending profile), account delay armed, contact moves
  *   one step, even when the verdict arrives after the lease expired, as long as the
  *   action was not replayed;
@@ -1471,28 +1486,28 @@ export function recordResult(account: LiAccount, id: number, v: LiVerdict): bool
 
   if (v.retry && !v.ok) {
     const deadline = acceptanceDeadline(row.campaign_contact_id, row.created_at);
-    if (now >= deadline.at) {
+    if (deadline.branch && now >= deadline.at) {
+      // Not accepted by the deadline: the contact switches to the "not accepted" steps (all after
+      // this message), without further wait. The message is not dropped: it stays queued, detached
+      // (the contact goes on without it), so an invite accepted late still gets it.
+      db.prepare(`UPDATE campaign_contacts SET li_accepted = 0 WHERE id = ? AND li_accepted IS NULL`).run(row.campaign_contact_id);
+      if (!row.detached) {
+        db.prepare(`UPDATE li_actions SET detached = 1 WHERE id = ?`).run(id);
+        advanceContact(row.campaign_contact_id, row.step_number, true);
+      }
+    }
+    if (now >= deadline.giveUpAt) {
       db.prepare(`UPDATE li_actions SET status = 'cancelled', lease_at = NULL, error = ? WHERE id = ?`).run(
-        `invitation non acceptée après ${deadline.days} j`,
+        `invitation non acceptée après ${deadline.giveUpDays} j`,
         id
       );
-      if (row.detached) {
-        if (deadline.branch) {
-          db.prepare(`UPDATE campaign_contacts SET li_accepted = 0 WHERE id = ? AND li_accepted IS NULL`).run(row.campaign_contact_id);
-        }
-        return true;
+      // Invite never accepted, no "not accepted" steps: the sequence ends, no failure, no pause.
+      if (!deadline.branch && !row.detached) {
+        db.prepare(`UPDATE campaign_contacts SET status = 'completed', next_send_at = NULL, error = ? WHERE id = ? AND status = 'awaiting_li'`).run(
+          `Invitation LinkedIn non acceptée après ${deadline.giveUpDays} j`,
+          row.campaign_contact_id
+        );
       }
-      if (deadline.branch) {
-        // Switch to the "not accepted" steps (all after this message), without further wait.
-        db.prepare(`UPDATE campaign_contacts SET li_accepted = 0 WHERE id = ?`).run(row.campaign_contact_id);
-        advanceContact(row.campaign_contact_id, row.step_number, true);
-        return true;
-      }
-      // Invite never accepted: the sequence ends, no failure, no pause.
-      db.prepare(`UPDATE campaign_contacts SET status = 'completed', next_send_at = NULL, error = ? WHERE id = ? AND status = 'awaiting_li'`).run(
-        `Invitation LinkedIn non acceptée après ${deadline.days} j`,
-        row.campaign_contact_id
-      );
       return true;
     }
     // Invite not accepted yet: retry the message later, without penalty.

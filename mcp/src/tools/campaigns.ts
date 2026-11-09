@@ -41,7 +41,7 @@ const stepSchema = z.object({
     .enum(["accepted", "not_accepted", ""])
     .optional()
     .describe(
-      "After a LinkedIn invite: step only for contacts whose invite was accepted (\"accepted\") or not (\"not_accepted\"); missing or empty = everyone. The first \"accepted\" step must be a LinkedIn message placed before the \"not_accepted\" steps: it goes as soon as the invite is accepted (checked every 2-3 h, its wait_days ignored). The first \"not_accepted\" step's wait_days is the deadline, counted from the invite: past it without acceptance, the contact switches to the \"not_accepted\" steps (no LinkedIn message in them). A contact without a LinkedIn profile goes there directly."
+      "After a LinkedIn invite: step only for contacts whose invite was accepted (\"accepted\") or not (\"not_accepted\"); missing or empty = everyone. The first \"accepted\" step must be a LinkedIn message placed before the \"not_accepted\" steps: it goes as soon as the invite is accepted (checked every 2-3 h, its wait_days ignored). The first \"not_accepted\" step's wait_days is the deadline, counted from the invite: past it without acceptance, the contact switches to the \"not_accepted\" steps (no LinkedIn message in them), while the first \"accepted\" message stays queued for up to 21 days after the invite: accepted late, it still goes. A contact without a LinkedIn profile goes there directly."
     ),
 });
 
