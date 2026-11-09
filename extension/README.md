@@ -14,10 +14,18 @@ Le serveur (`outreach.ts`) répond en appliquant :
 - **plafonds journaliers** par type (par défaut 20 invitations, 40 messages),
   tirés chaque jour entre 85 et 100 % du plafond (pas de plafond hebdomadaire :
   seul le quota du jour compte) ;
-- **plage horaire** décalée chaque jour (début plus tard, fin plus tôt, jusqu'à 75 min) ;
-- **sessions courtes** : 2 à 5 actions espacées de 2 à 7 min, puis **1 h à 2 h 30 de
-  repos** ; la messagerie n'est lue qu'au plus toutes les 2 h, hors repos, une fois
-  pour tout le profil LinkedIn ;
+- **plage horaire** décalée chaque jour (début plus tard, fin plus tôt, jusqu'à 75 min),
+  tirée à part pour chaque profil LinkedIn : deux comptes n'ouvrent plus à la même
+  minute (25 min d'écart en moyenne avec 75 min de décalage) ;
+- **sessions courtes** puis **repos** : taille de session, écart entre deux actions et
+  durée du repos suivent une loi à longue traîne (log-normale décalée) plutôt qu'un
+  tirage uniforme — surtout des valeurs courtes, parfois de longues. Plancher à la
+  moitié du minimum configuré, plafond à 4 fois le maximum pour l'écart, 3 fois pour le
+  repos, 2 fois pour la taille de session. La moyenne reste celle du tirage uniforme
+  d'avant (5 % plus basse pour l'écart) : le débit ne baisse pas. Avec les réglages par
+  défaut (sessions de 2 à 5 actions espacées de 2 à 7 min, repos de 1 h à 2 h 30) : des
+  écarts de 1 à 28 min, 4 min 15 s environ en moyenne. La messagerie n'est lue qu'au
+  plus toutes les 2 h, hors repos, une fois pour tout le profil LinkedIn ;
 - **lecture du profil** (arrêt, défilement, retour en haut) avant chaque invitation
   ou message ;
 - **vrais gestes** : clics, molette et dépôt du texte passent par le débogueur de Chrome
